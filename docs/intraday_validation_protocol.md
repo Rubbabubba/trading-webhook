@@ -27,6 +27,12 @@ Every completed Alpaca paper spread records entry and exit fills, signal-to-subm
 
 The automated suite covers duplicate signals, active-order locks, daily trade and loss locks, stale entries, deterministic broker client IDs, recovery after lost broker responses, automatic exits, and filled-roundtrip persistence. Market-hours supervision must still verify real quote availability, Alpaca behavior, and Render recovery.
 
+The production worker runs the fail-closed qualification lab after each trading session. It executes the standard option lifecycle scenario matrix and 2,000 deterministic randomized execution paths, then combines those results with broker-paper reconciliation, entry fill quality, runtime readiness, and promotion evidence. The saved report is included in the next daily email. A mechanical failure blocks paper-production qualification; no report can enable live capital.
+
+Run the same lab locally with:
+
+`python tools/run_intraday_qualification.py --ledger <ledger.json> --output intraday_qualification_report.json`
+
 ## Promotion rule
 
 No live-capital promotion may be inferred from a passing paper gate. Live submission remains a separate, hard-closed transport path until an explicit reviewed change is made.

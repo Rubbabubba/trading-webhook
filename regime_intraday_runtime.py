@@ -25,6 +25,7 @@ from regime_intraday_ledger import assign_setup_identities
 from regime_intraday_options import debit_vertical_integrity, fetch_option_chain, select_debit_spread, spread_exit_decision, value_debit_spread
 from regime_intraday_option_replay import replay_option_batch
 from regime_intraday_readiness import readiness_snapshot
+from regime_intraday_qualification import qualification_report
 from regime_intraday_replay import chronological_holdout, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, threshold_sensitivity, walk_forward
 from regime_intraday_validation import broker_promotion_evidence, entry_execution_analysis, entry_execution_record, paper_fill_reconciliation, update_canceled_entry_outcomes, validation_lab
 
@@ -476,6 +477,10 @@ class RegimeIntradayRuntime:
                                 "note": "Production revision changed since the prior report." if previous_revision and current_revision != previous_revision else "No production revision change detected since the prior report."},
             "paper_only": True, "live_submission": False,
         }
+        qualification = load_ledger(_env("REGIME_INTRADAY_QUALIFICATION_REPORT_PATH", "/var/data/regime_intraday_qualification_report.json"))
+        if qualification.get("qualification_version"):
+            review["qualification"] = {key: qualification.get(key) for key in (
+                "generated_at_utc", "paper_production_qualified", "paper_blockers", "live_capital_qualified", "live_blockers")}
         if not _bool("REGIME_INTRADAY_DAILY_REVIEW_EMAIL_ENABLED", True):
             return {"ok": True, "status": "email_disabled", "session": session, "review": review, "email_sent": False, "live_submission": False}
         result = send_daily_review_email(api_key=_env("RESEND_API_KEY"), to_email=_env("REGIME_INTRADAY_ALERT_EMAIL_TO"), from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM", "Trading System <onboarding@resend.dev>"), review=review)
@@ -485,6 +490,16 @@ class RegimeIntradayRuntime:
             ledger["daily_review_last_revision"] = current_revision
             save_ledger(self.ledger_path, ledger)
         return {"ok": True, "status": "sent" if result.get("sent") else result.get("reason"), "session": session, "review": review, "email_sent": bool(result.get("sent")), "message_id": result.get("message_id"), "live_submission": False}
+
+    def qualification(self, body: dict) -> dict:
+        self._worker_authorize(body)
+        ledger = load_ledger(self.ledger_path)
+        report = qualification_report(
+            ledger, readiness=self.readiness_payload(),
+            trials=max(100, min(10000, int(body.get("trials") or _int("REGIME_INTRADAY_QUALIFICATION_TRIALS", 2000)))),
+        )
+        save_ledger(_env("REGIME_INTRADAY_QUALIFICATION_REPORT_PATH", "/var/data/regime_intraday_qualification_report.json"), report)
+        return report
 
     def paper_roundtrip(self, body: dict) -> dict:
         self._worker_authorize(body)

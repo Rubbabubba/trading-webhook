@@ -18,6 +18,7 @@ def test_intraday_app_has_no_swing_routes(monkeypatch, tmp_path):
     assert "/worker/regime_intraday_scan" in paths
     assert "/worker/regime_intraday_after_hours_replay" in paths
     assert "/worker/regime_intraday_daily_review" in paths
+    assert "/worker/regime_intraday_qualification" in paths
     assert "/diagnostics/regime_intraday_option_replay" in paths
     assert not any("swing" in path for path in paths)
     assert "/worker/exit" not in paths

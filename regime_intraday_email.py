@@ -127,6 +127,7 @@ def build_daily_review_email(review: dict[str, Any]) -> dict[str, str]:
     promotion = dict(review.get("promotion_evidence") or {})
     shadow = dict(review.get("shadow_research") or {})
     entry = dict(review.get("entry_execution") or {})
+    qualification = dict(review.get("qualification") or {})
     subject = f"PAPER DAILY REVIEW: {session} — {'-' if net_dollars < 0 else '+'}${abs(net_dollars):.2f}"
     text = (
         f"Paper-trading review for {session}\n\n"
@@ -150,6 +151,12 @@ def build_daily_review_email(review: dict[str, Any]) -> dict[str, str]:
         f"Counterfactual outcomes: {json.dumps(entry.get('counterfactual_outcome_counts') or {}, separators=(',', ':'))}\n"
         f"Canceled setups later reaching target: {entry.get('missed_target_count')}\n"
         f"Policy: {entry.get('policy') or 'No automatic entry repricing or resubmission.'}\n\n"
+        "PRODUCTION QUALIFICATION\n"
+        f"Last generated: {qualification.get('generated_at_utc') or 'not available'}\n"
+        f"Paper production qualified: {qualification.get('paper_production_qualified')}\n"
+        f"Paper blockers: {', '.join(qualification.get('paper_blockers') or []) or 'none'}\n"
+        f"Live capital qualified: {qualification.get('live_capital_qualified')}\n"
+        f"Live blockers: {', '.join(qualification.get('live_blockers') or []) or 'qualification report not available'}\n\n"
         "SHADOW RESEARCH (NOT BROKER P/L)\n"
         f"Closed observations: {shadow.get('closed_count')}\n"
         f"Average underlying R: {shadow.get('average_r')}\n"

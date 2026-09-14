@@ -56,9 +56,11 @@ def main() -> None:
     reconcile_url = (os.getenv("REGIME_INTRADAY_RECONCILE_URL") or f"{base_url}/worker/regime_intraday_paper_reconcile").strip()
     replay_url = (os.getenv("REGIME_INTRADAY_REPLAY_URL") or f"{base_url}/worker/regime_intraday_after_hours_replay").strip()
     daily_review_url = (os.getenv("REGIME_INTRADAY_DAILY_REVIEW_URL") or f"{base_url}/worker/regime_intraday_daily_review").strip()
+    qualification_url = (os.getenv("REGIME_INTRADAY_QUALIFICATION_URL") or f"{base_url}/worker/regime_intraday_qualification").strip()
     payload = {"worker_secret": secret}
     replay_date = None
     review_date = None
+    qualification_date = None
 
     _log(f"boot version={WORKER_VERSION} interval_sec={interval} timeout_sec={timeout}")
     while True:
@@ -120,6 +122,14 @@ def main() -> None:
             except Exception as error:
                 cycle_failed = True
                 _log(f"after_hours_replay_error kind={type(error).__name__} detail={str(error)[:300]}")
+        if ny_now.weekday() < 5 and ny_now.time() >= clock_time(16, 10) and qualification_date != ny_now.date():
+            try:
+                status, response = _post(qualification_url, payload, timeout)
+                _log(f"qualification_ok http={status} paper_qualified={response.get('paper_production_qualified')} live_qualified={response.get('live_capital_qualified')} blockers={response.get('live_blockers')}")
+                qualification_date = ny_now.date()
+            except Exception as error:
+                cycle_failed = True
+                _log(f"qualification_error kind={type(error).__name__} detail={str(error)[:300]}")
         for action, url in (("scan", scan_url), ("reconcile", reconcile_url)):
             try:
                 status, response = _post(url, payload, timeout)
