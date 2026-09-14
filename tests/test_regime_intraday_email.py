@@ -40,6 +40,11 @@ def test_daily_review_email_reports_performance_and_deployment_change():
         "zero_fill_orders": 1, "gross_all_fills_dollars": 20,
         "gross_valid_fills_dollars": 20,
         "execution_integrity": {"valid_roundtrips": 1, "invalid_roundtrips": 0},
+        "entry_execution": {"fill_rate": .5, "average_zero_fill_quote_drift": .02,
+                            "zero_fill_within_one_cent_count": 0,
+                            "attribution_counts": {"executable_debit_moved_above_limit": 1},
+                            "counterfactual_outcome_counts": {"target": 1}, "missed_target_count": 1,
+                            "policy": "Observational only; no automatic entry repricing or resubmission."},
         "shadow_research": {"closed_count": 1, "average_r": .5, "by_symbol": {"QQQ": {"count": 1, "average_r": .5}}},
         "promotion_evidence": {"independent_roundtrips": 1, "minimum_roundtrips": 30, "target_roundtrips": 50, "after_fee_expectancy_dollars": 18.7, "evidence_gate_pass": False, "blockers": ["sample"]},
         "release_changes": {"current_revision": "new-sha", "previous_revision": "old-sha", "revision_changed": True, "note": "Production revision changed since the prior report."},
@@ -48,4 +53,6 @@ def test_daily_review_email_reports_performance_and_deployment_change():
     assert "+$18.70" in message["subject"]
     assert "Current deployed revision: new-sha" in message["text"]
     assert "Deployment changed since prior review: True" in message["text"]
+    assert "Fill rate: 0.5" in message["text"]
+    assert "Canceled setups later reaching target: 1" in message["text"]
     assert "Live trading remains disabled" in message["text"]

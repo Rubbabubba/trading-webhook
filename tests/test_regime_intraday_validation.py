@@ -94,7 +94,22 @@ def test_entry_execution_analysis_reports_quote_gap_without_claiming_fill():
     assert row["required_limit_increase_at_terminal"] == .02
     assert row["terminal_quote_was_within_one_cent"] is False
     assert row["quote_path_points"] == 2
+    assert row["attribution"] == "executable_debit_moved_above_limit"
+    assert result["fill_rate"] == 0
+    assert result["average_zero_fill_quote_drift"] == .02
+    assert result["attribution_counts"] == {"executable_debit_moved_above_limit": 1}
     assert result["policy"].startswith("Observational only")
+
+
+def test_entry_execution_analysis_attributes_wide_terminal_spread_and_missed_target():
+    ledger = {"orders": {"sig": {"status": "canceled", "plan": {"underlying": "SPY", "limit_debit": .66,
+        "selection_quotes": {"entry_debit_from_quotes": .66}}, "signal": {"option_intent": {"max_bid_ask_spread_pct": .08}},
+        "terminal_quotes": {"entry_debit_from_quotes": .66, "legs": [{"bid": 1, "ask": 1.2}, {"bid": .54, "ask": .56}]},
+        "broker": {"filled_qty": 0}, "counterfactual_underlying_outcome": {"status": "target"}}}}
+    result = entry_execution_analysis(ledger)
+    assert result["rows"][0]["attribution"] == "quote_spread_widened"
+    assert result["missed_target_count"] == 1
+    assert result["counterfactual_outcome_counts"] == {"target": 1}
 
 
 def test_broker_promotion_requires_independent_positive_after_fee_evidence():

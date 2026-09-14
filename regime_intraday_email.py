@@ -112,8 +112,9 @@ def send_exit_email(*, api_key: str, to_email: str, from_email: str, signal_id: 
 def send_order_outcome_email(*, api_key: str, to_email: str, from_email: str, record: dict, timeout: int = 10) -> dict:
     broker = dict(record.get("broker") or {})
     status = record.get("status")
+    execution = dict(record.get("entry_execution_attribution") or {})
     message = {"subject": f"PAPER ORDER: {dict(record.get('plan') or {}).get('underlying')} — {status}",
-               "text": f"Order: {record.get('order_id')}\nStatus: {status}\nBroker filled quantity: {broker.get('filled_qty')}\nAverage fill price: {broker.get('filled_avg_price')}\nVerify remaining positions and orders in Alpaca paper. No automatic entry repricing or resubmission is performed."}
+               "text": f"Order: {record.get('order_id')}\nStatus: {status}\nBroker filled quantity: {broker.get('filled_qty')}\nAverage fill price: {broker.get('filled_avg_price')}\nExecution attribution: {execution.get('attribution') or 'unavailable'}\nCancel reason: {execution.get('cancel_reason') or 'not recorded'}\nSubmitted limit debit: {execution.get('limit_debit')}\nSelection executable debit: {execution.get('selection_quote_debit')}\nTerminal executable debit: {execution.get('terminal_quote_debit')}\nRequired limit increase at terminal: {execution.get('required_limit_increase_at_terminal')}\nTerminal maximum leg spread: {execution.get('max_terminal_leg_spread_pct')}\nQuote path observations: {execution.get('quote_path_points')}\nVerify remaining positions and orders in Alpaca paper. No automatic entry repricing or resubmission is performed."}
     return _send_message(api_key=api_key, to_email=to_email, from_email=from_email, message=message,
                          idempotency_key=f"paper-outcome-{record.get('order_id')}-{status}", timeout=timeout)
 
@@ -125,6 +126,7 @@ def build_daily_review_email(review: dict[str, Any]) -> dict[str, str]:
     integrity = dict(review.get("execution_integrity") or {})
     promotion = dict(review.get("promotion_evidence") or {})
     shadow = dict(review.get("shadow_research") or {})
+    entry = dict(review.get("entry_execution") or {})
     subject = f"PAPER DAILY REVIEW: {session} — {'-' if net_dollars < 0 else '+'}${abs(net_dollars):.2f}"
     text = (
         f"Paper-trading review for {session}\n\n"
@@ -140,6 +142,14 @@ def build_daily_review_email(review: dict[str, Any]) -> dict[str, str]:
         f"Valid roundtrips: {integrity.get('valid_roundtrips')}\n"
         f"Invalid roundtrips: {integrity.get('invalid_roundtrips')}\n"
         f"Invalid details: {integrity.get('invalid_details') or 'none'}\n\n"
+        "ENTRY FILL QUALITY\n"
+        f"Fill rate: {entry.get('fill_rate')}\n"
+        f"Average zero-fill quote drift: {entry.get('average_zero_fill_quote_drift')}\n"
+        f"Zero-fills still within $0.01 at terminal: {entry.get('zero_fill_within_one_cent_count')}\n"
+        f"Cancellation attribution: {json.dumps(entry.get('attribution_counts') or {}, separators=(',', ':'))}\n"
+        f"Counterfactual outcomes: {json.dumps(entry.get('counterfactual_outcome_counts') or {}, separators=(',', ':'))}\n"
+        f"Canceled setups later reaching target: {entry.get('missed_target_count')}\n"
+        f"Policy: {entry.get('policy') or 'No automatic entry repricing or resubmission.'}\n\n"
         "SHADOW RESEARCH (NOT BROKER P/L)\n"
         f"Closed observations: {shadow.get('closed_count')}\n"
         f"Average underlying R: {shadow.get('average_r')}\n"

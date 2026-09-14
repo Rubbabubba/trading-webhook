@@ -20,6 +20,63 @@ def _seconds_between(start: Any, end: Any) -> float | None:
         return None
 
 
+def entry_execution_record(signal_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    """Attribute an entry outcome from recorded broker state and quote evidence."""
+    plan = dict(record.get("plan") or {})
+    selected = dict(plan.get("selection_quotes") or {})
+    terminal = dict(record.get("terminal_quotes") or {})
+    broker = dict(record.get("broker") or {})
+    limit = float(plan.get("limit_debit") or 0)
+    selection_debit = selected.get("entry_debit_from_quotes")
+    terminal_debit = terminal.get("entry_debit_from_quotes")
+    required = max(0.0, float(terminal_debit) - limit) if terminal_debit is not None and limit else None
+    filled_qty = float(broker.get("filled_qty") or 0)
+    terminal_status = str(record.get("status") or broker.get("status") or "").lower()
+    cancel_reason = str(record.get("cancel_reason") or "").lower()
+    leg_spreads = []
+    for leg in list(terminal.get("legs") or []):
+        bid, ask = float(leg.get("bid") or 0), float(leg.get("ask") or 0)
+        mid = (bid + ask) / 2
+        if bid > 0 and ask >= bid and mid > 0:
+            leg_spreads.append((ask - bid) / mid)
+    max_terminal_spread_pct = max(leg_spreads) if leg_spreads else None
+    option_intent = dict(dict(record.get("signal") or {}).get("option_intent") or {})
+    allowed_spread_pct = float(option_intent.get("max_bid_ask_spread_pct") or 0.08)
+    if filled_qty > 0 or terminal_status in {"partially_filled", "entry_requires_attention"}:
+        attribution = "partial_or_ambiguous_fill"
+    elif terminal_status == "rejected":
+        attribution = "broker_rejected"
+    elif cancel_reason and cancel_reason != "stale_entry":
+        attribution = f"setup_invalidated:{cancel_reason}"
+    elif terminal.get("status") == "unavailable" or terminal_debit is None:
+        attribution = "terminal_quote_unavailable"
+    elif max_terminal_spread_pct is not None and max_terminal_spread_pct > allowed_spread_pct:
+        attribution = "quote_spread_widened"
+    elif required is not None and required > 0:
+        attribution = "executable_debit_moved_above_limit"
+    elif cancel_reason == "stale_entry":
+        attribution = "timed_out_despite_quote_at_or_below_limit"
+    elif terminal_status in {"canceled", "cancelled", "expired"}:
+        attribution = "zero_fill_terminal"
+    else:
+        attribution = "open_or_unknown"
+    drift = float(terminal_debit) - float(selection_debit) if terminal_debit is not None and selection_debit is not None else None
+    return {
+        "signal_id": signal_id, "symbol": plan.get("underlying"), "status": record.get("status"),
+        "attribution": attribution, "cancel_reason": record.get("cancel_reason"),
+        "limit_debit": limit or None, "selection_quote_debit": selection_debit,
+        "terminal_quote_debit": terminal_debit, "quote_drift": round(drift, 4) if drift is not None else None,
+        "quote_path_points": len(record.get("entry_quote_path") or []),
+        "submit_to_terminal_seconds": _seconds_between(broker.get("submitted_at") or record.get("recorded_at"), broker.get("canceled_at") or record.get("cancel_requested_at") or record.get("reconciled_at")),
+        "required_limit_increase_at_terminal": round(required, 4) if required is not None else None,
+        "terminal_quote_was_within_one_cent": bool(required is not None and required <= 0.01),
+        "max_terminal_leg_spread_pct": round(max_terminal_spread_pct, 4) if max_terminal_spread_pct is not None else None,
+        "allowed_leg_spread_pct": allowed_spread_pct,
+        "counterfactual_underlying_outcome": record.get("counterfactual_underlying_outcome"),
+        "note": "Quotes do not prove a fill; counterfactual outcomes are not broker P/L.",
+    }
+
+
 def update_canceled_entry_outcomes(ledger: dict[str, Any], scan: dict[str, Any]) -> None:
     """Advance explicitly counterfactual outcomes for zero-fill entry cancellations."""
     features = dict(scan.get("features") or {})
@@ -71,25 +128,25 @@ def entry_execution_analysis(ledger: dict[str, Any]) -> dict[str, Any]:
     for signal_id, record in dict(ledger.get("orders") or {}).items():
         if record.get("mechanical_test"):
             continue
-        plan = dict(record.get("plan") or {})
-        selected = dict(plan.get("selection_quotes") or {})
-        terminal = dict(record.get("terminal_quotes") or {})
-        limit = float(plan.get("limit_debit") or 0)
-        terminal_debit = terminal.get("entry_debit_from_quotes")
-        required = max(0.0, float(terminal_debit) - limit) if terminal_debit is not None and limit else None
-        broker = dict(record.get("broker") or {})
-        rows.append({
-            "signal_id": signal_id, "symbol": plan.get("underlying"), "status": record.get("status"),
-            "limit_debit": limit or None, "selection_quote_debit": selected.get("entry_debit_from_quotes"),
-            "terminal_quote_debit": terminal_debit, "quote_path_points": len(record.get("entry_quote_path") or []),
-            "submit_to_terminal_seconds": _seconds_between(broker.get("submitted_at") or record.get("recorded_at"), broker.get("canceled_at") or record.get("cancel_requested_at") or record.get("reconciled_at")),
-            "required_limit_increase_at_terminal": round(required, 4) if required is not None else None,
-            "terminal_quote_was_within_one_cent": bool(required is not None and required <= 0.01),
-            "counterfactual_underlying_outcome": record.get("counterfactual_underlying_outcome"),
-            "note": "Quotes do not prove a fill; counterfactual outcomes are not broker P/L.",
-        })
+        rows.append(entry_execution_record(signal_id, record))
     canceled = [row for row in rows if str(row.get("status") or "").lower() in {"canceled", "cancelled", "expired", "rejected"}]
-    return {"order_count": len(rows), "zero_fill_terminal_count": len(canceled), "rows": rows[-100:],
+    filled = [row for row in rows if str(row.get("status") or "").lower() in {"filled", "filled_closed", "close_submitted", "close_requires_attention"}]
+    drifts = [float(row["quote_drift"]) for row in canceled if row.get("quote_drift") is not None]
+    outcomes = [dict(row.get("counterfactual_underlying_outcome") or {}).get("status") for row in canceled]
+    attribution_counts: dict[str, int] = {}
+    outcome_counts: dict[str, int] = {}
+    for row in canceled:
+        reason = str(row.get("attribution") or "unknown")
+        attribution_counts[reason] = attribution_counts.get(reason, 0) + 1
+    for outcome in outcomes:
+        if outcome:
+            outcome_counts[str(outcome)] = outcome_counts.get(str(outcome), 0) + 1
+    return {"order_count": len(rows), "filled_entry_count": len(filled), "zero_fill_terminal_count": len(canceled),
+            "fill_rate": round(len(filled) / len(rows), 4) if rows else None,
+            "average_zero_fill_quote_drift": round(fmean(drifts), 4) if drifts else None,
+            "zero_fill_within_one_cent_count": sum(bool(row.get("terminal_quote_was_within_one_cent")) for row in canceled),
+            "attribution_counts": attribution_counts, "counterfactual_outcome_counts": outcome_counts,
+            "missed_target_count": outcome_counts.get("target", 0), "rows": rows[-100:],
             "policy": "Observational only; no automatic entry repricing or resubmission."}
 
 

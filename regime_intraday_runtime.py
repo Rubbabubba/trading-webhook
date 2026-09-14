@@ -26,7 +26,7 @@ from regime_intraday_options import debit_vertical_integrity, fetch_option_chain
 from regime_intraday_option_replay import replay_option_batch
 from regime_intraday_readiness import readiness_snapshot
 from regime_intraday_replay import chronological_holdout, cost_adjusted_report, mean_reversion_walk_forward, replay_sessions, threshold_sensitivity, walk_forward
-from regime_intraday_validation import broker_promotion_evidence, entry_execution_analysis, paper_fill_reconciliation, update_canceled_entry_outcomes, validation_lab
+from regime_intraday_validation import broker_promotion_evidence, entry_execution_analysis, entry_execution_record, paper_fill_reconciliation, update_canceled_entry_outcomes, validation_lab
 
 
 def _env(name: str, default: str = "") -> str:
@@ -446,6 +446,7 @@ class RegimeIntradayRuntime:
         zero_fill = [row for row in orders.values() if str(row.get("status") or "").lower() in {"canceled", "cancelled", "expired", "rejected"} and float(dict(row.get("broker") or {}).get("filled_qty") or 0) == 0]
         quality_rows = list(quality.get("rows") or [])
         valid_rows = [row for row in quality_rows if row.get("economically_valid")]
+        entry_quality = entry_execution_analysis(session_ledger)
         shadows = [row for row in dict(ledger.get("signal_shadow_candidates") or {}).values() if str(row.get("session") or "") == session and row.get("status") == "closed"]
         by_symbol: dict[str, dict[str, Any]] = {}
         for row in shadows:
@@ -467,6 +468,7 @@ class RegimeIntradayRuntime:
             "net_after_estimated_fees_dollars": round(sum(float(row.get("actual_realized_dollars") or 0) for row in valid_rows) - fees, 2),
             "execution_integrity": {"valid_roundtrips": len(valid_rows), "invalid_roundtrips": len(quality_rows) - len(valid_rows),
                                     "invalid_details": "; ".join(f"{row.get('signal_id')}: {','.join(dict(row.get('economic_integrity') or {}).get('reasons') or [])}" for row in quality_rows if not row.get("economically_valid"))},
+            "entry_execution": entry_quality,
             "shadow_research": {"closed_count": len(shadows), "average_r": round(sum(float(row.get("realized_r") or 0) for row in shadows) / len(shadows), 4) if shadows else None, "by_symbol": by_symbol},
             "promotion_evidence": broker_promotion_evidence(ledger, minimum_roundtrips=_int("REGIME_INTRADAY_MIN_BROKER_ROUNDTRIPS_FOR_PROMOTION", 30), target_roundtrips=_int("REGIME_INTRADAY_TARGET_BROKER_ROUNDTRIPS_FOR_PROMOTION", 50), estimated_round_trip_fees_dollars=_float("REGIME_INTRADAY_ESTIMATED_ROUND_TRIP_FEES_DOLLARS", 1.30)),
             "release_changes": {"current_revision": current_revision, "previous_revision": previous_revision,
@@ -643,6 +645,7 @@ class RegimeIntradayRuntime:
                             record["terminal_quotes"] = spread_quote_evidence(chain, plan)
                         except Exception:
                             record["terminal_quotes"] = {"status": "unavailable"}
+                    record["entry_execution_attribution"] = entry_execution_record(signal_id, record)
                     if record.get("outcome_email_status") != record["status"]:
                         try:
                             sent = send_order_outcome_email(api_key=_env("RESEND_API_KEY") if _bool("REGIME_INTRADAY_ALERT_EMAIL_ENABLED", True) else "", to_email=_env("REGIME_INTRADAY_ALERT_EMAIL_TO"), from_email=_env("REGIME_INTRADAY_ALERT_EMAIL_FROM"), record=record)

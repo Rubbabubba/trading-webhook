@@ -65,6 +65,24 @@ def test_zero_fill_cancellation_email_failure_preserves_status(monkeypatch, tmp_
     assert result["orders"]["sig"]["outcome_email_error"] == "delivery_failed"
 
 
+def test_zero_fill_email_receives_execution_attribution(monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKER_SECRET", "test")
+    runtime = runtime_module.RegimeIntradayRuntime()
+    runtime.ledger_path = str(tmp_path / "ledger.json")
+    ledger = empty_ledger()
+    ledger["orders"]["sig"] = {"order_id": "entry", "status": "new",
+        "plan": {"underlying": "SPY", "limit_debit": .66, "selection_quotes": {"entry_debit_from_quotes": .66}},
+        "terminal_quotes": {"entry_debit_from_quotes": .69, "legs": [{"bid": 1, "ask": 1.02}, {"bid": .33, "ask": .34}]}}
+    ledger["pending_candidates"]["sig"] = {}
+    save_ledger(runtime.ledger_path, ledger)
+    monkeypatch.setattr(runtime_module, "get_order", lambda *a, **k: {"status": "canceled", "filled_qty": "0"})
+    captured = []
+    monkeypatch.setattr(runtime_module, "send_order_outcome_email", lambda **kwargs: captured.append(kwargs["record"]["entry_execution_attribution"]) or {"sent": True})
+    runtime.paper_reconcile({"worker_secret": "test"})
+    assert captured[0]["attribution"] == "executable_debit_moved_above_limit"
+    assert captured[0]["required_limit_increase_at_terminal"] == .03
+
+
 def test_quote_evidence_retains_timestamps_and_both_sides():
     chain = {"snapshots": {"long": {"latestQuote": {"bp": 2, "ap": 2.1, "t": "now"}}, "short": {"latestQuote": {"bp": 1.5, "ap": 1.6, "t": "then"}}}}
     evidence = spread_quote_evidence(chain, {"legs": [{"symbol": "long"}, {"symbol": "short"}]})
