@@ -1,0 +1,27 @@
+{
+  "version": "hosted_portfolio_v1",
+  "execution_enabled": false,
+  "stop_at": "2026-09-21T14:30:00Z",
+  "output": "/var/data/kalshi-paper/portfolio",
+  "universe_source": "/var/data/kalshi-paper/discovery/markets.json",
+  "engine": {
+    "strategy_id": "hosted_portfolio_v1",
+    "take_profit_cents": 5,
+    "stop_loss_cents": 10,
+    "max_hold_seconds": 900,
+    "latency_seconds": 2,
+    "slippage_cents": 1
+  },
+  "source_sha256": {
+    "opportunity_lab/__init__.py": "961ccba089936d094859bbdbe181a0031db750844dd91e842cb85daebec0c23b",
+    "opportunity_lab/kalshi_hosted_discovery.py": "a74646ec077107ae676faee096509779733f7bfed81661100f40ea58af622ef9",
+    "opportunity_lab/kalshi_hosted_paper.py": "55598ce17a7489d1478f1ba90075a396ebdcd995f5026e2db4a14d2bc89afcab",
+    "opportunity_lab/kalshi_process_lock.py": "5f6948800418f172800821c5c9d758a5bb23a4534243e6b5ceb6009dc6caa1b6",
+    "opportunity_lab/kalshi_risk.py": "202bc173791b07dffeada7f74b249fce929312e8a7b60709d4e07565c7eb1ed1",
+    "opportunity_lab/kalshi_shadow.py": "bfc5a850fe1e3058162896ba3319880be56cd6ef54c7cc81d0858c2b06b385bd",
+    "opportunity_lab/kalshi_shadow_live.py": "d9735ae2269d7c86a1921bb6ee028839a14096fc1e1130724b1f4e437f2fdfdc",
+    "opportunity_lab/kalshi_shadow_settlement.py": "555f8c2ddee8306d5208297b9b7844df4710529093370a09a389ba17dedc4d49"
+  },
+  "slots": 4,
+  "total_cash_cents": 50000
+}

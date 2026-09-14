@@ -1,0 +1,18 @@
+# New paid paper-only service. Apply only after approving the additional cost.
+# No API keys or secret files are required; this service cannot submit orders.
+services:
+  - type: worker
+    name: kalshi-paper-portfolio
+    runtime: python
+    plan: starter
+    autoDeploy: false
+    buildCommand: pip install -r deploy/kalshi-paper.requirements.txt
+    startCommand: python -m opportunity_lab.kalshi_hosted_paper --data-root /var/data/kalshi-paper
+    numInstances: 1
+    disk:
+      name: kalshi-paper-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
