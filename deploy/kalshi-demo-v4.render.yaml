@@ -1,0 +1,22 @@
+# Demo-only execution canary. Credentials are configured in the Render dashboard.
+# The RSA private key must be uploaded as kalshi-demo-private.pem.
+services:
+  - type: worker
+    name: kalshi-demo-v4
+    runtime: python
+    plan: starter
+    autoDeploy: false
+    buildCommand: pip install -r deploy/kalshi-demo-v4.requirements.txt
+    startCommand: python -m opportunity_lab.kalshi_demo_v4_worker --data-root /var/data/kalshi-demo-v4
+    numInstances: 1
+    disk:
+      name: kalshi-demo-v4-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: KALSHI_DEMO_API_KEY_ID
+        sync: false
+      - key: KALSHI_DEMO_PRIVATE_KEY_PATH
+        value: /etc/secrets/kalshi-demo-private.pem
