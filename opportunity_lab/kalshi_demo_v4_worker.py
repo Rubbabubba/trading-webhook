@@ -223,6 +223,12 @@ def write_status(path, **values):
     temp.replace(path)
 
 
+def log_event(event, **values):
+    """Emit a credential-free JSON record suitable for hosted worker logs."""
+    print(json.dumps({"at": now_iso(), "event": event, "environment": "demo",
+                      "strategy_id": STRATEGY_ID, **values}, sort_keys=True), flush=True)
+
+
 def run(data_root, *, cycles=None):
     root = Path(data_root).resolve(); root.mkdir(parents=True, exist_ok=True)
     lock = acquire(root / "worker.lock")
@@ -238,6 +244,7 @@ def run(data_root, *, cycles=None):
     try:
         check_exchange(client)
         recover(journal, broker)
+        log_event("worker_started", production_execution_enabled=False)
         while cycles is None or cycle < cycles:
             errors = []
             try:
@@ -291,12 +298,21 @@ def run(data_root, *, cycles=None):
                              entered_events=state.db.execute("SELECT count(*) FROM entered_events").fetchone()[0],
                              cohort_size=len(cohort), mutations=len(journal.records()),
                              mutation_unknown=any(row["state"] == "uncertain" for row in journal.records()))
+                if cycle % 30 == 0:
+                    log_event("worker_heartbeat", phase="running",
+                              demo_balance_cents=final["balance"]["balance"],
+                              open_positions=len(accounting["positions"]),
+                              entered_events=state.db.execute(
+                                  "SELECT count(*) FROM entered_events").fetchone()[0],
+                              cohort_size=len(cohort), mutations=len(journal.records()))
             except Exception as exc:
                 errors.append(type(exc).__name__)
                 state.record(None, {"action": "cycle_error", "error_type": type(exc).__name__})
                 write_status(root / "status.json", phase="blocked", errors=errors,
                              mutation_unknown=any(row["state"] == "uncertain" for row in journal.records()),
                              mutations=len(journal.records()))
+                log_event("worker_blocked", errors=errors,
+                          mutations=len(journal.records()))
                 if any(row["state"] == "uncertain" for row in journal.records()):
                     journal.stop(); raise
             cycle += 1
