@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import time
 import uuid
@@ -179,6 +180,15 @@ class MakerState:
 def log_event(event, **values):
     print(json.dumps({"at": now_iso(), "event": event, "environment": "demo",
                       "strategy_id": STRATEGY_ID, **values}, sort_keys=True), flush=True)
+
+
+def safe_cycle_error(error):
+    """Expose only bounded internal error codes, never transport or credential text."""
+    if isinstance(error, ValueError):
+        code = str(error)
+        if re.fullmatch(r"[a-z0-9_]{1,80}", code):
+            return code
+    return type(error).__name__
 
 
 def recover(journal, broker):
@@ -392,7 +402,8 @@ def run(data_root, *, cycles=None):
                              open_positions=len(accounting["positions"]), cohort_size=len(cohort))
                 if cycle % 30 == 0: log_event("worker_heartbeat", **evidence(state, journal))
             except Exception as exc:
-                errors.append(type(exc).__name__); state.record(None, {"action": "cycle_error", "error_type": type(exc).__name__})
+                code = safe_cycle_error(exc)
+                errors.append(code); state.record(None, {"action": "cycle_error", "error_code": code})
                 write_status(root / "status.json", state, journal, phase="blocked", errors=errors)
                 log_event("worker_blocked", errors=errors)
                 if any(row["state"] == "uncertain" for row in journal.records()): journal.stop(); raise

@@ -7,6 +7,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     current_position,
     evidence,
     refresh_cohort,
+    safe_cycle_error,
     select_maker_markets,
 )
 
@@ -104,3 +105,9 @@ def test_failed_discovery_refresh_keeps_existing_cohort_and_backs_off():
     assert cohort_at == 500.0
     assert state.saved["cohort_at"] == 500.0
     assert state.actions[-1][1]["action"] == "cohort_refresh_deferred"
+
+
+def test_safe_cycle_error_only_exposes_bounded_internal_codes():
+    assert safe_cycle_error(ValueError("fills_not_reconciled")) == "fills_not_reconciled"
+    assert safe_cycle_error(ValueError("secret path C:/keys/private.pem")) == "ValueError"
+    assert safe_cycle_error(RuntimeError("secret")) == "RuntimeError"
