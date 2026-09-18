@@ -1,0 +1,319 @@
+"""Demo-only one-contract maker experiment with queue and markout evidence."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from decimal import Decimal
+from fractions import Fraction
+import argparse
+import json
+import os
+from pathlib import Path
+import sqlite3
+import time
+import uuid
+
+from .kalshi_binary_broker import BinaryDemoBroker
+from .kalshi_binary_journal import BinaryJournal
+from .kalshi_demo_broker import DemoClient, check_exchange
+from .kalshi_demo_market_data import DemoMarkets
+from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame, select_markets
+from .kalshi_maker_v5 import maker_quote
+from .kalshi_process_lock import acquire
+from .kalshi_shadow import cost, price_book
+
+
+STRATEGY_ID = "stable_balanced_maker_v5"
+CAPITAL_LIMIT_CENTS = 160
+ORDER_LIMIT_CENTS = 110
+DAILY_LOSS_CENTS = 100
+FEE_RESERVE_CENTS = 5
+QUOTE_TTL_SECONDS = 90
+MAX_HOLD_SECONDS = 300
+MARKOUT_HORIZONS = (5, 30, 300)
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+class MakerState:
+    def __init__(self, path):
+        self.db = sqlite3.connect(path, isolation_level=None, timeout=30)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.executescript("""
+          CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY,detail TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS history(at REAL NOT NULL,ticker TEXT NOT NULL,mid TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS intent_meta(
+            client_id TEXT PRIMARY KEY,kind TEXT NOT NULL,event_id TEXT NOT NULL,
+            ticker TEXT NOT NULL,outcome TEXT NOT NULL,created_at REAL NOT NULL);
+          CREATE TABLE IF NOT EXISTS entered_events(event_id TEXT PRIMARY KEY,entered_at REAL NOT NULL);
+          CREATE TABLE IF NOT EXISTS maker_fills(
+            client_id TEXT PRIMARY KEY,ticker TEXT NOT NULL,outcome TEXT NOT NULL,
+            filled_at REAL NOT NULL,entry_mid TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS queue_records(
+            client_id TEXT NOT NULL,at REAL NOT NULL,detail TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS flow_context(
+            client_id TEXT PRIMARY KEY,detail TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS markouts(
+            client_id TEXT NOT NULL,horizon_seconds INTEGER NOT NULL,at REAL NOT NULL,
+            midpoint TEXT NOT NULL,PRIMARY KEY(client_id,horizon_seconds));
+          CREATE TABLE IF NOT EXISTS actions(at REAL NOT NULL,ticker TEXT,detail TEXT NOT NULL);
+        """)
+        protocol = {
+            "strategy_id": STRATEGY_ID, "environment": "demo", "one_contract": True,
+            "capital_limit_cents": CAPITAL_LIMIT_CENTS, "order_limit_cents": ORDER_LIMIT_CENTS,
+            "daily_loss_cents": DAILY_LOSS_CENTS, "quote_ttl_seconds": QUOTE_TTL_SECONDS,
+            "max_hold_seconds": MAX_HOLD_SECONDS, "markout_horizons": list(MARKOUT_HORIZONS),
+        }
+        saved = self.load("protocol")
+        if saved is not None and saved != protocol:
+            raise ValueError("maker_protocol_changed")
+        self.save("protocol", protocol)
+
+    def save(self, name, value):
+        self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)",
+                        (name, json.dumps(value, sort_keys=True)))
+
+    def load(self, name, default=None):
+        row = self.db.execute("SELECT detail FROM settings WHERE name=?", (name,)).fetchone()
+        return json.loads(row[0]) if row else default
+
+    def record(self, ticker, detail):
+        self.db.execute("INSERT INTO actions VALUES(?,?,?)", (time.time(), ticker, json.dumps(detail)))
+
+    def close(self):
+        self.db.close()
+
+
+def log_event(event, **values):
+    print(json.dumps({"at": now_iso(), "event": event, "environment": "demo",
+                      "strategy_id": STRATEGY_ID, **values}, sort_keys=True), flush=True)
+
+
+def recover(journal, broker):
+    for row in journal.records():
+        cid = row["payload"]["client_order_id"]
+        if row["state"] == "reserved":
+            journal.abandon_reserved(cid)
+        elif row["state"] == "uncertain":
+            row = broker.refresh(cid)
+        if row["state"] == "working":
+            broker.cancel(cid)
+    broker.reconcile_positions(allow_reserved=True)
+
+
+def submit(state, journal, broker, markets, market, outcome, action, price_cents, *, maker=False, context=None):
+    client_id = "v5-maker-" + uuid.uuid4().hex
+    kind = "maker_entry" if maker else "exit"
+    at = time.time()
+    state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
+                     (client_id, kind, event_id(market), market["ticker"], outcome, at))
+    if maker:
+        if not isinstance(context, dict):
+            raise ValueError("maker_flow_context_required")
+        state.db.execute("INSERT INTO flow_context VALUES(?,?)", (client_id, json.dumps(context, sort_keys=True)))
+    snapshot = broker.snapshot()
+    journal.reserve(client_id, market["ticker"], 1, price_cents, FEE_RESERVE_CENTS,
+                    outcome=outcome, action=action, account_snapshot=snapshot,
+                    order_mode="post_only_gtc" if maker else "ioc")
+    try:
+        result = broker.submit(client_id, quote_provider=markets.quote)
+    except Exception:
+        if journal.get(client_id)["state"] == "reserved":
+            journal.abandon_reserved(client_id)
+        raise
+    if not maker and result["state"] == "working":
+        result = broker.cancel(client_id)
+    state.record(market["ticker"], {"action": kind, "outcome": outcome,
+                                    "client_order_id": client_id, "state": result["state"],
+                                    "filled": result["filled"], "environment": "demo"})
+    return result
+
+
+def working_order(journal):
+    rows = [row for row in journal.records() if row["state"] == "working"]
+    if len(rows) > 1:
+        raise ValueError("multiple_working_orders")
+    return rows[0] if rows else None
+
+
+def midpoint(frame):
+    bid, ask, _bid_size, _ask_size = price_book(frame, "yes")
+    return (bid + ask) / 2
+
+
+def register_fill(state, record, frame):
+    if record["filled"] != 1:
+        return
+    cid = record["payload"]["client_order_id"]
+    meta = state.db.execute("SELECT event_id,ticker,outcome,created_at FROM intent_meta WHERE client_id=?",
+                            (cid,)).fetchone()
+    if meta is None:
+        raise ValueError("maker_fill_metadata_missing")
+    state.db.execute("INSERT OR IGNORE INTO entered_events VALUES(?,?)", (meta[0], meta[3]))
+    state.db.execute("INSERT OR IGNORE INTO maker_fills VALUES(?,?,?,?,?)",
+                     (cid, meta[1], meta[2], time.time(), str(midpoint(frame))))
+
+
+def current_position(journal, state):
+    accounting = journal.accounting()
+    if len(accounting["positions"]) > 1 or any(abs(value) != 1 for value in accounting["positions"].values()):
+        raise ValueError("demo_inventory_limit_breached")
+    if not accounting["positions"]:
+        return None, accounting
+    ticker, signed = next(iter(accounting["positions"].items()))
+    outcome = "yes" if signed > 0 else "no"
+    row = state.db.execute(
+        "SELECT event_id,created_at FROM intent_meta WHERE ticker=? AND outcome=? AND kind='maker_entry' "
+        "ORDER BY created_at DESC LIMIT 1", (ticker, outcome)).fetchone()
+    if row is None:
+        raise ValueError("position_metadata_missing")
+    return {"ticker": ticker, "outcome": outcome, "event_id": row[0], "opened_at": row[1],
+            "basis_cents": float(accounting["open_basis"] * 100)}, accounting
+
+
+def record_due_markouts(state, ticker, frame):
+    now = time.time(); mid = str(midpoint(frame))
+    for cid, filled_at in state.db.execute(
+            "SELECT client_id,filled_at FROM maker_fills WHERE ticker=?", (ticker,)).fetchall():
+        for horizon in MARKOUT_HORIZONS:
+            if now - filled_at >= horizon:
+                state.db.execute("INSERT OR IGNORE INTO markouts VALUES(?,?,?,?)",
+                                 (cid, horizon, now, mid))
+
+
+def pending_markout_ticker(state):
+    for cid, ticker, filled_at in state.db.execute(
+            "SELECT client_id,ticker,filled_at FROM maker_fills ORDER BY filled_at"):
+        count = state.db.execute("SELECT count(*) FROM markouts WHERE client_id=?", (cid,)).fetchone()[0]
+        if count < len(MARKOUT_HORIZONS):
+            return ticker
+    return None
+
+
+def evidence(state, journal):
+    maker = [row for row in journal.records() if row["intent"].get("order_mode") == "post_only_gtc"]
+    sides = {side: state.db.execute(
+        "SELECT count(*) FROM intent_meta WHERE kind='maker_entry' AND outcome=?", (side,)).fetchone()[0]
+        for side in ("yes", "no")}
+    fills = state.db.execute("SELECT count(*) FROM maker_fills").fetchone()[0]
+    fee_records = 0
+    for row in maker:
+        if not row["filled"]:
+            continue
+        found = journal.db.execute("SELECT detail FROM broker_evidence WHERE client_id=?",
+                                   (row["payload"]["client_order_id"],)).fetchone()
+        if found is not None and "fees_dollars" in json.loads(found[0]):
+            fee_records += 1
+    marks = {str(h): state.db.execute(
+        "SELECT count(*) FROM markouts WHERE horizon_seconds=?", (h,)).fetchone()[0]
+        for h in MARKOUT_HORIZONS}
+    return {
+        "environment": "demo", "post_only": True,
+        "markets": state.db.execute("SELECT count(DISTINCT ticker) FROM intent_meta WHERE kind='maker_entry'").fetchone()[0],
+        "post_only_attempts": len(maker), "terminal_orders": sum(r["state"] == "terminal" for r in maker),
+        "queue_position_records": state.db.execute("SELECT count(DISTINCT client_id) FROM queue_records").fetchone()[0],
+        "maker_fills": fills, "actual_fee_records": fee_records,
+        "flow_context_records": state.db.execute(
+            "SELECT count(*) FROM maker_fills JOIN flow_context USING(client_id)").fetchone()[0],
+        "markout_records": marks, "side_attempts": sides,
+        "unresolved_orders": sum(r["state"] in ("uncertain", "working") for r in maker),
+        "ending_position_contracts": sum(abs(v) for v in journal.accounting()["positions"].values()),
+    }
+
+
+def write_status(path, state, journal, **values):
+    payload = {"at": now_iso(), "environment": "demo", "production_execution_enabled": False,
+               "strategy_id": STRATEGY_ID, "evidence": evidence(state, journal), **values}
+    temp = path.with_suffix(".tmp"); temp.write_text(json.dumps(payload, indent=2) + "\n")
+    temp.replace(path)
+
+
+def run(data_root, *, cycles=None):
+    root = Path(data_root).resolve(); root.mkdir(parents=True, exist_ok=True)
+    lock = acquire(root / "worker.lock"); state = MakerState(root / "worker.sqlite3")
+    journal = BinaryJournal(root / "journal.sqlite3", order_limit_cents=ORDER_LIMIT_CENTS,
+                            capital_limit_cents=CAPITAL_LIMIT_CENTS, daily_loss_cents=DAILY_LOSS_CENTS)
+    client = DemoClient(os.environ["KALSHI_DEMO_API_KEY_ID"], os.environ["KALSHI_DEMO_PRIVATE_KEY_PATH"])
+    markets = DemoMarkets(); broker = BinaryDemoBroker(journal, client)
+    cohort = state.load("cohort", []); cohort_at = state.load("cohort_at", 0)
+    scan = int(state.load("scan", 0)); cycle = 0
+    try:
+        check_exchange(client); recover(journal, broker)
+        log_event("worker_started", production_execution_enabled=False)
+        while cycles is None or cycle < cycles:
+            errors = []
+            try:
+                position, accounting = current_position(journal, state)
+                active = working_order(journal)
+                if time.time() - cohort_at >= 1800 or not cohort:
+                    cohort = select_markets(markets, now=time.time())
+                    if not cohort: raise ValueError("no_eligible_demo_markets")
+                    cohort_at = time.time(); state.save("cohort", cohort); state.save("cohort_at", cohort_at)
+                if active:
+                    cid = active["payload"]["client_order_id"]
+                    queue = client.request("GET", "/portfolio/orders/" + active["broker_id"] + "/queue_position")
+                    state.db.execute("INSERT INTO queue_records VALUES(?,?,?)", (cid, time.time(), json.dumps(queue)))
+                    refreshed = broker.refresh(cid)
+                    ticker = active["payload"]["ticker"]
+                    if refreshed["state"] == "working" and time.time() - state.db.execute(
+                            "SELECT created_at FROM intent_meta WHERE client_id=?", (cid,)).fetchone()[0] >= QUOTE_TTL_SECONDS:
+                        refreshed = broker.cancel(cid)
+                    if refreshed["filled"]:
+                        quote = markets.quote({"ticker": ticker}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
+                        register_fill(state, refreshed, frame); record_due_markouts(state, ticker, frame)
+                elif position:
+                    raw, _a, _b = markets.get(position["ticker"]); market = raw["market"]
+                    quote = markets.quote({"ticker": position["ticker"]}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
+                    record_due_markouts(state, position["ticker"], frame)
+                    bid, _ask, _bs, _as = price_book(frame, position["outcome"])
+                    proceeds = cost(bid, Decimal(".07"), 1, False); net = proceeds - position["basis_cents"]
+                    if net <= -12 or time.time() - position["opened_at"] >= MAX_HOLD_SECONDS:
+                        price = limit_price_cents(frame, position["outcome"], "sell")
+                        submit(state, journal, broker, markets, market, position["outcome"], "sell", price)
+                else:
+                    pending = pending_markout_ticker(state)
+                    if pending:
+                        quote = markets.quote({"ticker": pending}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
+                        record_due_markouts(state, pending, frame)
+                    else:
+                        market = cohort[scan % len(cohort)]; scan += 1; state.save("scan", scan)
+                        quote = markets.quote({"ticker": market["ticker"]}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
+                        rows = state.db.execute("SELECT at,mid FROM history WHERE ticker=? AND at>=? ORDER BY at",
+                                                (market["ticker"], time.time() - 300)).fetchall()
+                        preferred = "yes" if state.db.execute(
+                            "SELECT count(*) FROM intent_meta WHERE kind='maker_entry'").fetchone()[0] % 2 == 0 else "no"
+                        signal = maker_quote([(at, Fraction(mid)) for at, mid in rows], frame, preferred)
+                        locked = state.db.execute("SELECT 1 FROM entered_events WHERE event_id=?", (event_id(market),)).fetchone()
+                        if signal and not locked:
+                            result = submit(state, journal, broker, markets, market, signal["side"], "buy",
+                                            signal["price_cents"], maker=True, context=signal)
+                            if result["filled"]:
+                                register_fill(state, result, frame)
+                        state.db.execute("INSERT INTO history VALUES(?,?,?)",
+                                         (frame["received_at"], market["ticker"], str(midpoint(frame))))
+                        state.db.execute("DELETE FROM history WHERE at<?", (time.time() - 300,))
+                snapshot = broker.snapshot() if not working_order(journal) else None
+                write_status(root / "status.json", state, journal, phase="running", errors=[],
+                             demo_balance_cents=(snapshot or {}).get("balance", {}).get("balance"),
+                             open_positions=len(accounting["positions"]), cohort_size=len(cohort))
+                if cycle % 30 == 0: log_event("worker_heartbeat", **evidence(state, journal))
+            except Exception as exc:
+                errors.append(type(exc).__name__); state.record(None, {"action": "cycle_error", "error_type": type(exc).__name__})
+                write_status(root / "status.json", state, journal, phase="blocked", errors=errors)
+                log_event("worker_blocked", errors=errors)
+                if any(row["state"] == "uncertain" for row in journal.records()): journal.stop(); raise
+            cycle += 1
+            if cycles is None or cycle < cycles: time.sleep(2)
+    finally:
+        journal.close(); state.close(); lock.close()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-root", default="/var/data/kalshi-demo-v5")
+    parser.add_argument("--cycles", type=int)
+    args = parser.parse_args(argv); run(args.data_root, cycles=args.cycles)
+
+
+if __name__ == "__main__": main()
