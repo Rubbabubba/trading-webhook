@@ -183,6 +183,16 @@ def test_cancel_timeout_and_stale_read_block_new_entries(scenario):
     assert j.get("one")["state"] == "uncertain"
 
 
+def test_cancel_404_reconciles_terminal_order_instead_of_crashing(scenario):
+    j, exchange, broker = scenario
+    exchange.order = order(status="resting", filled=0, remaining=2)
+    exchange.fills = []
+    assert broker.submit("one")["state"] == "working"
+    exchange.order = order(status="canceled", filled=0, remaining=0)
+    exchange.cancel_error = BrokerError(404)
+    assert broker.cancel("one")["state"] == "terminal"
+
+
 def test_duplicate_fills_deduplicate_and_changed_history_stops(scenario):
     j, exchange, broker = scenario
     exchange.fills *= 2

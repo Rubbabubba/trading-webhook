@@ -186,7 +186,7 @@ def recover(journal, broker):
         cid = row["payload"]["client_order_id"]
         if row["state"] == "reserved":
             journal.abandon_reserved(cid)
-        elif row["state"] == "uncertain":
+        elif row["state"] in ("uncertain", "working"):
             row = broker.refresh(cid)
         if row["state"] == "working":
             broker.cancel(cid)

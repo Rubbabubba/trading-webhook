@@ -301,8 +301,15 @@ class DemoBroker:
         record = self.journal.get(client_id)
         self.journal.mark_cancel_started(client_id)
         # A DELETE timeout stays uncertain. A cancellation ACK never implies no fills.
-        self.client.request("DELETE", CREATE + "/" + identifier(record["broker_id"]),
-                            params={"market_ticker": record["payload"]["ticker"]})
+        try:
+            self.client.request("DELETE", CREATE + "/" + identifier(record["broker_id"]),
+                                params={"market_ticker": record["payload"]["ticker"]})
+        except BrokerError as error:
+            # The order may have become terminal between the last read and DELETE.
+            # A 404 proves nothing by itself; the normal refresh path must locate
+            # and validate the active or archived order before resolving state.
+            if error.status != 404:
+                raise
         return self.refresh(client_id)
 
     def reconcile_positions(self, *, allow_reserved=False):
