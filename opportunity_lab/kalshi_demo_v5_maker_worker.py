@@ -406,7 +406,15 @@ def run(data_root, *, cycles=None):
                                                     (market["ticker"], time.time() - 300)).fetchall()
                             preferred = "yes" if state.db.execute(
                                 "SELECT count(*) FROM intent_meta WHERE kind='maker_entry'").fetchone()[0] % 2 == 0 else "no"
-                            signal = maker_quote([(at, Fraction(mid)) for at, mid in rows], frame, preferred)
+                            try:
+                                observed_midpoint = midpoint(frame)
+                                signal = maker_quote([(at, Fraction(mid)) for at, mid in rows], frame, preferred)
+                            except ValueError as error:
+                                if str(error) != "missing_book":
+                                    raise
+                                frame = None
+                                state.record(market["ticker"], {"action": "scan_skip", "reason": "missing_book"})
+                        if frame is not None:
                             locked = state.db.execute("SELECT 1 FROM entered_events WHERE event_id=?", (event_id(market),)).fetchone()
                             if signal and not locked:
                                 result = submit(state, journal, broker, markets, market, signal["side"], "buy",
@@ -414,7 +422,7 @@ def run(data_root, *, cycles=None):
                                 if result["filled"]:
                                     register_fill(state, result, frame)
                             state.db.execute("INSERT INTO history VALUES(?,?,?)",
-                                             (frame["received_at"], market["ticker"], str(midpoint(frame))))
+                                             (frame["received_at"], market["ticker"], str(observed_midpoint)))
                             state.db.execute("DELETE FROM history WHERE at<?", (time.time() - 300,))
                 snapshot = broker.snapshot() if not working_order(journal) else None
                 write_status(root / "status.json", state, journal, phase="running", errors=[],
