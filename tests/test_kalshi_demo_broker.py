@@ -279,6 +279,7 @@ def transport(tmp_path):
 
 
 @pytest.mark.parametrize("method,path", [("POST", CREATE), ("GET", "/portfolio/orders/broker"),
+                                        ("GET", "/portfolio/orders/broker/queue_position"),
                                         ("DELETE", CREATE + "/broker")])
 def test_demo_only_host_and_signature_excludes_query(transport, method, path):
     def opened(request, **kwargs):
@@ -307,7 +308,8 @@ def test_only_reads_retry_and_errors_are_sanitized(transport, method, expected):
 
 
 @pytest.mark.parametrize("path", ["https://external-api.kalshi.com", "/portfolio/orders/../balance",
-    "/portfolio/orders/id?secret=value", "/portfolio/orders/id/extra"])
+    "/portfolio/orders/id?secret=value", "/portfolio/orders/id/extra",
+    "/portfolio/orders/id/queue_position/extra"])
 def test_unapproved_paths_rejected(transport, path):
     with pytest.raises(ValueError, match="endpoint_not_allowed"):
         transport.request("GET", path)

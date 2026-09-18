@@ -104,13 +104,16 @@ class DemoClient:
         self.clock, self.sleep, self.next_request = clock, sleep, 0.0
 
     def request(self, method, path, *, params=None, body=None):
-        order_read = path.startswith("/portfolio/orders/") and IDENTIFIER.fullmatch(path.rsplit("/", 1)[-1])
+        order_read = re.fullmatch(r"/portfolio/orders/([A-Za-z0-9_-]{1,128})", path)
+        queue_position_read = re.fullmatch(
+            r"/portfolio/orders/([A-Za-z0-9_-]{1,128})/queue_position", path
+        )
         order_cancel = path.startswith(CREATE + "/") and IDENTIFIER.fullmatch(path.rsplit("/", 1)[-1])
-        allowed = ((method == "GET" and (path in READS or order_read))
+        allowed = ((method == "GET" and (path in READS or order_read or queue_position_read))
                    or (method == "POST" and path == CREATE)
                    or (method == "DELETE" and order_cancel))
         # Exact path shape prevents arbitrary paths, query injection and redirects.
-        if not allowed or (order_read and path.count("/") != 3) or (order_cancel and path.count("/") != 4):
+        if not allowed or (order_cancel and path.count("/") != 4):
             raise ValueError("endpoint_not_allowed")
         if method != "POST" and body is not None:
             raise ValueError("unexpected_request_body")
