@@ -32,6 +32,7 @@ QUOTE_TTL_SECONDS = 90
 MAX_HOLD_SECONDS = 300
 MARKOUT_HORIZONS = (5, 30, 300)
 COHORT_SELECTOR = "diverse_game_markets_v1"
+ZERO_FILL_RECOVERY = "v5_three_attempt_zero_fill_recovery_20260918"
 MAKER_SERIES = (
     "KXMLBGAME",
     "KXNFLGAME",
@@ -191,7 +192,7 @@ def safe_cycle_error(error):
     return type(error).__name__
 
 
-def recover(journal, broker):
+def recover(state, journal, broker):
     for row in journal.records():
         cid = row["payload"]["client_order_id"]
         if row["state"] == "reserved":
@@ -201,6 +202,17 @@ def recover(journal, broker):
         if row["state"] == "working":
             broker.cancel(cid)
     broker.reconcile_positions(allow_reserved=True)
+    stopped = journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0]
+    records = journal.records()
+    if stopped and state.load(ZERO_FILL_RECOVERY) is None:
+        maker = [row for row in records if row["intent"].get("order_mode") == "post_only_gtc"]
+        accounting = journal.accounting()
+        if (len(records) == len(maker) == 3 and all(row["state"] == "terminal" for row in maker)
+                and all(row["filled"] == 0 for row in maker) and not accounting["positions"]):
+            journal.db.execute("UPDATE controls SET stopped=0 WHERE id=1")
+            state.save(ZERO_FILL_RECOVERY, True)
+            state.record(None, {"action": "verified_zero_fill_stop_recovery",
+                                "attempts": 3, "environment": "demo"})
 
 
 def submit(state, journal, broker, markets, market, outcome, action, price_cents, *, maker=False, context=None):
@@ -343,7 +355,7 @@ def run(data_root, *, cycles=None):
         state.save("cohort_selector", COHORT_SELECTOR)
     scan = int(state.load("scan", 0)); cycle = 0
     try:
-        check_exchange(client); recover(journal, broker)
+        check_exchange(client); recover(state, journal, broker)
         log_event("worker_started", production_execution_enabled=False)
         while cycles is None or cycle < cycles:
             errors = []
@@ -381,21 +393,29 @@ def run(data_root, *, cycles=None):
                         record_due_markouts(state, pending, frame)
                     else:
                         market = cohort[scan % len(cohort)]; scan += 1; state.save("scan", scan)
-                        quote = markets.quote({"ticker": market["ticker"]}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
-                        rows = state.db.execute("SELECT at,mid FROM history WHERE ticker=? AND at>=? ORDER BY at",
-                                                (market["ticker"], time.time() - 300)).fetchall()
-                        preferred = "yes" if state.db.execute(
-                            "SELECT count(*) FROM intent_meta WHERE kind='maker_entry'").fetchone()[0] % 2 == 0 else "no"
-                        signal = maker_quote([(at, Fraction(mid)) for at, mid in rows], frame, preferred)
-                        locked = state.db.execute("SELECT 1 FROM entered_events WHERE event_id=?", (event_id(market),)).fetchone()
-                        if signal and not locked:
-                            result = submit(state, journal, broker, markets, market, signal["side"], "buy",
-                                            signal["price_cents"], maker=True, context=signal)
-                            if result["filled"]:
-                                register_fill(state, result, frame)
-                        state.db.execute("INSERT INTO history VALUES(?,?,?)",
-                                         (frame["received_at"], market["ticker"], str(midpoint(frame))))
-                        state.db.execute("DELETE FROM history WHERE at<?", (time.time() - 300,))
+                        try:
+                            quote = markets.quote({"ticker": market["ticker"]})
+                            frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
+                        except ValueError as error:
+                            if str(error) != "missing_book":
+                                raise
+                            frame = None
+                            state.record(market["ticker"], {"action": "scan_skip", "reason": "missing_book"})
+                        if frame is not None:
+                            rows = state.db.execute("SELECT at,mid FROM history WHERE ticker=? AND at>=? ORDER BY at",
+                                                    (market["ticker"], time.time() - 300)).fetchall()
+                            preferred = "yes" if state.db.execute(
+                                "SELECT count(*) FROM intent_meta WHERE kind='maker_entry'").fetchone()[0] % 2 == 0 else "no"
+                            signal = maker_quote([(at, Fraction(mid)) for at, mid in rows], frame, preferred)
+                            locked = state.db.execute("SELECT 1 FROM entered_events WHERE event_id=?", (event_id(market),)).fetchone()
+                            if signal and not locked:
+                                result = submit(state, journal, broker, markets, market, signal["side"], "buy",
+                                                signal["price_cents"], maker=True, context=signal)
+                                if result["filled"]:
+                                    register_fill(state, result, frame)
+                            state.db.execute("INSERT INTO history VALUES(?,?,?)",
+                                             (frame["received_at"], market["ticker"], str(midpoint(frame))))
+                            state.db.execute("DELETE FROM history WHERE at<?", (time.time() - 300,))
                 snapshot = broker.snapshot() if not working_order(journal) else None
                 write_status(root / "status.json", state, journal, phase="running", errors=[],
                              demo_balance_cents=(snapshot or {}).get("balance", {}).get("balance"),
