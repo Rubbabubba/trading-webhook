@@ -105,6 +105,28 @@ def select_maker_markets(markets, *, now, limit=16):
     return selected
 
 
+def refresh_cohort(state, markets, cohort, cohort_at, *, now):
+    """Refresh the scan cohort without discarding a previously valid cohort.
+
+    Demo market-list responses occasionally exceed the strict freshness bound.
+    A failed refresh must not turn that transient read failure into a two-second
+    error loop; fresh per-market books still validate every later signal.
+    """
+    if cohort and now - cohort_at < 1800:
+        return cohort, cohort_at
+    refreshed = select_maker_markets(markets, now=now)
+    if refreshed:
+        state.save("cohort", refreshed)
+        state.save("cohort_at", now)
+        return refreshed, now
+    if cohort:
+        retry_at = now - 1500  # keep scanning and retry discovery in five minutes
+        state.save("cohort_at", retry_at)
+        state.record(None, {"action": "cohort_refresh_deferred", "existing": len(cohort)})
+        return cohort, retry_at
+    raise ValueError("no_eligible_demo_markets")
+
+
 class MakerState:
     def __init__(self, path):
         self.db = sqlite3.connect(path, isolation_level=None, timeout=30)
@@ -318,10 +340,9 @@ def run(data_root, *, cycles=None):
             try:
                 position, accounting = current_position(journal, state)
                 active = working_order(journal)
-                if time.time() - cohort_at >= 1800 or not cohort:
-                    cohort = select_maker_markets(markets, now=time.time())
-                    if not cohort: raise ValueError("no_eligible_demo_markets")
-                    cohort_at = time.time(); state.save("cohort", cohort); state.save("cohort_at", cohort_at)
+                cohort, cohort_at = refresh_cohort(
+                    state, markets, cohort, cohort_at, now=time.time()
+                )
                 if active:
                     cid = active["payload"]["client_order_id"]
                     queue = client.request("GET", "/portfolio/orders/" + active["broker_id"] + "/queue_position")

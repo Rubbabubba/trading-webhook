@@ -6,6 +6,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     MakerState,
     current_position,
     evidence,
+    refresh_cohort,
     select_maker_markets,
 )
 
@@ -78,3 +79,28 @@ def test_maker_selector_queries_each_series_and_enforces_event_diversity():
     assert markets.series == list(MAKER_SERIES)
     assert [row["ticker"] for row in result] == ["MLB-A", "NFL-A", "FED-A"]
     assert len({row["event_ticker"] for row in result}) == len(result)
+
+
+class FakeState:
+    def __init__(self):
+        self.saved = {}
+        self.actions = []
+
+    def save(self, name, value):
+        self.saved[name] = value
+
+    def record(self, ticker, detail):
+        self.actions.append((ticker, detail))
+
+
+def test_failed_discovery_refresh_keeps_existing_cohort_and_backs_off():
+    state = FakeState()
+    markets = FakeMarkets({})
+    existing = [candidate("MLB-A", "GAME-1")]
+    cohort, cohort_at = refresh_cohort(
+        state, markets, existing, 100.0, now=2000.0
+    )
+    assert cohort == existing
+    assert cohort_at == 500.0
+    assert state.saved["cohort_at"] == 500.0
+    assert state.actions[-1][1]["action"] == "cohort_refresh_deferred"
