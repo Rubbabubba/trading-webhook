@@ -32,7 +32,7 @@ QUOTE_TTL_SECONDS = 90
 MAX_HOLD_SECONDS = 300
 MARKOUT_HORIZONS = (5, 30, 300)
 COHORT_SELECTOR = "diverse_game_markets_v1"
-ZERO_FILL_RECOVERY = "v5_three_attempt_zero_fill_recovery_20260918"
+ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 MAKER_SERIES = (
     "KXMLBGAME",
     "KXNFLGAME",
@@ -207,12 +207,12 @@ def recover(state, journal, broker):
     if stopped and state.load(ZERO_FILL_RECOVERY) is None:
         maker = [row for row in records if row["intent"].get("order_mode") == "post_only_gtc"]
         accounting = journal.accounting()
-        if (len(records) == len(maker) == 3 and all(row["state"] == "terminal" for row in maker)
+        if (len(records) == len(maker) >= 3 and all(row["state"] == "terminal" for row in maker)
                 and all(row["filled"] == 0 for row in maker) and not accounting["positions"]):
             journal.db.execute("UPDATE controls SET stopped=0 WHERE id=1")
             state.save(ZERO_FILL_RECOVERY, True)
             state.record(None, {"action": "verified_zero_fill_stop_recovery",
-                                "attempts": 3, "environment": "demo"})
+                                "attempts": len(maker), "environment": "demo"})
 
 
 def submit(state, journal, broker, markets, market, outcome, action, price_cents, *, maker=False, context=None):
