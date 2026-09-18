@@ -1,7 +1,13 @@
 from datetime import datetime, timezone
 
 from opportunity_lab.kalshi_binary_journal import BinaryJournal
-from opportunity_lab.kalshi_demo_v5_maker_worker import MakerState, current_position, evidence
+from opportunity_lab.kalshi_demo_v5_maker_worker import (
+    MAKER_SERIES,
+    MakerState,
+    current_position,
+    evidence,
+    select_maker_markets,
+)
 
 
 def snapshot(cash=50000):
@@ -36,3 +42,39 @@ def test_current_position_requires_matching_maker_metadata(tmp_path):
         assert position is None and accounting["positions"] == {}
     finally:
         journal.close(); state.close()
+
+
+class FakeMarkets:
+    def __init__(self, rows):
+        self.rows = rows
+        self.series = []
+
+    def get(self, *, params):
+        self.series.append(params["series_ticker"])
+        return {"markets": self.rows.get(params["series_ticker"], [])}, 1.0, 1.1
+
+
+def candidate(ticker, event, *, bid=".40", ask=".44", bid_size="20", ask_size="18", volume="1"):
+    return {
+        "ticker": ticker, "event_ticker": event, "status": "active",
+        "market_type": "binary", "exchange_index": 0,
+        "close_time": "2030-01-01T00:00:00Z", "yes_bid_dollars": bid,
+        "yes_ask_dollars": ask, "yes_bid_size_fp": bid_size,
+        "yes_ask_size_fp": ask_size, "volume_24h_fp": volume,
+    }
+
+
+def test_maker_selector_queries_each_series_and_enforces_event_diversity():
+    rows = {
+        "KXMLBGAME": [candidate("MLB-A", "GAME-1", volume="10"),
+                       candidate("MLB-B", "GAME-1", volume="9")],
+        "KXNFLGAME": [candidate("NFL-A", "GAME-2", volume="8")],
+        "KXNCAAFGAME": [candidate("NCAAF-WIDE", "GAME-3", bid=".30", ask=".50")],
+        "KXEPLGAME": [candidate("EPL-THIN", "GAME-4", bid_size="1")],
+        "KXFEDDECISION": [candidate("FED-A", "FED-1", volume="7")],
+    }
+    markets = FakeMarkets(rows)
+    result = select_maker_markets(markets, now=1_700_000_000)
+    assert markets.series == list(MAKER_SERIES)
+    assert [row["ticker"] for row in result] == ["MLB-A", "NFL-A", "FED-A"]
+    assert len({row["event_ticker"] for row in result}) == len(result)

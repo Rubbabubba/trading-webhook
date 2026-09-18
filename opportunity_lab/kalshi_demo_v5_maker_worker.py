@@ -16,7 +16,7 @@ from .kalshi_binary_broker import BinaryDemoBroker
 from .kalshi_binary_journal import BinaryJournal
 from .kalshi_demo_broker import DemoClient, check_exchange
 from .kalshi_demo_market_data import DemoMarkets
-from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame, select_markets
+from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame
 from .kalshi_maker_v5 import maker_quote
 from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
@@ -30,10 +30,79 @@ FEE_RESERVE_CENTS = 5
 QUOTE_TTL_SECONDS = 90
 MAX_HOLD_SECONDS = 300
 MARKOUT_HORIZONS = (5, 30, 300)
+COHORT_SELECTOR = "diverse_game_markets_v1"
+MAKER_SERIES = (
+    "KXMLBGAME",
+    "KXNFLGAME",
+    "KXNCAAFGAME",
+    "KXEPLGAME",
+    "KXFEDDECISION",
+)
 
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+def select_maker_markets(markets, *, now, limit=16):
+    """Select liquid-looking contracts while enforcing event diversity.
+
+    The exact signal still uses a fresh order book. Top-of-book fields here are
+    only a cheap prefilter that keeps the scan focused and prevents one series or
+    one event from consuming the entire cohort.
+    """
+    candidates = []
+    for series in MAKER_SERIES:
+        try:
+            page, _started, _observed = markets.get(params={
+                "status": "open", "limit": 200, "mve_filter": "exclude",
+                "series_ticker": series,
+            })
+        except ValueError:
+            continue
+        for market in page.get("markets", []):
+            if (market.get("status") != "active" or market.get("market_type") != "binary"
+                    or market.get("exchange_index", 0) != 0):
+                continue
+            try:
+                close = datetime.fromisoformat(
+                    market["close_time"].replace("Z", "+00:00")
+                ).timestamp()
+                bid = Decimal(str(market.get("yes_bid_dollars") or "0"))
+                ask = Decimal(str(market.get("yes_ask_dollars") or "0"))
+                bid_size = Decimal(str(market.get("yes_bid_size_fp") or "0"))
+                ask_size = Decimal(str(market.get("yes_ask_size_fp") or "0"))
+                volume = Decimal(str(
+                    market.get("volume_24h_fp") or market.get("volume_24h") or "0"
+                ))
+            except (KeyError, ValueError, ArithmeticError):
+                continue
+            if close <= now + 1800:
+                continue
+            midpoint_value = (bid + ask) / 2
+            spread = ask - bid
+            if not Decimal(".20") <= midpoint_value <= Decimal(".80"):
+                continue
+            if not Decimal(".03") <= spread <= Decimal(".08"):
+                continue
+            if min(bid_size, ask_size) < 3:
+                continue
+            if max(bid_size, ask_size) > min(bid_size, ask_size) * 2:
+                continue
+            candidates.append((volume, min(bid_size, ask_size), spread, market))
+
+    candidates.sort(key=lambda row: (-row[0], -row[1], -row[2], row[3]["ticker"]))
+    selected = []
+    selected_events = set()
+    for _volume, _depth, _spread, market in candidates:
+        identity = event_id(market)
+        if identity in selected_events:
+            continue
+        selected.append(market)
+        selected_events.add(identity)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 class MakerState:
@@ -237,6 +306,9 @@ def run(data_root, *, cycles=None):
     client = DemoClient(os.environ["KALSHI_DEMO_API_KEY_ID"], os.environ["KALSHI_DEMO_PRIVATE_KEY_PATH"])
     markets = DemoMarkets(); broker = BinaryDemoBroker(journal, client)
     cohort = state.load("cohort", []); cohort_at = state.load("cohort_at", 0)
+    if state.load("cohort_selector") != COHORT_SELECTOR:
+        cohort = []; cohort_at = 0
+        state.save("cohort_selector", COHORT_SELECTOR)
     scan = int(state.load("scan", 0)); cycle = 0
     try:
         check_exchange(client); recover(journal, broker)
@@ -247,7 +319,7 @@ def run(data_root, *, cycles=None):
                 position, accounting = current_position(journal, state)
                 active = working_order(journal)
                 if time.time() - cohort_at >= 1800 or not cohort:
-                    cohort = select_markets(markets, now=time.time())
+                    cohort = select_maker_markets(markets, now=time.time())
                     if not cohort: raise ValueError("no_eligible_demo_markets")
                     cohort_at = time.time(); state.save("cohort", cohort); state.save("cohort_at", cohort_at)
                 if active:

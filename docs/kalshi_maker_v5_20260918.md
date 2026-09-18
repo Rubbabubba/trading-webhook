@@ -21,6 +21,9 @@ that this implementation is profitable.
   at least three contracts, and the two top depths are within a 2:1 ratio.
 - Alternate YES and NO attempts. Improve the selected best bid by one cent only
   when the order remains passive.
+- Build a diverse scan cohort from MLB, NFL, college-football, EPL, and Federal
+  Reserve series. Use at most one contract per event so a single event cannot
+  crowd out the prospective sample.
 - Use post-only GTC, record queue position, and cancel an unfilled order after 90
   seconds. A fill is held for the registered 5, 30, and 300 second markouts, with
   a 12-cent emergency loss exit and a 300-second maximum hold.
