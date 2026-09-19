@@ -19,7 +19,10 @@ class BinaryJournal(Journal):
         self.db.executescript('CREATE TABLE IF NOT EXISTS economic_intents(id TEXT PRIMARY KEY,detail TEXT NOT NULL);'
                              'CREATE TABLE IF NOT EXISTS binary_policy(id INTEGER PRIMARY KEY,detail TEXT NOT NULL);'
                              'CREATE TABLE IF NOT EXISTS abandoned_intents('
-                             'id TEXT PRIMARY KEY,payload TEXT NOT NULL,intent TEXT NOT NULL);')
+                             'id TEXT PRIMARY KEY,payload TEXT NOT NULL,intent TEXT NOT NULL);'
+                             'CREATE TABLE IF NOT EXISTS uncertain_quarantine('
+                             'id TEXT PRIMARY KEY,payload TEXT NOT NULL,intent TEXT NOT NULL,'
+                             'evidence TEXT NOT NULL,quarantined_at REAL NOT NULL);')
         try:
             self.bind_environment(self.environment)
             if self.db.execute('SELECT 1 FROM intents LEFT JOIN economic_intents USING(id) WHERE economic_intents.id IS NULL').fetchone():
@@ -140,6 +143,47 @@ class BinaryJournal(Journal):
             self.db.execute('DELETE FROM intents WHERE id=?',(client_id,))
             self.validate_reconciliation();self.db.execute('COMMIT')
             return {'client_order_id':client_id,'state':'abandoned','filled':0}
+        except Exception:
+            if self.db.in_transaction:self.db.execute('ROLLBACK')
+            raise
+
+    def quarantine_uncertain_zero_fill(self, client_id, evidence, *, minimum_age_seconds=43200):
+        """Archive an old demo-only uncertainty after exhaustive negative evidence.
+
+        This is intentionally narrower than reconciliation: it never invents an
+        exchange order or broker ID.  The original intent, submission quote and
+        bounded proof remain durable for later audit.
+        """
+        required_zero = ('current_exact_orders','historical_exact_orders',
+                         'ticker_current_fills','ticker_historical_fills',
+                         'ticker_positions','all_positions','all_resting_orders')
+        if (self.environment != 'demo' or not isinstance(evidence,dict)
+                or evidence.get('environment') != 'demo'
+                or any(evidence.get(key) != 0 for key in required_zero)
+                or type(evidence.get('observed_at')) not in (int,float)):
+            raise ValueError('uncertain_quarantine_evidence_incomplete')
+        now=self.clock().timestamp()
+        if not 0<=now-evidence['observed_at']<=120:
+            raise ValueError('uncertain_quarantine_evidence_stale')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            row=self.db.execute(
+                "SELECT payload FROM intents WHERE id=? AND state='uncertain' "
+                "AND broker_id IS NULL AND filled=0",(client_id,)).fetchone()
+            intent=self.db.execute('SELECT detail FROM economic_intents WHERE id=?',(client_id,)).fetchone()
+            quote=self.db.execute('SELECT detail FROM submission_quotes WHERE client_id=?',(client_id,)).fetchone()
+            if row is None or intent is None or quote is None:
+                raise ValueError('uncertain_quarantine_not_allowed')
+            economic=json.loads(intent[0]); submitted=json.loads(quote[0]).get('observed_at')
+            if (economic.get('order_mode')!='post_only_gtc'
+                    or type(submitted) not in (int,float) or now-submitted<minimum_age_seconds):
+                raise ValueError('uncertain_quarantine_not_allowed')
+            self.db.execute('INSERT INTO uncertain_quarantine VALUES(?,?,?,?,?)',
+                            (client_id,row[0],intent[0],json.dumps(evidence,sort_keys=True),now))
+            self.db.execute('DELETE FROM economic_intents WHERE id=?',(client_id,))
+            self.db.execute('DELETE FROM intents WHERE id=?',(client_id,))
+            self.validate_reconciliation();self.db.execute('COMMIT')
+            return {'client_order_id':client_id,'state':'quarantined_zero_fill','filled':0}
         except Exception:
             if self.db.in_transaction:self.db.execute('ROLLBACK')
             raise

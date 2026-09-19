@@ -35,6 +35,7 @@ COHORT_SELECTOR = "diverse_game_markets_v1"
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
 RECONCILIATION_WAIT_SECONDS = 30
+UNRESOLVED_QUARANTINE_SECONDS = 12 * 60 * 60
 RECONCILIATION_BLOCK_CODES = frozenset({
     "submission_unresolved",
     "fills_not_reconciled",
@@ -207,7 +208,13 @@ def recover(state, journal, broker):
         if row["state"] == "reserved":
             journal.abandon_reserved(cid)
         elif row["state"] in ("uncertain", "working"):
-            row = broker.refresh(cid)
+            try:
+                row = broker.refresh(cid)
+            except ValueError as error:
+                if str(error) != "submission_unresolved" or not quarantine_stale_unresolved(
+                        state, journal, broker, cid):
+                    raise
+                continue
         if row["state"] == "working":
             broker.cancel(cid)
     broker.reconcile_positions(allow_reserved=True)
@@ -222,6 +229,54 @@ def recover(state, journal, broker):
             state.save(ZERO_FILL_RECOVERY, True)
             state.record(None, {"action": "verified_zero_fill_stop_recovery",
                                 "attempts": len(maker), "environment": "demo"})
+
+
+def quarantine_stale_unresolved(state, journal, broker, client_id):
+    """Archive only an old, zero-exposure demo submission with complete proof."""
+    now = journal.clock().timestamp()
+    record = journal.get(client_id)
+    if (record["state"] != "uncertain" or record["broker_id"] is not None
+            or record["filled"] != 0 or record["intent"].get("order_mode") != "post_only_gtc"):
+        return False
+    meta = state.db.execute(
+        "SELECT kind,ticker FROM intent_meta WHERE client_id=?", (client_id,)
+    ).fetchone()
+    quote = journal.db.execute(
+        "SELECT detail FROM submission_quotes WHERE client_id=?", (client_id,)
+    ).fetchone()
+    submitted_at = json.loads(quote[0]).get("observed_at") if quote else None
+    if (meta is None or meta[0] != "maker_entry" or type(submitted_at) not in (int, float)
+            or now - submitted_at < UNRESOLVED_QUARANTINE_SECONDS):
+        return False
+    ticker = meta[1]
+    current = broker.client.pages("/portfolio/orders", "orders", ticker=ticker, subaccount=0)
+    historical = broker.client.pages("/historical/orders", "orders", ticker=ticker)
+    current_fills = broker.client.pages("/portfolio/fills", "fills", ticker=ticker, subaccount=0)
+    historical_fills = broker.client.pages("/historical/fills", "fills", ticker=ticker)
+    positions = broker.client.pages(
+        "/portfolio/positions", "market_positions", subaccount=0, count_filter="position"
+    )
+    resting = broker.client.pages("/portfolio/orders", "orders", subaccount=0, status="resting")
+    proof = {
+        "environment": "demo", "observed_at": now,
+        "current_exact_orders": sum(row.get("client_order_id") == client_id for row in current),
+        "historical_exact_orders": sum(row.get("client_order_id") == client_id for row in historical),
+        "ticker_current_fills": len(current_fills),
+        "ticker_historical_fills": len(historical_fills),
+        "ticker_positions": sum(row.get("ticker") == ticker for row in positions),
+        "all_positions": len(positions), "all_resting_orders": len(resting),
+    }
+    if any(proof[key] for key in proof if key not in ("environment", "observed_at")):
+        return False
+    journal.quarantine_uncertain_zero_fill(
+        client_id, proof, minimum_age_seconds=UNRESOLVED_QUARANTINE_SECONDS
+    )
+    state.save("last_uncertain_quarantine", {
+        "client_order_id": client_id, "ticker": ticker, "at": proof["observed_at"]
+    })
+    state.record(ticker, {"action": "uncertain_zero_fill_quarantined",
+                          "client_order_id": client_id, "environment": "demo"})
+    return True
 
 
 def release_legacy_uncertainty_stop(state, journal):

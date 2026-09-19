@@ -7,6 +7,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     MakerState,
     current_position,
     evidence,
+    quarantine_stale_unresolved,
     recover_or_report,
     refresh_cohort,
     release_legacy_uncertainty_stop,
@@ -170,5 +171,68 @@ def test_only_legacy_uncertainty_crash_stop_is_released(tmp_path):
         assert journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0] == 0
         assert state.load(LEGACY_UNCERTAINTY_STOP_RECOVERY) is True
         assert release_legacy_uncertainty_stop(state, journal) is False
+    finally:
+        journal.close(); state.close()
+
+
+class NegativeEvidenceClient:
+    def __init__(self, *, resting=()):
+        self.resting = list(resting)
+        self.calls = []
+
+    def pages(self, path, field, **params):
+        self.calls.append((path, field, params))
+        if path == "/portfolio/orders" and params.get("status") == "resting":
+            return self.resting
+        return []
+
+
+class NegativeEvidenceBroker(UnresolvedBroker):
+    def __init__(self, *, resting=()):
+        super().__init__()
+        self.client = NegativeEvidenceClient(resting=resting)
+
+
+def age_submission(journal, seconds=13 * 60 * 60):
+    import json
+    import time
+    detail = json.loads(journal.db.execute(
+        "SELECT detail FROM submission_quotes WHERE client_id='m1'"
+    ).fetchone()[0])
+    detail["started_at"] = detail["observed_at"] = time.time() - seconds
+    journal.db.execute(
+        "UPDATE submission_quotes SET detail=? WHERE client_id='m1'",
+        (json.dumps(detail, sort_keys=True),),
+    )
+
+
+def test_old_unresolved_zero_exposure_is_quarantined_with_audit_proof(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        uncertain_maker(state, journal); age_submission(journal)
+        broker = NegativeEvidenceBroker()
+        assert quarantine_stale_unresolved(state, journal, broker, "m1") is True
+        assert journal.records() == []
+        row = journal.db.execute(
+            "SELECT evidence FROM uncertain_quarantine WHERE id='m1'"
+        ).fetchone()
+        assert row is not None and __import__("json").loads(row[0])["all_positions"] == 0
+        assert state.load("last_uncertain_quarantine")["client_order_id"] == "m1"
+    finally:
+        journal.close(); state.close()
+
+
+def test_unresolved_with_resting_order_is_not_quarantined(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        uncertain_maker(state, journal); age_submission(journal)
+        broker = NegativeEvidenceBroker(resting=[{"order_id": "other"}])
+        assert quarantine_stale_unresolved(state, journal, broker, "m1") is False
+        assert journal.get("m1")["state"] == "uncertain"
+        assert journal.db.execute("SELECT count(*) FROM uncertain_quarantine").fetchone()[0] == 0
     finally:
         journal.close(); state.close()
