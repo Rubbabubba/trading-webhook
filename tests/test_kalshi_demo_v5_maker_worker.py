@@ -9,6 +9,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     current_position,
     evidence,
     observe_working_quote,
+    preferred_outcome,
     quarantine_stale_unresolved,
     recover_or_report,
     refresh_cohort,
@@ -94,6 +95,22 @@ def test_working_quote_requires_sustained_against_side_depth(tmp_path):
         assert observe_working_quote(state, working_record(), frame) is None
         assert observe_working_quote(state, working_record(), frame) == \
             "sustained_against_side_depth"
+    finally:
+        state.close()
+
+
+def test_preferred_outcome_balances_new_tickers_and_never_flips_existing(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    try:
+        assert preferred_outcome(state, "A") == "yes"
+        state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
+                         ("a1", "maker_entry", "EA", "A", "yes", 1.0))
+        assert preferred_outcome(state, "B") == "no"
+        state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
+                         ("b1", "maker_entry", "EB", "B", "no", 2.0))
+        assert preferred_outcome(state, "A") == "yes"
+        assert preferred_outcome(state, "B") == "no"
+        assert preferred_outcome(state, "C") == "yes"
     finally:
         state.close()
 

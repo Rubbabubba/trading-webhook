@@ -374,6 +374,26 @@ def midpoint(frame):
     return (bid + ask) / 2
 
 
+def preferred_outcome(state, ticker):
+    """Keep a ticker in one economic outcome for the lifetime of its ledger."""
+    rows = state.db.execute(
+        "SELECT DISTINCT outcome FROM intent_meta WHERE ticker=? AND kind='maker_entry'",
+        (ticker,),
+    ).fetchall()
+    if len(rows) > 1:
+        raise ValueError("opposing_outcomes_in_maker_state")
+    if rows:
+        return rows[0][0]
+    counts = {
+        side: state.db.execute(
+            "SELECT count(*) FROM intent_meta WHERE kind='maker_entry' AND outcome=?",
+            (side,),
+        ).fetchone()[0]
+        for side in ("yes", "no")
+    }
+    return "yes" if counts["yes"] <= counts["no"] else "no"
+
+
 def observe_working_quote(state, record, frame):
     """Record live quote health and return a bounded early-cancel reason.
 
@@ -629,8 +649,7 @@ def run(data_root, *, cycles=None):
                         if frame is not None:
                             rows = state.db.execute("SELECT at,mid FROM history WHERE ticker=? AND at>=? ORDER BY at",
                                                     (market["ticker"], time.time() - 300)).fetchall()
-                            preferred = "yes" if state.db.execute(
-                                "SELECT count(*) FROM intent_meta WHERE kind='maker_entry'").fetchone()[0] % 2 == 0 else "no"
+                            preferred = preferred_outcome(state, market["ticker"])
                             try:
                                 observed_midpoint = midpoint(frame)
                                 signal = maker_quote([(at, Fraction(mid)) for at, mid in rows], frame, preferred)
