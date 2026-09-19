@@ -35,6 +35,11 @@ def test_empty_maker_evidence_is_demo_only_and_flat(tmp_path):
         assert result["post_only_attempts"] == result["maker_fills"] == 0
         assert result["working_quote_records"] == 0
         assert result["ending_position_contracts"] == 0
+        state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
+                         ("orphan", "maker_entry", "E", "T", "yes", 1.0))
+        result = evidence(state, journal)
+        assert result["markets"] == 0
+        assert result["side_attempts"] == {"yes": 0, "no": 0}
     finally:
         journal.close(); state.close()
 
@@ -101,18 +106,24 @@ def test_working_quote_requires_sustained_against_side_depth(tmp_path):
 
 def test_preferred_outcome_balances_new_tickers_and_never_flips_existing(tmp_path):
     state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
     try:
-        assert preferred_outcome(state, "A") == "yes"
+        assert preferred_outcome(state, journal, "A") == "yes"
         state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
                          ("a1", "maker_entry", "EA", "A", "yes", 1.0))
-        assert preferred_outcome(state, "B") == "no"
+        journal.reserve("a1", "A", 1, 40, 5, outcome="yes", action="buy",
+                        account_snapshot=snapshot(), order_mode="post_only_gtc")
+        assert preferred_outcome(state, journal, "B") == "no"
         state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
                          ("b1", "maker_entry", "EB", "B", "no", 2.0))
-        assert preferred_outcome(state, "A") == "yes"
-        assert preferred_outcome(state, "B") == "no"
-        assert preferred_outcome(state, "C") == "yes"
+        journal.reserve("b1", "B", 1, 40, 5, outcome="no", action="buy",
+                        account_snapshot=snapshot(), order_mode="post_only_gtc")
+        assert preferred_outcome(state, journal, "A") == "yes"
+        assert preferred_outcome(state, journal, "B") == "no"
+        assert preferred_outcome(state, journal, "C") == "yes"
     finally:
-        state.close()
+        journal.close(); state.close()
 
 
 def test_current_position_requires_matching_maker_metadata(tmp_path):

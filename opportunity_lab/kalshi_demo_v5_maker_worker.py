@@ -344,15 +344,24 @@ def submit(state, journal, broker, markets, market, outcome, action, price_cents
         if not isinstance(context, dict):
             raise ValueError("maker_flow_context_required")
         state.db.execute("INSERT INTO flow_context VALUES(?,?)", (client_id, json.dumps(context, sort_keys=True)))
-    snapshot = broker.snapshot()
-    journal.reserve(client_id, market["ticker"], 1, price_cents, FEE_RESERVE_CENTS,
-                    outcome=outcome, action=action, account_snapshot=snapshot,
-                    order_mode="post_only_gtc" if maker else "ioc")
+    def discard_unsent_metadata():
+        state.db.execute("DELETE FROM flow_context WHERE client_id=?", (client_id,))
+        state.db.execute("DELETE FROM intent_meta WHERE client_id=?", (client_id,))
+
+    try:
+        snapshot = broker.snapshot()
+        journal.reserve(client_id, market["ticker"], 1, price_cents, FEE_RESERVE_CENTS,
+                        outcome=outcome, action=action, account_snapshot=snapshot,
+                        order_mode="post_only_gtc" if maker else "ioc")
+    except Exception:
+        discard_unsent_metadata()
+        raise
     try:
         result = broker.submit(client_id, quote_provider=markets.quote)
     except Exception:
         if journal.get(client_id)["state"] == "reserved":
             journal.abandon_reserved(client_id)
+            discard_unsent_metadata()
         raise
     if not maker and result["state"] == "working":
         result = broker.cancel(client_id)
@@ -374,23 +383,27 @@ def midpoint(frame):
     return (bid + ask) / 2
 
 
-def preferred_outcome(state, ticker):
+def preferred_outcome(state, journal, ticker):
     """Keep a ticker in one economic outcome for the lifetime of its ledger."""
+    maker_ids = {
+        row["payload"]["client_order_id"]
+        for row in journal.records()
+        if row["intent"].get("order_mode") == "post_only_gtc"
+    }
     rows = state.db.execute(
-        "SELECT DISTINCT outcome FROM intent_meta WHERE ticker=? AND kind='maker_entry'",
+        "SELECT client_id,outcome FROM intent_meta WHERE ticker=? AND kind='maker_entry'",
         (ticker,),
     ).fetchall()
-    if len(rows) > 1:
+    outcomes = {outcome for client_id, outcome in rows if client_id in maker_ids}
+    if len(outcomes) > 1:
         raise ValueError("opposing_outcomes_in_maker_state")
-    if rows:
-        return rows[0][0]
-    counts = {
-        side: state.db.execute(
-            "SELECT count(*) FROM intent_meta WHERE kind='maker_entry' AND outcome=?",
-            (side,),
-        ).fetchone()[0]
-        for side in ("yes", "no")
-    }
+    if outcomes:
+        return next(iter(outcomes))
+    counts = {side: 0 for side in ("yes", "no")}
+    for client_id, outcome in state.db.execute(
+            "SELECT client_id,outcome FROM intent_meta WHERE kind='maker_entry'"):
+        if client_id in maker_ids:
+            counts[outcome] += 1
     return "yes" if counts["yes"] <= counts["no"] else "no"
 
 
@@ -499,9 +512,11 @@ def pending_markout_ticker(state):
 
 def evidence(state, journal):
     maker = [row for row in journal.records() if row["intent"].get("order_mode") == "post_only_gtc"]
-    sides = {side: state.db.execute(
-        "SELECT count(*) FROM intent_meta WHERE kind='maker_entry' AND outcome=?", (side,)).fetchone()[0]
-        for side in ("yes", "no")}
+    maker_ids = {row["payload"]["client_order_id"] for row in maker}
+    metadata = [row for row in state.db.execute(
+        "SELECT client_id,ticker,outcome FROM intent_meta WHERE kind='maker_entry'"
+    ) if row[0] in maker_ids]
+    sides = {side: sum(row[2] == side for row in metadata) for side in ("yes", "no")}
     fills = state.db.execute("SELECT count(*) FROM maker_fills").fetchone()[0]
     fee_records = 0
     for row in maker:
@@ -516,7 +531,7 @@ def evidence(state, journal):
         for h in MARKOUT_HORIZONS}
     return {
         "environment": "demo", "post_only": True,
-        "markets": state.db.execute("SELECT count(DISTINCT ticker) FROM intent_meta WHERE kind='maker_entry'").fetchone()[0],
+        "markets": len({row[1] for row in metadata}),
         "post_only_attempts": len(maker), "terminal_orders": sum(r["state"] == "terminal" for r in maker),
         "queue_position_records": state.db.execute("SELECT count(DISTINCT client_id) FROM queue_records").fetchone()[0],
         "working_quote_records": state.db.execute(
@@ -649,7 +664,7 @@ def run(data_root, *, cycles=None):
                         if frame is not None:
                             rows = state.db.execute("SELECT at,mid FROM history WHERE ticker=? AND at>=? ORDER BY at",
                                                     (market["ticker"], time.time() - 300)).fetchall()
-                            preferred = preferred_outcome(state, market["ticker"])
+                            preferred = preferred_outcome(state, journal, market["ticker"])
                             try:
                                 observed_midpoint = midpoint(frame)
                                 signal = maker_quote([(at, Fraction(mid)) for at, mid in rows], frame, preferred)
