@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from fractions import Fraction
 
 from opportunity_lab.kalshi_binary_journal import BinaryJournal
 from opportunity_lab.kalshi_demo_v5_maker_worker import (
@@ -7,6 +8,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     MakerState,
     current_position,
     evidence,
+    observe_working_quote,
     quarantine_stale_unresolved,
     recover_or_report,
     refresh_cohort,
@@ -30,9 +32,70 @@ def test_empty_maker_evidence_is_demo_only_and_flat(tmp_path):
         result = evidence(state, journal)
         assert result["environment"] == "demo" and result["post_only"] is True
         assert result["post_only_attempts"] == result["maker_fills"] == 0
+        assert result["working_quote_records"] == 0
         assert result["ending_position_contracts"] == 0
     finally:
         journal.close(); state.close()
+
+
+def working_frame(yes_bid, yes_ask, bid_depth=10, ask_depth=10, *, at=100.0):
+    yes_bid = Fraction(yes_bid)
+    yes_ask = Fraction(yes_ask)
+    return {
+        "received_at": at,
+        "orderbook_fp": {
+            "yes_dollars": [[str(float(yes_bid)), str(bid_depth)]],
+            "no_dollars": [[str(float(1 - yes_ask)), str(ask_depth)]],
+        },
+    }
+
+
+def working_record(client_id="m1"):
+    return {"payload": {"client_order_id": client_id}}
+
+
+def seed_working_quote(state, *, outcome="yes", initial_mid="1/2"):
+    state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
+                     ("m1", "maker_entry", "EVENT", "TEST", outcome, 1.0))
+    state.db.execute("INSERT INTO flow_context VALUES(?,?)",
+                     ("m1", __import__("json").dumps({"yes_mid": initial_mid})))
+
+
+def test_working_quote_requires_sustained_two_cent_adverse_move(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    try:
+        seed_working_quote(state)
+        frame = working_frame(".45", ".51")  # midpoint .48: two cents adverse for YES
+        assert observe_working_quote(state, working_record(), frame) is None
+        assert observe_working_quote(state, working_record(), frame) is None
+        assert observe_working_quote(state, working_record(), frame) == \
+            "sustained_adverse_midpoint"
+    finally:
+        state.close()
+
+
+def test_working_quote_cancels_immediate_three_cent_move_for_no(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    try:
+        seed_working_quote(state, outcome="no")
+        frame = working_frame(".52", ".54")  # YES up three cents is adverse for NO
+        assert observe_working_quote(state, working_record(), frame) == \
+            "immediate_adverse_midpoint"
+    finally:
+        state.close()
+
+
+def test_working_quote_requires_sustained_against_side_depth(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    try:
+        seed_working_quote(state)
+        frame = working_frame(".48", ".52", bid_depth=2, ask_depth=7)
+        assert observe_working_quote(state, working_record(), frame) is None
+        assert observe_working_quote(state, working_record(), frame) is None
+        assert observe_working_quote(state, working_record(), frame) == \
+            "sustained_against_side_depth"
+    finally:
+        state.close()
 
 
 def test_current_position_requires_matching_maker_metadata(tmp_path):

@@ -23,15 +23,19 @@ from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 
 
-STRATEGY_ID = "stable_balanced_maker_v5"
+STRATEGY_ID = "stable_balanced_maker_v6"
+CLIENT_ID_PREFIX = "v6-maker-"
 CAPITAL_LIMIT_CENTS = 160
 ORDER_LIMIT_CENTS = 110
 DAILY_LOSS_CENTS = 100
 FEE_RESERVE_CENTS = 5
-QUOTE_TTL_SECONDS = 90
+QUOTE_TTL_SECONDS = 300
+ADVERSE_MOVE_CENTS = 2
+IMMEDIATE_ADVERSE_MOVE_CENTS = 3
+TOXIC_OBSERVATIONS_REQUIRED = 3
 MAX_HOLD_SECONDS = 300
 MARKOUT_HORIZONS = (5, 30, 300)
-COHORT_SELECTOR = "diverse_game_markets_v1"
+COHORT_SELECTOR = "diverse_game_markets_v2"
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
 RECONCILIATION_WAIT_SECONDS = 30
@@ -157,6 +161,9 @@ class MakerState:
             filled_at REAL NOT NULL,entry_mid TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS queue_records(
             client_id TEXT NOT NULL,at REAL NOT NULL,detail TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS working_quote_observations(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,client_id TEXT NOT NULL,
+            at REAL NOT NULL,detail TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS flow_context(
             client_id TEXT PRIMARY KEY,detail TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS markouts(
@@ -172,6 +179,9 @@ class MakerState:
             "capital_limit_cents": CAPITAL_LIMIT_CENTS, "order_limit_cents": ORDER_LIMIT_CENTS,
             "daily_loss_cents": DAILY_LOSS_CENTS, "quote_ttl_seconds": QUOTE_TTL_SECONDS,
             "max_hold_seconds": MAX_HOLD_SECONDS, "markout_horizons": list(MARKOUT_HORIZONS),
+            "adverse_move_cents": ADVERSE_MOVE_CENTS,
+            "immediate_adverse_move_cents": IMMEDIATE_ADVERSE_MOVE_CENTS,
+            "toxic_observations_required": TOXIC_OBSERVATIONS_REQUIRED,
         }
         saved = self.load("protocol")
         if saved is not None and saved != protocol:
@@ -325,7 +335,7 @@ def release_legacy_uncertainty_stop(state, journal):
 
 
 def submit(state, journal, broker, markets, market, outcome, action, price_cents, *, maker=False, context=None):
-    client_id = "v5-maker-" + uuid.uuid4().hex
+    client_id = CLIENT_ID_PREFIX + uuid.uuid4().hex
     kind = "maker_entry" if maker else "exit"
     at = time.time()
     state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
@@ -362,6 +372,60 @@ def working_order(journal):
 def midpoint(frame):
     bid, ask, _bid_size, _ask_size = price_book(frame, "yes")
     return (bid + ask) / 2
+
+
+def observe_working_quote(state, record, frame):
+    """Record live quote health and return a bounded early-cancel reason.
+
+    A single two-cent move or one imbalanced book is only noise. Three
+    consecutive observations must agree before either condition cancels the
+    order. A three-cent adverse move cancels immediately.
+    """
+    cid = record["payload"]["client_order_id"]
+    meta = state.db.execute(
+        "SELECT outcome FROM intent_meta WHERE client_id=? AND kind='maker_entry'",
+        (cid,),
+    ).fetchone()
+    context = state.db.execute(
+        "SELECT detail FROM flow_context WHERE client_id=?", (cid,)
+    ).fetchone()
+    if meta is None or context is None:
+        raise ValueError("working_quote_metadata_missing")
+    outcome = meta[0]
+    initial_yes_mid = Fraction(json.loads(context[0])["yes_mid"])
+    current_yes_mid = midpoint(frame)
+    bid, ask, bid_depth, ask_depth = price_book(frame, outcome)
+    adverse = (initial_yes_mid - current_yes_mid if outcome == "yes"
+               else current_yes_mid - initial_yes_mid)
+    adverse_cents = adverse * 100
+    against_depth = ask_depth > bid_depth * 3
+    detail = {
+        "yes_mid": str(current_yes_mid),
+        "side_bid": str(bid),
+        "side_ask": str(ask),
+        "bid_depth": str(bid_depth),
+        "ask_depth": str(ask_depth),
+        "adverse_move_cents": str(adverse_cents),
+        "against_side_depth": against_depth,
+    }
+    at = time.time()
+    state.db.execute(
+        "INSERT INTO working_quote_observations(client_id,at,detail) VALUES(?,?,?)",
+        (cid, at, json.dumps(detail, sort_keys=True)),
+    )
+    if adverse_cents >= IMMEDIATE_ADVERSE_MOVE_CENTS:
+        return "immediate_adverse_midpoint"
+    recent = [json.loads(row[0]) for row in state.db.execute(
+        "SELECT detail FROM working_quote_observations WHERE client_id=? "
+        "ORDER BY at DESC LIMIT ?", (cid, TOXIC_OBSERVATIONS_REQUIRED)
+    )]
+    if len(recent) < TOXIC_OBSERVATIONS_REQUIRED:
+        return None
+    if all(Fraction(row["adverse_move_cents"]) >= ADVERSE_MOVE_CENTS for row in recent):
+        return "sustained_adverse_midpoint"
+    if all(row["against_side_depth"] is True for row in recent):
+        return "sustained_against_side_depth"
+    return None
 
 
 def register_fill(state, record, frame):
@@ -435,6 +499,8 @@ def evidence(state, journal):
         "markets": state.db.execute("SELECT count(DISTINCT ticker) FROM intent_meta WHERE kind='maker_entry'").fetchone()[0],
         "post_only_attempts": len(maker), "terminal_orders": sum(r["state"] == "terminal" for r in maker),
         "queue_position_records": state.db.execute("SELECT count(DISTINCT client_id) FROM queue_records").fetchone()[0],
+        "working_quote_records": state.db.execute(
+            "SELECT count(*) FROM working_quote_observations").fetchone()[0],
         "maker_fills": fills, "actual_fee_records": fee_records,
         "flow_context_records": state.db.execute(
             "SELECT count(*) FROM maker_fills JOIN flow_context USING(client_id)").fetchone()[0],
@@ -511,9 +577,28 @@ def run(data_root, *, cycles=None):
                     state.db.execute("INSERT INTO queue_records VALUES(?,?,?)", (cid, time.time(), json.dumps(queue)))
                     refreshed = broker.refresh(cid)
                     ticker = active["payload"]["ticker"]
-                    if refreshed["state"] == "working" and time.time() - state.db.execute(
-                            "SELECT created_at FROM intent_meta WHERE client_id=?", (cid,)).fetchone()[0] >= QUOTE_TTL_SECONDS:
-                        refreshed = broker.cancel(cid)
+                    if refreshed["state"] == "working":
+                        cancel_reason = None
+                        try:
+                            quote = markets.quote({"ticker": ticker})
+                            frame = one_contract_frame(
+                                quote, book_id=str(quote["observed_at"])
+                            )
+                            cancel_reason = observe_working_quote(state, refreshed, frame)
+                        except ValueError as error:
+                            if str(error) != "missing_book":
+                                raise
+                        age = time.time() - state.db.execute(
+                            "SELECT created_at FROM intent_meta WHERE client_id=?", (cid,)
+                        ).fetchone()[0]
+                        if cancel_reason or age >= QUOTE_TTL_SECONDS:
+                            reason = cancel_reason or "quote_ttl"
+                            refreshed = broker.cancel(cid)
+                            state.record(ticker, {
+                                "action": "maker_cancel", "reason": reason,
+                                "client_order_id": cid, "age_seconds": age,
+                                "environment": "demo",
+                            })
                     if refreshed["filled"]:
                         quote = markets.quote({"ticker": ticker}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
                         register_fill(state, refreshed, frame); record_due_markouts(state, ticker, frame)
@@ -582,7 +667,7 @@ def run(data_root, *, cycles=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", default="/var/data/kalshi-demo-v5")
+    parser.add_argument("--data-root", default="/var/data/kalshi-demo-v6")
     parser.add_argument("--cycles", type=int)
     args = parser.parse_args(argv); run(args.data_root, cycles=args.cycles)
 
