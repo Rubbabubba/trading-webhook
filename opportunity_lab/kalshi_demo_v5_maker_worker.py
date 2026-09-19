@@ -33,6 +33,15 @@ MAX_HOLD_SECONDS = 300
 MARKOUT_HORIZONS = (5, 30, 300)
 COHORT_SELECTOR = "diverse_game_markets_v1"
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
+LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
+RECONCILIATION_WAIT_SECONDS = 30
+RECONCILIATION_BLOCK_CODES = frozenset({
+    "submission_unresolved",
+    "fills_not_reconciled",
+    "BrokerError",
+    "TimeoutError",
+    "ConnectionError",
+})
 MAKER_SERIES = (
     "KXMLBGAME",
     "KXNFLGAME",
@@ -215,6 +224,30 @@ def recover(state, journal, broker):
                                 "attempts": len(maker), "environment": "demo"})
 
 
+def release_legacy_uncertainty_stop(state, journal):
+    """Undo only the V5 stop created by the old crash-on-uncertainty path.
+
+    Submission uncertainty remains authoritative and continues to block every new
+    reservation. Removing this redundant hard stop lets a later confirmed fill be
+    managed and exited after read-only reconciliation succeeds.
+    """
+    stopped = journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0]
+    uncertain = [row for row in journal.records() if row["state"] == "uncertain"]
+    if not stopped or not uncertain or state.load(LEGACY_UNCERTAINTY_STOP_RECOVERY) is not None:
+        return False
+    latest = state.db.execute(
+        "SELECT detail FROM actions WHERE ticker IS NULL ORDER BY at DESC LIMIT 1"
+    ).fetchone()
+    detail = json.loads(latest[0]) if latest else {}
+    if detail.get("action") != "cycle_error" or detail.get("error_code") not in RECONCILIATION_BLOCK_CODES:
+        return False
+    journal.db.execute("UPDATE controls SET stopped=0 WHERE id=1")
+    state.save(LEGACY_UNCERTAINTY_STOP_RECOVERY, True)
+    state.record(None, {"action": "legacy_uncertainty_stop_released",
+                        "unresolved_orders": len(uncertain), "environment": "demo"})
+    return True
+
+
 def submit(state, journal, broker, markets, market, outcome, action, price_cents, *, maker=False, context=None):
     client_id = "v5-maker-" + uuid.uuid4().hex
     kind = "maker_entry" if maker else "exit"
@@ -342,6 +375,24 @@ def write_status(path, state, journal, **values):
     temp.replace(path)
 
 
+def recover_or_report(root, state, journal, broker):
+    """Reconcile once, remaining alive and read-only while evidence is incomplete."""
+    try:
+        recover(state, journal, broker)
+        return True
+    except Exception as exc:
+        code = safe_cycle_error(exc)
+        if code not in RECONCILIATION_BLOCK_CODES:
+            raise
+        state.record(None, {"action": "reconciliation_wait", "error_code": code})
+        write_status(root / "status.json", state, journal, phase="reconciling",
+                     errors=[code], new_submissions_enabled=False,
+                     next_read_seconds=RECONCILIATION_WAIT_SECONDS)
+        log_event("worker_reconciling", errors=[code], new_submissions_enabled=False,
+                  next_read_seconds=RECONCILIATION_WAIT_SECONDS)
+        return False
+
+
 def run(data_root, *, cycles=None):
     root = Path(data_root).resolve(); root.mkdir(parents=True, exist_ok=True)
     lock = acquire(root / "worker.lock"); state = MakerState(root / "worker.sqlite3")
@@ -355,11 +406,24 @@ def run(data_root, *, cycles=None):
         state.save("cohort_selector", COHORT_SELECTOR)
     scan = int(state.load("scan", 0)); cycle = 0
     try:
-        check_exchange(client); recover(state, journal, broker)
+        release_legacy_uncertainty_stop(state, journal)
+        check_exchange(client)
+        while not recover_or_report(root, state, journal, broker):
+            cycle += 1
+            if cycles is not None and cycle >= cycles:
+                return
+            time.sleep(RECONCILIATION_WAIT_SECONDS)
+            check_exchange(client)
         log_event("worker_started", production_execution_enabled=False)
         while cycles is None or cycle < cycles:
             errors = []
             try:
+                if any(row["state"] == "uncertain" for row in journal.records()):
+                    if not recover_or_report(root, state, journal, broker):
+                        cycle += 1
+                        if cycles is None or cycle < cycles:
+                            time.sleep(RECONCILIATION_WAIT_SECONDS)
+                        continue
                 position, accounting = current_position(journal, state)
                 active = working_order(journal)
                 cohort, cohort_at = refresh_cohort(
@@ -434,7 +498,6 @@ def run(data_root, *, cycles=None):
                 errors.append(code); state.record(None, {"action": "cycle_error", "error_code": code})
                 write_status(root / "status.json", state, journal, phase="blocked", errors=errors)
                 log_event("worker_blocked", errors=errors)
-                if any(row["state"] == "uncertain" for row in journal.records()): journal.stop(); raise
             cycle += 1
             if cycles is None or cycle < cycles: time.sleep(2)
     finally:
