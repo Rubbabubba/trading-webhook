@@ -147,7 +147,9 @@ class BinaryJournal(Journal):
             if self.db.in_transaction:self.db.execute('ROLLBACK')
             raise
 
-    def quarantine_uncertain_zero_fill(self, client_id, evidence, *, minimum_age_seconds=43200):
+    def quarantine_uncertain_zero_fill(self, client_id, evidence, *, minimum_age_seconds=300,
+                                       minimum_observations=2,
+                                       minimum_observation_span_seconds=60):
         """Archive an old demo-only uncertainty after exhaustive negative evidence.
 
         This is intentionally narrower than reconciliation: it never invents an
@@ -157,13 +159,23 @@ class BinaryJournal(Journal):
         required_zero = ('current_exact_orders','historical_exact_orders',
                          'ticker_current_fills','ticker_historical_fills',
                          'ticker_positions','all_positions','all_resting_orders')
+        observations=evidence.get('negative_observations') if isinstance(evidence,dict) else None
         if (self.environment != 'demo' or not isinstance(evidence,dict)
                 or evidence.get('environment') != 'demo'
                 or any(evidence.get(key) != 0 for key in required_zero)
-                or type(evidence.get('observed_at')) not in (int,float)):
+                or type(evidence.get('observed_at')) not in (int,float)
+                or not isinstance(observations,list) or len(observations)<minimum_observations
+                or any(not isinstance(item,dict) or item.get('environment')!='demo'
+                       or type(item.get('observed_at')) not in (int,float)
+                       or any(item.get(key)!=0 for key in required_zero)
+                       for item in observations)):
             raise ValueError('uncertain_quarantine_evidence_incomplete')
         now=self.clock().timestamp()
-        if not 0<=now-evidence['observed_at']<=120:
+        observed_times=[item['observed_at'] for item in observations]
+        if (not 0<=now-evidence['observed_at']<=120
+                or observed_times!=sorted(observed_times)
+                or observed_times[-1]-observed_times[0]<minimum_observation_span_seconds
+                or evidence['observed_at']!=observed_times[-1]):
             raise ValueError('uncertain_quarantine_evidence_stale')
         self.db.execute('BEGIN IMMEDIATE')
         try:

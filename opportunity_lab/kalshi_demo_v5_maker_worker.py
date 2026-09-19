@@ -35,7 +35,9 @@ COHORT_SELECTOR = "diverse_game_markets_v1"
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
 RECONCILIATION_WAIT_SECONDS = 30
-UNRESOLVED_QUARANTINE_SECONDS = 12 * 60 * 60
+UNRESOLVED_QUARANTINE_SECONDS = 5 * 60
+UNRESOLVED_REQUIRED_OBSERVATIONS = 2
+UNRESOLVED_CONFIRMATION_SPAN_SECONDS = 60
 RECONCILIATION_BLOCK_CODES = frozenset({
     "submission_unresolved",
     "fills_not_reconciled",
@@ -160,6 +162,9 @@ class MakerState:
           CREATE TABLE IF NOT EXISTS markouts(
             client_id TEXT NOT NULL,horizon_seconds INTEGER NOT NULL,at REAL NOT NULL,
             midpoint TEXT NOT NULL,PRIMARY KEY(client_id,horizon_seconds));
+          CREATE TABLE IF NOT EXISTS uncertainty_checks(
+            client_id TEXT NOT NULL,observed_at REAL NOT NULL,evidence TEXT NOT NULL,
+            PRIMARY KEY(client_id,observed_at));
           CREATE TABLE IF NOT EXISTS actions(at REAL NOT NULL,ticker TEXT,detail TEXT NOT NULL);
         """)
         protocol = {
@@ -267,9 +272,25 @@ def quarantine_stale_unresolved(state, journal, broker, client_id):
         "all_positions": len(positions), "all_resting_orders": len(resting),
     }
     if any(proof[key] for key in proof if key not in ("environment", "observed_at")):
+        state.db.execute("DELETE FROM uncertainty_checks WHERE client_id=?", (client_id,))
         return False
+    state.db.execute(
+        "INSERT OR IGNORE INTO uncertainty_checks VALUES(?,?,?)",
+        (client_id, now, json.dumps(proof, sort_keys=True)),
+    )
+    observations = [json.loads(row[0]) for row in state.db.execute(
+        "SELECT evidence FROM uncertainty_checks WHERE client_id=? ORDER BY observed_at",
+        (client_id,),
+    )]
+    if (len(observations) < UNRESOLVED_REQUIRED_OBSERVATIONS
+            or observations[-1]["observed_at"] - observations[0]["observed_at"]
+            < UNRESOLVED_CONFIRMATION_SPAN_SECONDS):
+        return False
+    proof["negative_observations"] = observations
     journal.quarantine_uncertain_zero_fill(
-        client_id, proof, minimum_age_seconds=UNRESOLVED_QUARANTINE_SECONDS
+        client_id, proof, minimum_age_seconds=UNRESOLVED_QUARANTINE_SECONDS,
+        minimum_observations=UNRESOLVED_REQUIRED_OBSERVATIONS,
+        minimum_observation_span_seconds=UNRESOLVED_CONFIRMATION_SPAN_SECONDS,
     )
     state.save("last_uncertain_quarantine", {
         "client_order_id": client_id, "ticker": ticker, "at": proof["observed_at"]

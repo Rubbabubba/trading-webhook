@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from opportunity_lab.kalshi_binary_journal import BinaryJournal
 from opportunity_lab.kalshi_demo_v5_maker_worker import (
@@ -208,17 +208,25 @@ def age_submission(journal, seconds=13 * 60 * 60):
 
 def test_old_unresolved_zero_exposure_is_quarantined_with_audit_proof(tmp_path):
     state = MakerState(tmp_path / "state.sqlite3")
+    clock = [datetime.now(timezone.utc) + timedelta(seconds=1)]
     journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
-                            capital_limit_cents=160, daily_loss_cents=100)
+                            capital_limit_cents=160, daily_loss_cents=100,
+                            clock=lambda: clock[0])
     try:
         uncertain_maker(state, journal); age_submission(journal)
         broker = NegativeEvidenceBroker()
+        assert quarantine_stale_unresolved(state, journal, broker, "m1") is False
+        clock[0] += timedelta(seconds=61)
         assert quarantine_stale_unresolved(state, journal, broker, "m1") is True
         assert journal.records() == []
         row = journal.db.execute(
             "SELECT evidence FROM uncertain_quarantine WHERE id='m1'"
         ).fetchone()
-        assert row is not None and __import__("json").loads(row[0])["all_positions"] == 0
+        proof = __import__("json").loads(row[0])
+        assert proof["all_positions"] == 0
+        assert len(proof["negative_observations"]) == 2
+        assert proof["negative_observations"][1]["observed_at"] \
+            - proof["negative_observations"][0]["observed_at"] >= 60
         assert state.load("last_uncertain_quarantine")["client_order_id"] == "m1"
     finally:
         journal.close(); state.close()
