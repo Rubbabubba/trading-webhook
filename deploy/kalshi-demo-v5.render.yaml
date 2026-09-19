@@ -1,4 +1,4 @@
-# Demo-only V8 maker experiment. Credentials stay in the existing Render service.
+# Demo-only V9 maker experiment. Credentials stay in the existing Render service.
 services:
   - type: worker
     name: kalshi-demo-v6-maker
@@ -6,7 +6,7 @@ services:
     plan: starter
     autoDeploy: false
     buildCommand: pip install -r deploy/kalshi-demo-v4.requirements.txt
-    startCommand: python -m opportunity_lab.kalshi_demo_v5_maker_worker --data-root /var/data/kalshi-demo-v8
+    startCommand: python -m opportunity_lab.kalshi_demo_v5_maker_worker --data-root /var/data/kalshi-demo-v9
     numInstances: 1
     disk:
       name: kalshi-demo-v4-data

@@ -23,8 +23,8 @@ from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 
 
-STRATEGY_ID = "stable_balanced_maker_v8"
-CLIENT_ID_PREFIX = "v8-maker-"
+STRATEGY_ID = "stable_balanced_maker_v9"
+CLIENT_ID_PREFIX = "v9-maker-"
 CAPITAL_LIMIT_CENTS = 160
 ORDER_LIMIT_CENTS = 110
 DAILY_LOSS_CENTS = 100
@@ -37,10 +37,11 @@ QUOTE_TTL_SECONDS = 180
 ADVERSE_MOVE_CENTS = 2
 IMMEDIATE_ADVERSE_MOVE_CENTS = 3
 TOXIC_OBSERVATIONS_REQUIRED = 3
+DEPTH_ADVERSE_MOVE_CENTS = 1
 MAX_HOLD_SECONDS = 300
 TAKE_PROFIT_CENTS = 2
 MARKOUT_HORIZONS = (5, 30, 300)
-COHORT_SELECTOR = "diverse_game_markets_v4"
+COHORT_SELECTOR = "diverse_game_markets_v5"
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
 FRESH_FLAT_RECOVERY = "v7_fresh_flat_startup_recovery_20260919"
@@ -189,6 +190,7 @@ class MakerState:
             "adverse_move_cents": ADVERSE_MOVE_CENTS,
             "immediate_adverse_move_cents": IMMEDIATE_ADVERSE_MOVE_CENTS,
             "toxic_observations_required": TOXIC_OBSERVATIONS_REQUIRED,
+            "depth_adverse_move_cents": DEPTH_ADVERSE_MOVE_CENTS,
         }
         saved = self.load("protocol")
         if saved is not None and saved != protocol:
@@ -427,8 +429,10 @@ def observe_working_quote(state, record, frame):
     """Record live quote health and return a bounded early-cancel reason.
 
     A single two-cent move or one imbalanced book is only noise. Three
-    consecutive observations must agree before either condition cancels the
-    order. A three-cent adverse move cancels immediately.
+    consecutive observations must agree before a sustained move cancels the
+    order. Depth imbalance is actionable only when the midpoint also moves at
+    least one cent against the quote. A three-cent adverse move cancels
+    immediately.
     """
     cid = record["payload"]["client_order_id"]
     meta = state.db.execute(
@@ -466,14 +470,16 @@ def observe_working_quote(state, record, frame):
         return "immediate_adverse_midpoint"
     recent = [json.loads(row[0]) for row in state.db.execute(
         "SELECT detail FROM working_quote_observations WHERE client_id=? "
-        "ORDER BY at DESC LIMIT ?", (cid, TOXIC_OBSERVATIONS_REQUIRED)
+        "ORDER BY at DESC,id DESC LIMIT ?", (cid, TOXIC_OBSERVATIONS_REQUIRED)
     )]
     if len(recent) < TOXIC_OBSERVATIONS_REQUIRED:
         return None
     if all(Fraction(row["adverse_move_cents"]) >= ADVERSE_MOVE_CENTS for row in recent):
         return "sustained_adverse_midpoint"
-    if all(row["against_side_depth"] is True for row in recent):
-        return "sustained_against_side_depth"
+    if (all(row["against_side_depth"] is True for row in recent)
+            and all(Fraction(row["adverse_move_cents"]) >= DEPTH_ADVERSE_MOVE_CENTS
+                    for row in recent)):
+        return "sustained_depth_and_adverse_midpoint"
     return None
 
 
@@ -718,7 +724,7 @@ def run(data_root, *, cycles=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", default="/var/data/kalshi-demo-v8")
+    parser.add_argument("--data-root", default="/var/data/kalshi-demo-v9")
     parser.add_argument("--cycles", type=int)
     args = parser.parse_args(argv); run(args.data_root, cycles=args.cycles)
 

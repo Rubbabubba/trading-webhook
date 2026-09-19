@@ -95,15 +95,19 @@ def test_working_quote_cancels_immediate_three_cent_move_for_no(tmp_path):
         state.close()
 
 
-def test_working_quote_requires_sustained_against_side_depth(tmp_path):
+def test_working_quote_depth_imbalance_requires_adverse_midpoint_move(tmp_path):
     state = MakerState(tmp_path / "state.sqlite3")
     try:
         seed_working_quote(state)
         frame = working_frame(".48", ".52", bid_depth=2, ask_depth=7)
         assert observe_working_quote(state, working_record(), frame) is None
         assert observe_working_quote(state, working_record(), frame) is None
-        assert observe_working_quote(state, working_record(), frame) == \
-            "sustained_against_side_depth"
+        assert observe_working_quote(state, working_record(), frame) is None
+        adverse = working_frame(".47", ".51", bid_depth=2, ask_depth=7)
+        assert observe_working_quote(state, working_record(), adverse) is None
+        assert observe_working_quote(state, working_record(), adverse) is None
+        assert observe_working_quote(state, working_record(), adverse) == \
+            "sustained_depth_and_adverse_midpoint"
     finally:
         state.close()
 
