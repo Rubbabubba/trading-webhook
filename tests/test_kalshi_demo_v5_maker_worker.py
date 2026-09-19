@@ -16,6 +16,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     release_legacy_uncertainty_stop,
     safe_cycle_error,
     select_maker_markets,
+    QUOTE_TTL_SECONDS,
 )
 
 
@@ -40,6 +41,7 @@ def test_empty_maker_evidence_is_demo_only_and_flat(tmp_path):
         result = evidence(state, journal)
         assert result["markets"] == 0
         assert result["side_attempts"] == {"yes": 0, "no": 0}
+        assert state.load("protocol")["quote_ttl_seconds"] == QUOTE_TTL_SECONDS == 900
     finally:
         journal.close(); state.close()
 

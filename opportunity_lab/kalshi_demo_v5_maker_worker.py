@@ -23,19 +23,22 @@ from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 
 
-STRATEGY_ID = "stable_balanced_maker_v6"
-CLIENT_ID_PREFIX = "v6-maker-"
+STRATEGY_ID = "stable_balanced_maker_v7"
+CLIENT_ID_PREFIX = "v7-maker-"
 CAPITAL_LIMIT_CENTS = 160
 ORDER_LIMIT_CENTS = 110
 DAILY_LOSS_CENTS = 100
 FEE_RESERVE_CENTS = 5
-QUOTE_TTL_SECONDS = 300
+# Five-minute orders repeatedly reached the exchange and expired without a fill.
+# Keep queue priority for fifteen minutes while the existing adverse-move and
+# depth-toxicity exits continue to cancel deteriorating quotes early.
+QUOTE_TTL_SECONDS = 900
 ADVERSE_MOVE_CENTS = 2
 IMMEDIATE_ADVERSE_MOVE_CENTS = 3
 TOXIC_OBSERVATIONS_REQUIRED = 3
 MAX_HOLD_SECONDS = 300
 MARKOUT_HORIZONS = (5, 30, 300)
-COHORT_SELECTOR = "diverse_game_markets_v2"
+COHORT_SELECTOR = "diverse_game_markets_v3"
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
 RECONCILIATION_WAIT_SECONDS = 30
@@ -701,7 +704,7 @@ def run(data_root, *, cycles=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", default="/var/data/kalshi-demo-v6")
+    parser.add_argument("--data-root", default="/var/data/kalshi-demo-v7")
     parser.add_argument("--cycles", type=int)
     args = parser.parse_args(argv); run(args.data_root, cycles=args.cycles)
 
