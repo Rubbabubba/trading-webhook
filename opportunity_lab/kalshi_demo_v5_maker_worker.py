@@ -41,6 +41,7 @@ MARKOUT_HORIZONS = (5, 30, 300)
 COHORT_SELECTOR = "diverse_game_markets_v3"
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
+FRESH_FLAT_RECOVERY = "v7_fresh_flat_startup_recovery_20260919"
 RECONCILIATION_WAIT_SECONDS = 30
 UNRESOLVED_QUARANTINE_SECONDS = 5 * 60
 UNRESOLVED_REQUIRED_OBSERVATIONS = 2
@@ -238,6 +239,15 @@ def recover(state, journal, broker):
     broker.reconcile_positions(allow_reserved=True)
     stopped = journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0]
     records = journal.records()
+    if stopped and not records and state.load(FRESH_FLAT_RECOVERY) is None:
+        # reconcile_positions above has already proved the demo account has no
+        # position or resting order. This recovers only a never-used ledger that
+        # stopped during a guarded version cutover.
+        journal.db.execute("UPDATE controls SET stopped=0 WHERE id=1")
+        state.save(FRESH_FLAT_RECOVERY, True)
+        state.record(None, {"action": "fresh_flat_startup_recovery",
+                            "environment": "demo"})
+        stopped = 0
     if stopped and state.load(ZERO_FILL_RECOVERY) is None:
         maker = [row for row in records if row["intent"].get("order_mode") == "post_only_gtc"]
         accounting = journal.accounting()

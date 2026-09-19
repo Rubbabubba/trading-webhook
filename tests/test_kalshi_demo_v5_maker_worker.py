@@ -4,6 +4,7 @@ from fractions import Fraction
 from opportunity_lab.kalshi_binary_journal import BinaryJournal
 from opportunity_lab.kalshi_demo_v5_maker_worker import (
     LEGACY_UNCERTAINTY_STOP_RECOVERY,
+    FRESH_FLAT_RECOVERY,
     MAKER_SERIES,
     MakerState,
     current_position,
@@ -13,6 +14,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     quarantine_stale_unresolved,
     recover_or_report,
     refresh_cohort,
+    recover,
     release_legacy_uncertainty_stop,
     safe_cycle_error,
     select_maker_markets,
@@ -264,6 +266,30 @@ def test_only_legacy_uncertainty_crash_stop_is_released(tmp_path):
         assert journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0] == 0
         assert state.load(LEGACY_UNCERTAINTY_STOP_RECOVERY) is True
         assert release_legacy_uncertainty_stop(state, journal) is False
+    finally:
+        journal.close(); state.close()
+
+
+class FlatRecoveryBroker:
+    def __init__(self):
+        self.reconciled = 0
+
+    def reconcile_positions(self, *, allow_reserved=False):
+        assert allow_reserved is True
+        self.reconciled += 1
+        return {"positions_match": True, "position_count": 0}
+
+
+def test_fresh_flat_v7_ledger_recovers_cutover_stop_once(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        journal.stop(); broker = FlatRecoveryBroker()
+        recover(state, journal, broker)
+        assert broker.reconciled == 1
+        assert journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0] == 0
+        assert state.load(FRESH_FLAT_RECOVERY) is True
     finally:
         journal.close(); state.close()
 
