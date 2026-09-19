@@ -19,6 +19,13 @@ def test_stable_balanced_book_quotes_inside_spread_for_both_outcomes():
     assert maker_quote(history, frame(), "no")["price_cents"] == 53
 
 
+def test_wider_spread_quotes_closer_to_midpoint_without_crossing():
+    history = [(100, Fraction(44, 100))]
+    quote = maker_quote(history, frame(yes_bid="0.40", no_bid="0.52"), "yes")
+    assert quote["price_cents"] == 43
+    assert quote["gross_edge_to_mid_cents"] == "1"
+
+
 def test_rejects_fast_move_narrow_spread_and_one_sided_depth():
     assert maker_quote([(100, Fraction(40, 100))], frame(), "yes") is None
     assert maker_quote([(100, Fraction(46, 100))], frame(no_bid="0.55"), "yes") is None

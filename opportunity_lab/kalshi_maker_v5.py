@@ -33,16 +33,26 @@ def maker_quote(history, frame, preferred_side):
     # Avoid the one-sided books associated with toxic maker fills.
     if bid_size > ask_size * 2 or ask_size > bid_size * 2:
         return None
-    improvement = side_bid + Fraction(1, 100)
-    price = improvement if improvement < side_ask else side_bid
-    cents = price * 100
-    if cents.denominator != 1 or not 1 <= cents <= 99:
+    # Quote as aggressively as the spread permits while retaining at least one
+    # cent of gross edge to the contemporaneous midpoint.  The previous fixed
+    # one-cent improvement sat at the front of the queue but produced no demo
+    # fills, even in six- and eight-cent spreads.  This rule improves wider
+    # spreads by more without crossing or paying the displayed ask.
+    midpoint_cents = (side_bid + side_ask) * 50
+    target_cents = int(midpoint_cents - 1)
+    bid_cents = side_bid * 100
+    ask_cents = side_ask * 100
+    if bid_cents.denominator != 1 or ask_cents.denominator != 1:
+        return None
+    cents = min(target_cents, ask_cents.numerator - 1)
+    if not bid_cents.numerator < cents < ask_cents.numerator or not 1 <= cents <= 99:
         return None
     return {
         "side": preferred_side,
-        "price_cents": cents.numerator,
+        "price_cents": cents,
         "yes_mid": str(yes_mid),
         "spread_cents": int(spread * 100),
+        "gross_edge_to_mid_cents": str(midpoint_cents - cents),
         "bid_depth": str(bid_size),
         "ask_depth": str(ask_size),
     }

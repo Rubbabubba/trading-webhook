@@ -23,22 +23,24 @@ from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 
 
-STRATEGY_ID = "stable_balanced_maker_v7"
-CLIENT_ID_PREFIX = "v7-maker-"
+STRATEGY_ID = "stable_balanced_maker_v8"
+CLIENT_ID_PREFIX = "v8-maker-"
 CAPITAL_LIMIT_CENTS = 160
 ORDER_LIMIT_CENTS = 110
 DAILY_LOSS_CENTS = 100
 FEE_RESERVE_CENTS = 5
-# Five-minute orders repeatedly reached the exchange and expired without a fill.
-# Keep queue priority for fifteen minutes while the existing adverse-move and
-# depth-toxicity exits continue to cancel deteriorating quotes early.
-QUOTE_TTL_SECONDS = 900
+# V7 proved that passive quotes can reach the front of the demo queue but still
+# produced no fills during a fifteen-minute lifetime.  V8 quotes closer to the
+# midpoint and rotates every three minutes so breadth and fillability are tested
+# promptly without crossing the spread.
+QUOTE_TTL_SECONDS = 180
 ADVERSE_MOVE_CENTS = 2
 IMMEDIATE_ADVERSE_MOVE_CENTS = 3
 TOXIC_OBSERVATIONS_REQUIRED = 3
 MAX_HOLD_SECONDS = 300
+TAKE_PROFIT_CENTS = 2
 MARKOUT_HORIZONS = (5, 30, 300)
-COHORT_SELECTOR = "diverse_game_markets_v3"
+COHORT_SELECTOR = "diverse_game_markets_v4"
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
 FRESH_FLAT_RECOVERY = "v7_fresh_flat_startup_recovery_20260919"
@@ -183,6 +185,7 @@ class MakerState:
             "capital_limit_cents": CAPITAL_LIMIT_CENTS, "order_limit_cents": ORDER_LIMIT_CENTS,
             "daily_loss_cents": DAILY_LOSS_CENTS, "quote_ttl_seconds": QUOTE_TTL_SECONDS,
             "max_hold_seconds": MAX_HOLD_SECONDS, "markout_horizons": list(MARKOUT_HORIZONS),
+            "take_profit_cents": TAKE_PROFIT_CENTS,
             "adverse_move_cents": ADVERSE_MOVE_CENTS,
             "immediate_adverse_move_cents": IMMEDIATE_ADVERSE_MOVE_CENTS,
             "toxic_observations_required": TOXIC_OBSERVATIONS_REQUIRED,
@@ -656,7 +659,8 @@ def run(data_root, *, cycles=None):
                     record_due_markouts(state, position["ticker"], frame)
                     bid, _ask, _bs, _as = price_book(frame, position["outcome"])
                     proceeds = cost(bid, Decimal(".07"), 1, False); net = proceeds - position["basis_cents"]
-                    if net <= -12 or time.time() - position["opened_at"] >= MAX_HOLD_SECONDS:
+                    if (net >= TAKE_PROFIT_CENTS or net <= -12
+                            or time.time() - position["opened_at"] >= MAX_HOLD_SECONDS):
                         price = limit_price_cents(frame, position["outcome"], "sell")
                         submit(state, journal, broker, markets, market, position["outcome"], "sell", price)
                 else:
@@ -714,7 +718,7 @@ def run(data_root, *, cycles=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", default="/var/data/kalshi-demo-v7")
+    parser.add_argument("--data-root", default="/var/data/kalshi-demo-v8")
     parser.add_argument("--cycles", type=int)
     args = parser.parse_args(argv); run(args.data_root, cycles=args.cycles)
 

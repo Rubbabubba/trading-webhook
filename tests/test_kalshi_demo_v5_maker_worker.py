@@ -43,7 +43,7 @@ def test_empty_maker_evidence_is_demo_only_and_flat(tmp_path):
         result = evidence(state, journal)
         assert result["markets"] == 0
         assert result["side_attempts"] == {"yes": 0, "no": 0}
-        assert state.load("protocol")["quote_ttl_seconds"] == QUOTE_TTL_SECONDS == 900
+        assert state.load("protocol")["quote_ttl_seconds"] == QUOTE_TTL_SECONDS == 180
     finally:
         journal.close(); state.close()
 
