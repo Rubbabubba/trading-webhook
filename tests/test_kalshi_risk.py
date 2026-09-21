@@ -36,6 +36,22 @@ def test_fifo_partial_fees_exact_and_accounting_identity():
     assert isinstance(report(state)['daily_realized'],str)
 
 
+def test_fractional_execution_pieces_reconcile_to_whole_contract():
+    record, evidence = event(
+        'b', 'bid', 1, '0.40', '0.01', '2026-09-14T12:00:00Z'
+    )
+    first = deepcopy(evidence['fills'][0])
+    first.update(fill_id='fraction-one', count_fp='0.81', fee_cost='0.0081')
+    second = deepcopy(evidence['fills'][0])
+    second.update(fill_id='fraction-two', count_fp='0.19', fee_cost='0.0019')
+    evidence.update(fills=[first, second], gross_dollars='0.4000', fees_dollars='0.0100')
+
+    state = replay([record], {'b': evidence}, as_of=NOW)
+
+    assert state['positions'] == {'TEST': 1}
+    assert state['open_basis'] == Fraction(41, 100)
+
+
 def test_central_midnight_and_daylight_saving_boundary():
     b=event('b','bid',1,'0.40','0.01','2026-09-14T04:00:00Z')
     s=event('s','ask',1,'0.50','0.01','2026-09-14T04:59:59Z')

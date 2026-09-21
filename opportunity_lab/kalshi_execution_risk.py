@@ -60,7 +60,10 @@ def replay(records, evidence, *, as_of=None, settlements=()):
             if record["filled"] or record["state"] in ("terminal", "working"):
                 raise ValueError("missing_accounting_evidence")
             continue
-        total, gross, fees = 0, Fraction(0), Fraction(0)
+        # A whole-contract order can arrive as multiple fractional execution
+        # records.  Preserve those exact pieces for fee and basis accounting,
+        # then require their aggregate to match the journal's integral fill.
+        total, gross, fees = Fraction(0), Fraction(0), Fraction(0)
         for fill in detail["fills"]:
             fid = fill.get("fill_id")
             if not isinstance(fid, str) or not fid or fid in seen:
@@ -71,13 +74,13 @@ def replay(records, evidence, *, as_of=None, settlements=()):
                     or type(fill.get("subaccount_number")) is not int or fill["subaccount_number"] != 0):
                 raise ValueError("accounting_identity_mismatch")
             count, price, fee = amount(fill["count_fp"]), amount(fill["yes_price_dollars"]), amount(fill["fee_cost"])
-            if count.denominator != 1 or count <= 0 or price > 1:
+            if count <= 0 or count > record["filled"] or price > 1:
                 raise ValueError("unsupported_accounting_fill")
             at = timestamp(fill.get("created_time"))
             if at > now:
                 raise ValueError("future_fill_evidence")
-            total += int(count); gross += count * price; fees += fee
-            events.append((at, index, fid, p["ticker"], p["side"], int(count), count * price, fee))
+            total += count; gross += count * price; fees += fee
+            events.append((at, index, fid, p["ticker"], p["side"], count, count * price, fee))
         if total != record["filled"] or gross != amount(detail["gross_dollars"]) or fees != amount(detail["fees_dollars"]):
             raise ValueError("accounting_totals_mismatch")
     settled = set()
