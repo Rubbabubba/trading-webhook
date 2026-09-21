@@ -262,15 +262,22 @@ class DemoBroker:
             if fill_id in unique and unique[fill_id] != fill:
                 raise ValueError("fill_identity_changed")
             unique[fill_id] = fill
-        total, fees, gross = 0, Decimal(0), Decimal(0)
+        # Kalshi may split a whole-contract order into fractional execution
+        # records even though the order-level filled quantity is whole.  Keep
+        # the journal whole-contract-only, but sum the validated fill pieces as
+        # Decimal before reconciling them to the integral order total.
+        total, fees, gross = Decimal(0), Decimal(0), Decimal(0)
         for fill in unique.values():
             if (fill.get("order_id") != broker_id or fill.get("ticker") != payload["ticker"]
                     or fill.get("outcome_side") != outcome_for_book(payload["side"]) or fill.get("book_side") != payload["side"]
                     or type(fill.get("subaccount_number")) is not int or fill["subaccount_number"] != 0):
                 raise ValueError("fill_identity_mismatch")
-            q, price, fee = quantity(fill.get("count_fp")), decimal_value(fill.get("yes_price_dollars")), decimal_value(fill.get("fee_cost"))
+            q = decimal_value(fill.get("count_fp"))
+            price = decimal_value(fill.get("yes_price_dollars"))
+            fee = decimal_value(fill.get("fee_cost"))
             limit = decimal_value(payload["price"])
-            if q <= 0 or not 0 <= price <= 1 or fee < 0 or (price > limit if payload["side"] == "bid" else price < limit):
+            if (q <= 0 or q > count or not 0 <= price <= 1 or fee < 0
+                    or (price > limit if payload["side"] == "bid" else price < limit)):
                 raise ValueError("invalid_fill_amount")
             total += q
             fees += fee

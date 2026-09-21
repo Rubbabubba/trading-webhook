@@ -98,6 +98,25 @@ def test_complete_fill_and_fee_evidence_survives_restart(scenario, tmp_path):
     second.close()
 
 
+def test_fractional_fill_components_reconcile_to_whole_order(scenario):
+    j, exchange, broker = scenario
+    first = fill()
+    first.update(fill_id="fraction-one", count_fp="0.81", fee_cost="0.0081")
+    second = fill()
+    second.update(fill_id="fraction-two", count_fp="1.19", fee_cost="0.0119")
+    exchange.fills = [first, second]
+
+    result = broker.submit("one")
+
+    assert result["state"] == "terminal"
+    assert result["filled"] == 2
+    detail = json.loads(j.db.execute(
+        "SELECT detail FROM broker_evidence WHERE client_id='one'"
+    ).fetchone()[0])
+    assert Decimal(detail["gross_dollars"]) == Decimal("0.800")
+    assert Decimal(detail["fees_dollars"]) == Decimal("0.0200")
+
+
 @pytest.mark.parametrize("error", [TimeoutError(), BrokerError(400), BrokerError(409), BrokerError(429), BrokerError(503)])
 def test_failed_submission_never_resends_and_can_recover(scenario, tmp_path, error):
     j, exchange, broker = scenario
