@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import statistics
 import time
 import uuid
 
@@ -18,6 +19,7 @@ from .kalshi_binary_journal import BinaryJournal
 from .kalshi_demo_broker import DemoClient, check_exchange
 from .kalshi_demo_market_data import DemoMarkets
 from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame
+from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
 from .kalshi_maker_v5 import maker_quote
 from .kalshi_maker_v10 import (
     MARKOUT_HORIZONS as V10_MARKOUT_HORIZONS,
@@ -190,13 +192,16 @@ class MakerState:
           CREATE TABLE IF NOT EXISTS v10_shadow_signals(
             id INTEGER PRIMARY KEY AUTOINCREMENT,ticker TEXT NOT NULL,
             observed_at REAL NOT NULL,outcome TEXT NOT NULL,
-            price_cents INTEGER NOT NULL,detail TEXT NOT NULL);
+            price_cents INTEGER NOT NULL,detail TEXT NOT NULL,event_id TEXT);
           CREATE TABLE IF NOT EXISTS v10_shadow_markouts(
             signal_id INTEGER NOT NULL,horizon_seconds INTEGER NOT NULL,
             observed_at REAL NOT NULL,yes_mid TEXT NOT NULL,
             gross_cents TEXT NOT NULL,stressed_cents TEXT NOT NULL,
             PRIMARY KEY(signal_id,horizon_seconds));
         """)
+        if "event_id" not in {
+                row[1] for row in self.db.execute("PRAGMA table_info(v10_shadow_signals)")}:
+            self.db.execute("ALTER TABLE v10_shadow_signals ADD COLUMN event_id TEXT")
         protocol = {
             "strategy_id": STRATEGY_ID, "environment": "demo", "one_contract": True,
             "capital_limit_cents": CAPITAL_LIMIT_CENTS, "order_limit_cents": ORDER_LIMIT_CENTS,
@@ -562,7 +567,7 @@ def pending_markout_ticker(state):
     return None
 
 
-def observe_v10_shadow(state, ticker, history, frame):
+def observe_v10_shadow(state, ticker, history, frame, independent_event=None):
     """Record prospective V10 signals and cost-stressed future markouts."""
     observed_at = frame["received_at"]
     yes_mid = midpoint(frame)
@@ -588,24 +593,24 @@ def observe_v10_shadow(state, ticker, history, frame):
     if signal is None:
         return None
     state.db.execute(
-        "INSERT INTO v10_shadow_signals(ticker,observed_at,outcome,price_cents,detail) "
-        "VALUES(?,?,?,?,?)",
+        "INSERT INTO v10_shadow_signals(ticker,observed_at,outcome,price_cents,detail,event_id) "
+        "VALUES(?,?,?,?,?,?)",
         (ticker, observed_at, signal["outcome"], signal["price_cents"],
-         json.dumps(signal, sort_keys=True)),
+         json.dumps(signal, sort_keys=True), independent_event or ticker),
     )
     state.record(ticker, {"action": "v10_shadow_signal", **signal,
                           "execution_enabled": False, "environment": "demo"})
     return signal
 
 
-def observe_frame(state, ticker, frame):
+def observe_frame(state, ticker, frame, independent_event=None):
     """Feed one decision-time frame to both frozen V9 and shadow V10."""
     rows = state.db.execute(
         "SELECT at,mid FROM history WHERE ticker=? AND at>=? ORDER BY at",
         (ticker, frame["received_at"] - 300),
     ).fetchall()
     history = [(at, Fraction(mid)) for at, mid in rows]
-    observe_v10_shadow(state, ticker, history, frame)
+    observe_v10_shadow(state, ticker, history, frame, independent_event)
     state.db.execute("INSERT INTO history VALUES(?,?,?)",
                      (frame["received_at"], ticker, str(midpoint(frame))))
     state.db.execute("DELETE FROM history WHERE at<?", (frame["received_at"] - 300,))
@@ -646,6 +651,28 @@ def evidence(state, journal):
         "SELECT coalesce(sum(CAST(stressed_cents AS REAL)),0) FROM v10_shadow_markouts "
         "WHERE horizon_seconds=?", (h,)
     ).fetchone()[0] for h in V10_MARKOUT_HORIZONS}
+    complete_signals = state.db.execute(
+        "SELECT count(*) FROM (SELECT signal_id FROM v10_shadow_markouts "
+        "GROUP BY signal_id HAVING count(DISTINCT horizon_seconds)=?)",
+        (len(V10_MARKOUT_HORIZONS),),
+    ).fetchone()[0]
+    independent_events = state.db.execute(
+        "SELECT count(DISTINCT coalesce(s.event_id,s.ticker)) "
+        "FROM v10_shadow_signals s JOIN (SELECT signal_id FROM v10_shadow_markouts "
+        "GROUP BY signal_id HAVING count(DISTINCT horizon_seconds)=?) c ON c.signal_id=s.id",
+        (len(V10_MARKOUT_HORIZONS),),
+    ).fetchone()[0]
+    v10_lcb = {}
+    for horizon in V10_MARKOUT_HORIZONS:
+        clusters = [float(row[0]) for row in state.db.execute(
+            "SELECT avg(CAST(m.stressed_cents AS REAL)) FROM v10_shadow_markouts m "
+            "JOIN v10_shadow_signals s ON s.id=m.signal_id "
+            "WHERE m.horizon_seconds=? GROUP BY coalesce(s.event_id,s.ticker)",
+            (horizon,),
+        ).fetchall()]
+        v10_lcb[str(horizon)] = None if len(clusters) < 2 else (
+            statistics.mean(clusters) - 1.96 * statistics.stdev(clusters) / len(clusters) ** .5
+        )
     return {
         "environment": "demo", "post_only": True,
         "markets": len({row[1] for row in metadata}),
@@ -665,8 +692,11 @@ def evidence(state, journal):
             "strategy_id": V10_STRATEGY_ID,
             "execution_enabled": False,
             "signals": state.db.execute("SELECT count(*) FROM v10_shadow_signals").fetchone()[0],
+            "complete_signals": complete_signals,
+            "independent_events": independent_events,
             "markout_records": v10_marks,
             "stressed_markout_pnl_cents": v10_pnl,
+            "event_cluster_lcb_cents": v10_lcb,
         },
     }
 
@@ -676,6 +706,16 @@ def write_status(path, state, journal, **values):
                "strategy_id": STRATEGY_ID, "evidence": evidence(state, journal), **values}
     temp = path.with_suffix(".tmp"); temp.write_text(json.dumps(payload, indent=2) + "\n")
     temp.replace(path)
+    # Monitoring is deterministic and isolated from execution.  It is bounded
+    # to one check per minute and must never stop trading if its own artifact
+    # write fails.
+    try:
+        decision = run_deterministic_monitor(path.parent, payload)
+        if decision.get("investigation_needed"):
+            log_event("deterministic_monitor_escalation",
+                      triggers=decision.get("triggers", []))
+    except Exception as exc:
+        log_event("deterministic_monitor_error", error_code=safe_cycle_error(exc))
 
 
 def recover_or_report(root, state, journal, broker):
@@ -745,7 +785,11 @@ def run(data_root, *, cycles=None):
                             frame = one_contract_frame(
                                 quote, book_id=str(quote["observed_at"])
                             )
-                            observe_frame(state, ticker, frame)
+                            active_event = state.db.execute(
+                                "SELECT event_id FROM intent_meta WHERE client_id=?", (cid,)
+                            ).fetchone()
+                            observe_frame(state, ticker, frame,
+                                          active_event[0] if active_event else ticker)
                             cancel_reason = observe_working_quote(state, refreshed, frame)
                         except ValueError as error:
                             if str(error) != "missing_book":
@@ -767,7 +811,7 @@ def run(data_root, *, cycles=None):
                 elif position:
                     raw, _a, _b = markets.get(position["ticker"]); market = raw["market"]
                     quote = markets.quote({"ticker": position["ticker"]}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
-                    observe_frame(state, position["ticker"], frame)
+                    observe_frame(state, position["ticker"], frame, position["event_id"])
                     record_due_markouts(state, position["ticker"], frame)
                     bid, _ask, _bs, _as = price_book(frame, position["outcome"])
                     proceeds = cost(bid, Decimal(".07"), 1, False); net = proceeds - position["basis_cents"]
@@ -779,7 +823,12 @@ def run(data_root, *, cycles=None):
                     pending = pending_markout_ticker(state)
                     if pending:
                         quote = markets.quote({"ticker": pending}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
-                        observe_frame(state, pending, frame)
+                        pending_event = state.db.execute(
+                            "SELECT event_id FROM intent_meta WHERE ticker=? "
+                            "ORDER BY created_at DESC LIMIT 1", (pending,)
+                        ).fetchone()
+                        observe_frame(state, pending, frame,
+                                      pending_event[0] if pending_event else pending)
                         record_due_markouts(state, pending, frame)
                     else:
                         market = cohort[scan % len(cohort)]; scan += 1; state.save("scan", scan)
@@ -792,7 +841,7 @@ def run(data_root, *, cycles=None):
                             frame = None
                             state.record(market["ticker"], {"action": "scan_skip", "reason": "missing_book"})
                         if frame is not None:
-                            rows = observe_frame(state, market["ticker"], frame)
+                            rows = observe_frame(state, market["ticker"], frame, event_id(market))
                             preferred = preferred_outcome(state, journal, market["ticker"])
                             try:
                                 signal = maker_quote(rows, frame, preferred)

@@ -1,0 +1,14 @@
+{
+  "version": "kalshi_deterministic_monitor_v1",
+  "check_interval_seconds": 60,
+  "status_stale_seconds": 180,
+  "persistent_fault_checks": 3,
+  "daily_ai_review_target": "08:15 America/Chicago",
+  "routine_check_uses_ai": false,
+  "external_process_failure_detector": "Render native service failure alerts",
+  "review_packet": "/var/data/kalshi-demo-v9/monitor/review_packet.json",
+  "checkpoint": "/var/data/kalshi-demo-v9/monitor/checkpoint.json",
+  "metrics": "/var/data/kalshi-demo-v9/monitor/metrics.json",
+  "production_execution_enabled": false,
+  "v10_execution_enabled": false
+}

@@ -112,7 +112,10 @@ def test_v10_shadow_signals_and_markouts_never_enable_execution(tmp_path):
         result = evidence(state, journal)["v10_shadow"]
         assert result["execution_enabled"] is False
         assert result["signals"] >= 1
+        assert result["complete_signals"] == 1
+        assert result["independent_events"] == 1
         assert result["markout_records"] == {"5": 1, "30": 1, "300": 1}
+        assert result["event_cluster_lcb_cents"] == {"5": None, "30": None, "300": None}
     finally:
         journal.close(); state.close()
 
