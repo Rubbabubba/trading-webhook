@@ -241,6 +241,10 @@ def recover(state, journal, broker):
                 continue
         if row["state"] == "working":
             broker.cancel(cid)
+    # A filled market can settle while the service is restarting.  Record this
+    # ledger's settlement before comparing active positions, since settled
+    # contracts correctly disappear from the exchange position endpoint.
+    broker.reconcile_settlements()
     broker.reconcile_positions(allow_reserved=True)
     stopped = journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0]
     records = journal.records()

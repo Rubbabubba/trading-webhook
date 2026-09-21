@@ -27,7 +27,7 @@ def quote(j,cid):
 
 class Exchange:
     def __init__(self,j):
-        self.j=j;self.posts=0;self.positions={};self.orders={};self.fills={};self.partial=False;self.timeout=False;self.resting_only=False
+        self.j=j;self.posts=0;self.positions={};self.orders={};self.fills={};self.settlements=[];self.partial=False;self.timeout=False;self.resting_only=False
     def request(self,method,path,**kwargs):
         if path=='/exchange/status':return dict(exchange_active=True,trading_active=True)
         if path=='/portfolio/balance':return {'balance':50000}
@@ -57,6 +57,7 @@ class Exchange:
         return {'order':deepcopy(self.orders[path.rsplit('/',1)[-1]])}
     def pages(self,path,field,**kwargs):
         if path.startswith('/historical/'):return []
+        if field=='settlements':return deepcopy(self.settlements)
         if field=='fills':return deepcopy(self.fills.get(kwargs['order_id'],[]))
         if field=='market_positions':return [dict(ticker=t,position_fp=str(q)) for t,q in self.positions.items() if q]
         if kwargs.get('status')=='resting':return [deepcopy(o) for o in self.orders.values() if o['status']=='resting']
@@ -86,6 +87,23 @@ def test_timeout_persists_and_never_resends(tmp_path):
     assert j.get('buy')['state']=='uncertain'
     with pytest.raises(ValueError):b.submit('buy',quote_snapshot=q)
     assert x.posts==1 and j.accounting()['pending_reserves']==Fraction(31,100);j.close()
+
+
+def test_settlement_reconciles_before_active_position_check(tmp_path):
+    j=BinaryJournal(tmp_path/'j.db');x=Exchange(j);b=BinaryDemoBroker(j,x)
+    j.reserve('buy','T',1,30,1,outcome='no',action='buy',account_snapshot=snapshot(j))
+    b.submit('buy',quote_snapshot=quote(j,'buy'))
+    x.positions={}
+    settled=datetime.now(timezone.utc).isoformat()
+    x.settlements=[dict(ticker='OTHER',market_result='yes',revenue=100),
+        dict(ticker='T',market_result='no',revenue=100,yes_count_fp='0',no_count_fp='1',
+             yes_total_cost_dollars='0',no_total_cost_dollars='.30',fee_cost='.01',value=0,
+             exchange_index=0,settled_time=settled)]
+
+    assert b.reconcile_settlements()['reconciled_settlements']==1
+    assert b.reconcile_positions()['positions_match']
+    assert j.accounting()['positions']=={}
+    j.close()
 
 
 def test_partial_cancel_then_exit_and_settle_no(tmp_path):

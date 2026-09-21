@@ -278,6 +278,9 @@ class FlatRecoveryBroker:
     def __init__(self):
         self.reconciled = 0
 
+    def reconcile_settlements(self):
+        return {"reconciled_settlements": 0}
+
     def reconcile_positions(self, *, allow_reserved=False):
         assert allow_reserved is True
         self.reconciled += 1

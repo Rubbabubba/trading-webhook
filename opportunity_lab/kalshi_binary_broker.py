@@ -104,3 +104,18 @@ class BinaryDemoBroker(DemoBroker):
         except Exception:
             self.journal.stop();raise
         return dict(positions_match=True,position_count=len(rows))
+
+    def reconcile_settlements(self):
+        """Record settlements for this ledger without claiming account-wide history."""
+        tickers = {r['payload']['ticker'] for r in self.journal.records()}
+        matches = {}
+        for row in self.client.pages('/portfolio/settlements', 'settlements', subaccount=0):
+            ticker = row.get('ticker')
+            if ticker not in tickers:
+                continue
+            if ticker in matches and matches[ticker] != row:
+                raise ValueError('duplicate_settlement')
+            matches[ticker] = row
+        for row in matches.values():
+            self.journal.record_settlement(row)
+        return dict(reconciled_settlements=len(matches))
