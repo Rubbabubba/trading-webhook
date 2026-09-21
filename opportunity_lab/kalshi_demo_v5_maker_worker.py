@@ -19,6 +19,13 @@ from .kalshi_demo_broker import DemoClient, check_exchange
 from .kalshi_demo_market_data import DemoMarkets
 from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame
 from .kalshi_maker_v5 import maker_quote
+from .kalshi_maker_v10 import (
+    MARKOUT_HORIZONS as V10_MARKOUT_HORIZONS,
+    SIGNAL_COOLDOWN_SECONDS as V10_SIGNAL_COOLDOWN_SECONDS,
+    STRATEGY_ID as V10_STRATEGY_ID,
+    shadow_quote as v10_shadow_quote,
+    stressed_markout as v10_stressed_markout,
+)
 from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 
@@ -180,6 +187,15 @@ class MakerState:
             client_id TEXT NOT NULL,observed_at REAL NOT NULL,evidence TEXT NOT NULL,
             PRIMARY KEY(client_id,observed_at));
           CREATE TABLE IF NOT EXISTS actions(at REAL NOT NULL,ticker TEXT,detail TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS v10_shadow_signals(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,ticker TEXT NOT NULL,
+            observed_at REAL NOT NULL,outcome TEXT NOT NULL,
+            price_cents INTEGER NOT NULL,detail TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS v10_shadow_markouts(
+            signal_id INTEGER NOT NULL,horizon_seconds INTEGER NOT NULL,
+            observed_at REAL NOT NULL,yes_mid TEXT NOT NULL,
+            gross_cents TEXT NOT NULL,stressed_cents TEXT NOT NULL,
+            PRIMARY KEY(signal_id,horizon_seconds));
         """)
         protocol = {
             "strategy_id": STRATEGY_ID, "environment": "demo", "one_contract": True,
@@ -196,6 +212,16 @@ class MakerState:
         if saved is not None and saved != protocol:
             raise ValueError("maker_protocol_changed")
         self.save("protocol", protocol)
+        shadow_protocol = {
+            "strategy_id": V10_STRATEGY_ID,
+            "execution_enabled": False,
+            "signal_cooldown_seconds": V10_SIGNAL_COOLDOWN_SECONDS,
+            "markout_horizons": list(V10_MARKOUT_HORIZONS),
+        }
+        saved_shadow = self.load("v10_shadow_protocol")
+        if saved_shadow is not None and saved_shadow != shadow_protocol:
+            raise ValueError("v10_shadow_protocol_changed")
+        self.save("v10_shadow_protocol", shadow_protocol)
 
     def save(self, name, value):
         self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)",
@@ -536,6 +562,56 @@ def pending_markout_ticker(state):
     return None
 
 
+def observe_v10_shadow(state, ticker, history, frame):
+    """Record prospective V10 signals and cost-stressed future markouts."""
+    observed_at = frame["received_at"]
+    yes_mid = midpoint(frame)
+    for signal_id, signal_at, outcome, price_cents in state.db.execute(
+            "SELECT id,observed_at,outcome,price_cents FROM v10_shadow_signals WHERE ticker=?",
+            (ticker,)).fetchall():
+        signal = {"outcome": outcome, "price_cents": price_cents}
+        markout = v10_stressed_markout(signal, yes_mid)
+        for horizon in V10_MARKOUT_HORIZONS:
+            if observed_at - signal_at >= horizon:
+                state.db.execute(
+                    "INSERT OR IGNORE INTO v10_shadow_markouts VALUES(?,?,?,?,?,?)",
+                    (signal_id, horizon, observed_at, str(yes_mid),
+                     markout["gross_cents"], markout["stressed_cents"]),
+                )
+    latest = state.db.execute(
+        "SELECT observed_at FROM v10_shadow_signals WHERE ticker=? ORDER BY observed_at DESC LIMIT 1",
+        (ticker,),
+    ).fetchone()
+    if latest is not None and observed_at - latest[0] < V10_SIGNAL_COOLDOWN_SECONDS:
+        return None
+    signal = v10_shadow_quote(history, frame)
+    if signal is None:
+        return None
+    state.db.execute(
+        "INSERT INTO v10_shadow_signals(ticker,observed_at,outcome,price_cents,detail) "
+        "VALUES(?,?,?,?,?)",
+        (ticker, observed_at, signal["outcome"], signal["price_cents"],
+         json.dumps(signal, sort_keys=True)),
+    )
+    state.record(ticker, {"action": "v10_shadow_signal", **signal,
+                          "execution_enabled": False, "environment": "demo"})
+    return signal
+
+
+def observe_frame(state, ticker, frame):
+    """Feed one decision-time frame to both frozen V9 and shadow V10."""
+    rows = state.db.execute(
+        "SELECT at,mid FROM history WHERE ticker=? AND at>=? ORDER BY at",
+        (ticker, frame["received_at"] - 300),
+    ).fetchall()
+    history = [(at, Fraction(mid)) for at, mid in rows]
+    observe_v10_shadow(state, ticker, history, frame)
+    state.db.execute("INSERT INTO history VALUES(?,?,?)",
+                     (frame["received_at"], ticker, str(midpoint(frame))))
+    state.db.execute("DELETE FROM history WHERE at<?", (frame["received_at"] - 300,))
+    return history
+
+
 def evidence(state, journal):
     maker = [row for row in journal.records() if row["intent"].get("order_mode") == "post_only_gtc"]
     maker_ids = {row["payload"]["client_order_id"] for row in maker}
@@ -563,6 +639,13 @@ def evidence(state, journal):
     marks = {str(h): state.db.execute(
         "SELECT count(*) FROM markouts WHERE horizon_seconds=?", (h,)).fetchone()[0]
         for h in MARKOUT_HORIZONS}
+    v10_marks = {str(h): state.db.execute(
+        "SELECT count(*) FROM v10_shadow_markouts WHERE horizon_seconds=?", (h,)
+    ).fetchone()[0] for h in V10_MARKOUT_HORIZONS}
+    v10_pnl = {str(h): state.db.execute(
+        "SELECT coalesce(sum(CAST(stressed_cents AS REAL)),0) FROM v10_shadow_markouts "
+        "WHERE horizon_seconds=?", (h,)
+    ).fetchone()[0] for h in V10_MARKOUT_HORIZONS}
     return {
         "environment": "demo", "post_only": True,
         "markets": len({row[1] for row in metadata}),
@@ -578,6 +661,13 @@ def evidence(state, journal):
         "markout_records": marks, "side_attempts": sides,
         "unresolved_orders": sum(r["state"] in ("uncertain", "working") for r in maker),
         "ending_position_contracts": sum(abs(v) for v in journal.accounting()["positions"].values()),
+        "v10_shadow": {
+            "strategy_id": V10_STRATEGY_ID,
+            "execution_enabled": False,
+            "signals": state.db.execute("SELECT count(*) FROM v10_shadow_signals").fetchone()[0],
+            "markout_records": v10_marks,
+            "stressed_markout_pnl_cents": v10_pnl,
+        },
     }
 
 
@@ -655,6 +745,7 @@ def run(data_root, *, cycles=None):
                             frame = one_contract_frame(
                                 quote, book_id=str(quote["observed_at"])
                             )
+                            observe_frame(state, ticker, frame)
                             cancel_reason = observe_working_quote(state, refreshed, frame)
                         except ValueError as error:
                             if str(error) != "missing_book":
@@ -676,6 +767,7 @@ def run(data_root, *, cycles=None):
                 elif position:
                     raw, _a, _b = markets.get(position["ticker"]); market = raw["market"]
                     quote = markets.quote({"ticker": position["ticker"]}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
+                    observe_frame(state, position["ticker"], frame)
                     record_due_markouts(state, position["ticker"], frame)
                     bid, _ask, _bs, _as = price_book(frame, position["outcome"])
                     proceeds = cost(bid, Decimal(".07"), 1, False); net = proceeds - position["basis_cents"]
@@ -687,6 +779,7 @@ def run(data_root, *, cycles=None):
                     pending = pending_markout_ticker(state)
                     if pending:
                         quote = markets.quote({"ticker": pending}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
+                        observe_frame(state, pending, frame)
                         record_due_markouts(state, pending, frame)
                     else:
                         market = cohort[scan % len(cohort)]; scan += 1; state.save("scan", scan)
@@ -699,12 +792,10 @@ def run(data_root, *, cycles=None):
                             frame = None
                             state.record(market["ticker"], {"action": "scan_skip", "reason": "missing_book"})
                         if frame is not None:
-                            rows = state.db.execute("SELECT at,mid FROM history WHERE ticker=? AND at>=? ORDER BY at",
-                                                    (market["ticker"], time.time() - 300)).fetchall()
+                            rows = observe_frame(state, market["ticker"], frame)
                             preferred = preferred_outcome(state, journal, market["ticker"])
                             try:
-                                observed_midpoint = midpoint(frame)
-                                signal = maker_quote([(at, Fraction(mid)) for at, mid in rows], frame, preferred)
+                                signal = maker_quote(rows, frame, preferred)
                             except ValueError as error:
                                 if str(error) != "missing_book":
                                     raise
@@ -717,9 +808,6 @@ def run(data_root, *, cycles=None):
                                                 signal["price_cents"], maker=True, context=signal)
                                 if result["filled"]:
                                     register_fill(state, result, frame)
-                            state.db.execute("INSERT INTO history VALUES(?,?,?)",
-                                             (frame["received_at"], market["ticker"], str(observed_midpoint)))
-                            state.db.execute("DELETE FROM history WHERE at<?", (time.time() - 300,))
                 snapshot = broker.snapshot() if not working_order(journal) else None
                 write_status(root / "status.json", state, journal, phase="running", errors=[],
                              demo_balance_cents=(snapshot or {}).get("balance", {}).get("balance"),

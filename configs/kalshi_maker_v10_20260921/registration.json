@@ -1,0 +1,34 @@
+{
+  "version": "queue_toxicity_maker_v10_shadow_1.0",
+  "registered_at": "2026-09-21T17:40:00Z",
+  "environment": "demo",
+  "execution_enabled": false,
+  "hypothesis": "A passive quote chosen only when 60-300 second midpoint trend and top-of-book microprice agree, with at least three cents of estimated edge, will retain positive five, 30 and 300 second markouts after a two-cent round-trip cost stress.",
+  "minimum_net_edge_cents": 3,
+  "round_trip_cost_stress_cents": 2,
+  "signal_cooldown_seconds": 300,
+  "queue_rules": {
+    "cancel_after_seconds_when_more_than_five_contracts_ahead": 45,
+    "cancel_after_seconds_when_queue_is_not_improving": 60
+  },
+  "passive_exit": {
+    "target_cents": 2,
+    "exit_fee_reserve_cents": 1,
+    "aggressive_exit_only_for_invalidation_or_risk_limit": true
+  },
+  "shadow_gate": {
+    "minimum_independent_events": 30,
+    "minimum_complete_signals": 100,
+    "required_markout_seconds": [5, 30, 300],
+    "positive_stressed_net_at_every_horizon": true,
+    "positive_event_cluster_95_percent_lower_bound": true
+  },
+  "demo_execution_gate": {
+    "minimum_round_trips": 30,
+    "minimum_independent_events": 15,
+    "positive_net_after_actual_fees": true,
+    "positive_net_after_two_cent_stress": true,
+    "flat_and_no_unresolved_orders": true
+  },
+  "production_execution_enabled": false
+}

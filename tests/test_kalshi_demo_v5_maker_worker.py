@@ -9,6 +9,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     MakerState,
     current_position,
     evidence,
+    observe_v10_shadow,
     observe_working_quote,
     preferred_outcome,
     quarantine_stale_unresolved,
@@ -88,6 +89,30 @@ def test_evidence_keeps_reconciled_fill_when_observation_was_interrupted(tmp_pat
         assert result["actual_fee_records"] == 1
         assert result["flow_context_records"] == 1
         assert state.db.execute("SELECT count(*) FROM maker_fills").fetchone()[0] == 0
+    finally:
+        journal.close(); state.close()
+
+
+def test_v10_shadow_signals_and_markouts_never_enable_execution(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        history = [(100, Fraction(".40")), (200, Fraction(".405")),
+                   (300, Fraction(".41"))]
+        signal_frame = working_frame(".40", ".46", 12, 6, at=400)
+        signal = observe_v10_shadow(state, "TEST", history, signal_frame)
+        assert signal["outcome"] == "yes"
+        assert state.db.execute("SELECT count(*) FROM v10_shadow_signals").fetchone()[0] == 1
+
+        observe_v10_shadow(
+            state, "TEST", history,
+            working_frame(".42", ".48", 12, 6, at=705),
+        )
+        result = evidence(state, journal)["v10_shadow"]
+        assert result["execution_enabled"] is False
+        assert result["signals"] >= 1
+        assert result["markout_records"] == {"5": 1, "30": 1, "300": 1}
     finally:
         journal.close(); state.close()
 
