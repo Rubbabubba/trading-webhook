@@ -539,11 +539,19 @@ def pending_markout_ticker(state):
 def evidence(state, journal):
     maker = [row for row in journal.records() if row["intent"].get("order_mode") == "post_only_gtc"]
     maker_ids = {row["payload"]["client_order_id"] for row in maker}
+    filled_maker_ids = {
+        row["payload"]["client_order_id"] for row in maker if row["filled"]
+    }
     metadata = [row for row in state.db.execute(
         "SELECT client_id,ticker,outcome FROM intent_meta WHERE kind='maker_entry'"
     ) if row[0] in maker_ids]
     sides = {side: sum(row[2] == side for row in metadata) for side in ("yes", "no")}
-    fills = state.db.execute("SELECT count(*) FROM maker_fills").fetchone()[0]
+    # The journal is the durable source of truth for executions.  A process can
+    # restart after exchange reconciliation but before the strategy database
+    # records the fill observation, especially when the market settles during
+    # that restart.  Counting only maker_fills would silently erase that valid
+    # execution from the proof sample.
+    fills = len(filled_maker_ids)
     fee_records = 0
     for row in maker:
         if not row["filled"]:
@@ -563,8 +571,10 @@ def evidence(state, journal):
         "working_quote_records": state.db.execute(
             "SELECT count(*) FROM working_quote_observations").fetchone()[0],
         "maker_fills": fills, "actual_fee_records": fee_records,
-        "flow_context_records": state.db.execute(
-            "SELECT count(*) FROM maker_fills JOIN flow_context USING(client_id)").fetchone()[0],
+        "flow_context_records": sum(
+            row[0] in filled_maker_ids
+            for row in state.db.execute("SELECT client_id FROM flow_context")
+        ),
         "markout_records": marks, "side_attempts": sides,
         "unresolved_orders": sum(r["state"] in ("uncertain", "working") for r in maker),
         "ending_position_contracts": sum(abs(v) for v in journal.accounting()["positions"].values()),

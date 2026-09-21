@@ -48,6 +48,50 @@ def test_empty_maker_evidence_is_demo_only_and_flat(tmp_path):
         journal.close(); state.close()
 
 
+def test_evidence_keeps_reconciled_fill_when_observation_was_interrupted(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        now = datetime.now(timezone.utc)
+        journal.reserve("m1", "TEST", 1, 40, 5, outcome="yes", action="buy",
+                        account_snapshot=snapshot(), order_mode="post_only_gtc")
+        quote_snapshot = {
+            "environment": "demo", "ticker": "TEST",
+            "started_at": now.timestamp(), "observed_at": now.timestamp(),
+            "orderbook_fp": {
+                "yes_dollars": [[".39", "10"]],
+                "no_dollars": [[".59", "10"]],
+            },
+        }
+        journal.mark_submission_started(
+            "m1", account_snapshot=snapshot(), quote_snapshot=quote_snapshot
+        )
+        fill = {
+            "fill_id": "fill-1", "order_id": "broker-1", "ticker": "TEST",
+            "outcome_side": "yes", "book_side": "bid", "subaccount_number": 0,
+            "count_fp": "1", "yes_price_dollars": ".40", "fee_cost": "0",
+            "created_time": now.isoformat(),
+        }
+        journal.reconcile(
+            "m1", broker_id="broker-1", filled=1, remaining=0, terminal=True,
+            evidence={"fills": [fill], "gross_dollars": ".40", "fees_dollars": "0"},
+        )
+        state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
+                         ("m1", "maker_entry", "EVENT", "TEST", "yes", now.timestamp()))
+        state.db.execute("INSERT INTO flow_context VALUES(?,?)",
+                         ("m1", '{"yes_mid":"79/200"}'))
+
+        result = evidence(state, journal)
+
+        assert result["maker_fills"] == 1
+        assert result["actual_fee_records"] == 1
+        assert result["flow_context_records"] == 1
+        assert state.db.execute("SELECT count(*) FROM maker_fills").fetchone()[0] == 0
+    finally:
+        journal.close(); state.close()
+
+
 def working_frame(yes_bid, yes_ask, bid_depth=10, ask_depth=10, *, at=100.0):
     yes_bid = Fraction(yes_bid)
     yes_ask = Fraction(yes_ask)
