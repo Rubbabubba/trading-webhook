@@ -25,7 +25,7 @@ from .kalshi_maker_v10 import (
     MARKOUT_HORIZONS as V10_MARKOUT_HORIZONS,
     SIGNAL_COOLDOWN_SECONDS as V10_SIGNAL_COOLDOWN_SECONDS,
     STRATEGY_ID as V10_STRATEGY_ID,
-    shadow_quote as v10_shadow_quote,
+    shadow_decision as v10_shadow_decision,
     stressed_markout as v10_stressed_markout,
 )
 from .kalshi_process_lock import acquire
@@ -198,6 +198,8 @@ class MakerState:
             observed_at REAL NOT NULL,yes_mid TEXT NOT NULL,
             gross_cents TEXT NOT NULL,stressed_cents TEXT NOT NULL,
             PRIMARY KEY(signal_id,horizon_seconds));
+          CREATE TABLE IF NOT EXISTS v10_shadow_evaluations(
+            reason TEXT PRIMARY KEY,count INTEGER NOT NULL,last_at REAL NOT NULL);
         """)
         if "event_id" not in {
                 row[1] for row in self.db.execute("PRAGMA table_info(v10_shadow_signals)")}:
@@ -589,7 +591,12 @@ def observe_v10_shadow(state, ticker, history, frame, independent_event=None):
     ).fetchone()
     if latest is not None and observed_at - latest[0] < V10_SIGNAL_COOLDOWN_SECONDS:
         return None
-    signal = v10_shadow_quote(history, frame)
+    signal, reason = v10_shadow_decision(history, frame)
+    state.db.execute(
+        "INSERT INTO v10_shadow_evaluations(reason,count,last_at) VALUES(?,1,?) "
+        "ON CONFLICT(reason) DO UPDATE SET count=count+1,last_at=excluded.last_at",
+        (reason, observed_at),
+    )
     if signal is None:
         return None
     state.db.execute(
@@ -651,6 +658,11 @@ def evidence(state, journal):
         "SELECT coalesce(sum(CAST(stressed_cents AS REAL)),0) FROM v10_shadow_markouts "
         "WHERE horizon_seconds=?", (h,)
     ).fetchone()[0] for h in V10_MARKOUT_HORIZONS}
+    evaluation_rows = state.db.execute(
+        "SELECT reason,count,last_at FROM v10_shadow_evaluations"
+    ).fetchall()
+    v10_evaluations = sum(row[1] for row in evaluation_rows)
+    v10_last_evaluation = max((row[2] for row in evaluation_rows), default=None)
     complete_signals = state.db.execute(
         "SELECT count(*) FROM (SELECT signal_id FROM v10_shadow_markouts "
         "GROUP BY signal_id HAVING count(DISTINCT horizon_seconds)=?)",
@@ -692,6 +704,11 @@ def evidence(state, journal):
             "strategy_id": V10_STRATEGY_ID,
             "execution_enabled": False,
             "signals": state.db.execute("SELECT count(*) FROM v10_shadow_signals").fetchone()[0],
+            "evaluations": v10_evaluations,
+            "last_evaluation_at": v10_last_evaluation,
+            "rejection_reasons": {
+                reason: count for reason, count, _at in evaluation_rows if reason != "signal"
+            },
             "complete_signals": complete_signals,
             "independent_events": independent_events,
             "markout_records": v10_marks,

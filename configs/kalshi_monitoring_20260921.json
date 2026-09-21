@@ -3,6 +3,7 @@
   "check_interval_seconds": 60,
   "status_stale_seconds": 180,
   "persistent_fault_checks": 3,
+  "evidence_stale_seconds": 900,
   "daily_ai_review_target": "08:15 America/Chicago",
   "routine_check_uses_ai": false,
   "external_process_failure_detector": "Render native service failure alerts",

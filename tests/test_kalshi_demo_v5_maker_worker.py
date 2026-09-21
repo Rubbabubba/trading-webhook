@@ -112,10 +112,30 @@ def test_v10_shadow_signals_and_markouts_never_enable_execution(tmp_path):
         result = evidence(state, journal)["v10_shadow"]
         assert result["execution_enabled"] is False
         assert result["signals"] >= 1
+        assert result["evaluations"] == 2
+        assert result["last_evaluation_at"] == 705
+        assert result["rejection_reasons"] == {"insufficient_history": 1}
         assert result["complete_signals"] == 1
         assert result["independent_events"] == 1
         assert result["markout_records"] == {"5": 1, "30": 1, "300": 1}
         assert result["event_cluster_lcb_cents"] == {"5": None, "30": None, "300": None}
+    finally:
+        journal.close(); state.close()
+
+
+def test_v10_shadow_records_rejection_reason(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        assert observe_v10_shadow(
+            state, "TEST", [(100, Fraction(".40")), (200, Fraction(".405"))],
+            working_frame(".40", ".46", 12, 6, at=400),
+        ) is None
+        result = evidence(state, journal)["v10_shadow"]
+        assert result["evaluations"] == 1
+        assert result["last_evaluation_at"] == 400
+        assert result["rejection_reasons"] == {"insufficient_history": 1}
     finally:
         journal.close(); state.close()
 

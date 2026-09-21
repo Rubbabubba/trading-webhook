@@ -52,6 +52,11 @@ V10 status now includes complete signals, independent events and a deterministic
 event-cluster 95% lower confidence bound for each registered horizon. Missing
 events, horizons or confidence bounds cannot pass the gate. This adds evidence
 measurement only; it does not alter signals, orders, risk or promotion rules.
+Each eligible V10 market evaluation is also counted and classified as a signal
+or a specific rejection reason. If the running worker records no new evaluation
+for 15 minutes, the deterministic monitor raises `v10_evidence_stalled`; the
+fault clears when evaluation progress resumes. This distinguishes a functioning
+strategy that rejects current books from a stalled evidence pipeline.
 
 Render remains the independent stopped-process detector. The in-process checker
 detects stale status and persistent application faults. A critical process exit

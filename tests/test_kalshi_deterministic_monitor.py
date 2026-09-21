@@ -23,7 +23,10 @@ def healthy(at="2026-09-21T18:00:00+00:00"):
             "unresolved_orders": 0, "ending_position_contracts": 0,
             "v10_shadow": {
                 "strategy_id": "queue_toxicity_maker_v10_shadow",
-                "execution_enabled": False, "signals": 0, "complete_signals": 0,
+                "execution_enabled": False, "signals": 0, "evaluations": 10,
+                "last_evaluation_at": 1790013600,
+                "rejection_reasons": {"directional_disagreement": 10},
+                "complete_signals": 0,
                 "independent_events": 0, "markout_records": {"5": 0, "30": 0, "300": 0},
                 "stressed_markout_pnl_cents": {"5": 0, "30": 0, "300": 0},
                 "event_cluster_lcb_cents": {"5": None, "30": None, "300": None},
@@ -119,3 +122,25 @@ def test_gate_transition_triggers_once():
     packet, _, duplicate = check(status, checkpoint, REGISTRATION, now=1790013721)
     assert not packet["investigation_needed"]
     assert not duplicate
+
+
+def test_v10_evidence_stall_and_recovery_are_detected():
+    first_status = healthy("2026-09-21T18:00:01+00:00")
+    _, checkpoint, _ = check(first_status, {}, REGISTRATION, now=1790013601)
+
+    still_fresh = healthy("2026-09-21T18:14:59+00:00")
+    packet, checkpoint, _ = check(still_fresh, checkpoint, REGISTRATION,
+                                  now=1790014499)
+    assert "v10_evidence_stalled" not in packet["health"]["faults"]
+
+    stalled = healthy("2026-09-21T18:15:01+00:00")
+    packet, checkpoint, _ = check(stalled, checkpoint, REGISTRATION,
+                                  now=1790014501)
+    assert "v10_evidence_stalled" in packet["health"]["faults"]
+    assert "new_fault" in packet["trigger_categories"]
+
+    recovered = healthy("2026-09-21T18:16:01+00:00")
+    recovered["evidence"]["v10_shadow"]["evaluations"] += 1
+    packet, _, _ = check(recovered, checkpoint, REGISTRATION, now=1790014561)
+    assert "v10_evidence_stalled" not in packet["health"]["faults"]
+    assert "recovery" in packet["trigger_categories"]

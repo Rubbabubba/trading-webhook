@@ -5,6 +5,7 @@ import pytest
 from opportunity_lab.kalshi_maker_v10 import (
     passive_exit_quote,
     queue_cancel_reason,
+    shadow_decision,
     shadow_quote,
     stressed_markout,
 )
@@ -40,6 +41,16 @@ def test_shadow_quote_rejects_disagreement_cost_shortfall_and_sparse_history():
     assert shadow_quote(rising, frame(yes_depth="6", no_depth="12")) is None
     assert shadow_quote(rising[:2], frame()) is None
     assert shadow_quote(rising, frame(yes_bid=".42", no_bid=".55")) is None
+
+
+def test_shadow_decision_explains_signal_and_rejections():
+    rising = [(100, Fraction(".40")), (200, Fraction(".405")),
+              (300, Fraction(".41"))]
+    quote, reason = shadow_decision(rising, frame())
+    assert quote["outcome"] == "yes" and reason == "signal"
+    assert shadow_decision(rising[:2], frame()) == (None, "insufficient_history")
+    assert shadow_decision(rising, frame(yes_depth="6", no_depth="12"))[1] \
+        == "directional_disagreement"
 
 
 def test_queue_cancel_requires_stale_bad_position_or_no_improvement():

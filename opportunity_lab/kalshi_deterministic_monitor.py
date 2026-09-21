@@ -16,6 +16,7 @@ import time
 CHECK_INTERVAL_SECONDS = 60
 STATUS_STALE_SECONDS = 180
 PERSISTENT_FAULT_CHECKS = 3
+EVIDENCE_STALE_SECONDS = 15 * 60
 DAILY_REVIEW_SECONDS = 24 * 60 * 60
 EXPECTED_STRATEGY = "stable_balanced_maker_v9"
 EXPECTED_V10 = "queue_toxicity_maker_v10_shadow"
@@ -130,6 +131,9 @@ def _evidence_snapshot(status):
         "unresolved_orders": int(evidence.get("unresolved_orders") or 0),
         "ending_position_contracts": int(evidence.get("ending_position_contracts") or 0),
         "v10_signals": int(shadow.get("signals") or 0),
+        "v10_evaluations": int(shadow.get("evaluations") or 0),
+        "v10_last_evaluation_at": shadow.get("last_evaluation_at"),
+        "v10_rejection_reasons": shadow.get("rejection_reasons", {}),
         "v10_complete_signals": int(shadow.get("complete_signals") or 0),
         "v10_independent_events": int(shadow.get("independent_events") or 0),
         "v10_markout_records": shadow.get("markout_records", {}),
@@ -150,7 +154,18 @@ def _delta(current, previous):
 def check(status, checkpoint, registration, *, now):
     active = faults(status, now=now)
     previous_faults = checkpoint.get("active_faults", [])
-    repeats = int(checkpoint.get("fault_repeats") or 0) + 1 if active == previous_faults and active else (1 if active else 0)
+    current_evidence = _evidence_snapshot(status)
+    prior_evaluations = checkpoint.get("evidence", {}).get("v10_evaluations")
+    evaluations = current_evidence["v10_evaluations"]
+    last_progress_at = float(checkpoint.get("last_v10_progress_at") or now)
+    if prior_evaluations is None or evaluations != prior_evaluations:
+        last_progress_at = now
+    elif (status.get("phase") == "running"
+          and now - last_progress_at >= EVIDENCE_STALE_SECONDS):
+        active = sorted(set(active) | {"v10_evidence_stalled"})
+
+    repeats = (int(checkpoint.get("fault_repeats") or 0) + 1
+               if active == previous_faults and active else (1 if active else 0))
     gate = gate_state(status, registration)
     prior_gate = checkpoint.get("gate_state")
     new_faults = sorted(set(active) - set(previous_faults))
@@ -169,7 +184,6 @@ def check(status, checkpoint, registration, *, now):
         triggers.append("evidence_gate_transition")
     if daily_due:
         triggers.append("daily_review")
-    current_evidence = _evidence_snapshot(status)
     packet = {
         "schema": "kalshi_compact_review_packet_v1",
         "generated_at": _iso(now),
@@ -223,6 +237,7 @@ def check(status, checkpoint, registration, *, now):
             fingerprint if packet["investigation_needed"] else checkpoint.get("last_escalation_fingerprint")
         ),
         "last_fault_fingerprint": state_fingerprint if active else None,
+        "last_v10_progress_at": last_progress_at,
     }
     return packet, next_checkpoint, duplicate
 

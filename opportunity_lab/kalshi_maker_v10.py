@@ -42,8 +42,8 @@ def _decimal_text(value):
     return format(Decimal(value.numerator) / Decimal(value.denominator), "f")
 
 
-def shadow_quote(history, frame):
-    """Return a cost-stressed directional maker quote or ``None``.
+def shadow_decision(history, frame):
+    """Return ``(quote, reason)`` for one prospective shadow evaluation.
 
     Direction requires agreement between a 60--300 second midpoint trend and
     current top-of-book depth.  The quoted price must remain passive and retain
@@ -53,16 +53,16 @@ def shadow_quote(history, frame):
     at = frame["received_at"]
     anchors = [mid for when, mid in history if 60 <= at - when <= 300]
     if len(anchors) < 3:
-        return None
+        return None, "insufficient_history"
     yes_bid, yes_ask, bid_depth, ask_depth = price_book(frame, "yes")
     yes_mid = (yes_bid + yes_ask) / 2
     if not Fraction(20, 100) <= yes_mid <= Fraction(80, 100):
-        return None
+        return None, "midpoint_out_of_range"
     spread = yes_ask - yes_bid
     if not Fraction(4, 100) <= spread <= Fraction(10, 100):
-        return None
+        return None, "spread_out_of_range"
     if min(bid_depth, ask_depth) < 3 or max(bid_depth, ask_depth) > min(bid_depth, ask_depth) * 4:
-        return None
+        return None, "depth_out_of_range"
 
     anchor = _median(anchors)
     trend = yes_mid - anchor
@@ -76,7 +76,7 @@ def shadow_quote(history, frame):
     elif trend * 100 <= -MIN_TREND_CENTS and imbalance <= -MIN_IMBALANCE and micro_shift < 0:
         outcome = "no"
     else:
-        return None
+        return None, "directional_disagreement"
 
     raw_shift = (trend + micro_shift) / 2
     bound = Fraction(MAX_FAIR_SHIFT_CENTS, 100)
@@ -85,13 +85,13 @@ def shadow_quote(history, frame):
     side_bid, side_ask, _side_bid_depth, _side_ask_depth = price_book(frame, outcome)
     bid_cents, ask_cents = _whole_cents(side_bid), _whole_cents(side_ask)
     if bid_cents is None or ask_cents is None:
-        return None
+        return None, "fractional_book"
     # Fractions use floor division here so an optimistic fractional cent can
     # never be counted as available edge.
     fair_cents_floor = (fair * 100).numerator // (fair * 100).denominator
     quote_cents = min(ask_cents - 1, fair_cents_floor - MIN_NET_EDGE_CENTS)
     if not bid_cents < quote_cents < ask_cents:
-        return None
+        return None, "insufficient_passive_edge"
     return {
         "strategy_id": STRATEGY_ID,
         "outcome": outcome,
@@ -104,7 +104,12 @@ def shadow_quote(history, frame):
         "microprice_yes": str(microprice),
         "imbalance": str(imbalance),
         "spread_cents": int(spread * 100),
-    }
+    }, "signal"
+
+
+def shadow_quote(history, frame):
+    """Return a cost-stressed directional maker quote or ``None``."""
+    return shadow_decision(history, frame)[0]
 
 
 def queue_cancel_reason(observations, *, age_seconds):
