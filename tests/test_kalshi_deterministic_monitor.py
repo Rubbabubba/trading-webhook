@@ -36,6 +36,7 @@ def test_missing_evidence_cannot_pass_gate():
     result = gate_state(healthy(), REGISTRATION)
     assert result["state"] == "collecting"
     assert not result["requirements"]["minimum_complete_signals"]
+    assert not result["requirements"]["complete_horizons"]
 
 
 def test_complete_positive_gate_passes():

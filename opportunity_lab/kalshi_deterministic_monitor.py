@@ -66,7 +66,9 @@ def gate_state(status, registration):
         "execution_disabled": shadow.get("execution_enabled") is False,
         "minimum_independent_events": events >= int(gate.get("minimum_independent_events", 0)),
         "minimum_complete_signals": complete >= int(gate.get("minimum_complete_signals", 0)),
-        "complete_horizons": bool(horizons) and all(int(marks.get(h, 0)) >= signals for h in horizons),
+        "complete_horizons": signals > 0 and bool(horizons) and all(
+            int(marks.get(h, 0)) >= signals for h in horizons
+        ),
         "positive_stressed_net": bool(horizons) and all(_number(pnl.get(h)) > 0 for h in horizons),
         "positive_event_cluster_lcb": bool(horizons) and all(
             lcbs.get(h) is not None and _number(lcbs[h]) > 0 for h in horizons
