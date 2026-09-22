@@ -718,7 +718,14 @@ def evidence(state, journal):
         ),
         "markout_records": marks, "side_attempts": sides,
         "unresolved_orders": sum(r["state"] in ("uncertain", "working") for r in maker),
-        "ending_position_contracts": sum(abs(v) for v in journal.accounting()["positions"].values()),
+        # BinaryJournal accepts only whole-contract intents. Split exchange
+        # executions are aggregated back to that integral fill count, but the
+        # accounting engine represents positions as Fraction. Convert at this
+        # JSON boundary so a valid one-contract position cannot crash status
+        # reporting and the worker process.
+        "ending_position_contracts": int(sum(
+            abs(v) for v in journal.accounting()["positions"].values()
+        )),
         "v10_shadow": {
             "strategy_id": V10_STRATEGY_ID,
             "execution_enabled": False,

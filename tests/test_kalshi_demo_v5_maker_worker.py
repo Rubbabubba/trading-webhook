@@ -87,6 +87,9 @@ def test_evidence_keeps_reconciled_fill_when_observation_was_interrupted(tmp_pat
         result = evidence(state, journal)
 
         assert result["maker_fills"] == 1
+        assert result["ending_position_contracts"] == 1
+        assert type(result["ending_position_contracts"]) is int
+        __import__("json").dumps(result)
         assert result["actual_fee_records"] == 1
         assert result["flow_context_records"] == 1
         assert state.db.execute("SELECT count(*) FROM maker_fills").fetchone()[0] == 0
