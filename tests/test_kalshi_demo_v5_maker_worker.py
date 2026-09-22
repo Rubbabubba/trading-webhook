@@ -20,6 +20,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     safe_cycle_error,
     select_maker_markets,
     QUOTE_TTL_SECONDS,
+    TERMINAL_FLAT_STOP_RECOVERY,
 )
 
 
@@ -389,6 +390,59 @@ def test_fresh_flat_v7_ledger_recovers_cutover_stop_once(tmp_path):
         assert broker.reconciled == 1
         assert journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0] == 0
         assert state.load(FRESH_FLAT_RECOVERY) is True
+    finally:
+        journal.close(); state.close()
+
+
+def test_terminal_flat_ledger_recovers_reconciled_safety_stop(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        now = datetime.now(timezone.utc)
+        journal.reserve("m1", "TEST", 1, 40, 5, outcome="yes", action="buy",
+                        account_snapshot=snapshot(), order_mode="post_only_gtc")
+        quote = {
+            "environment": "demo", "ticker": "TEST",
+            "started_at": now.timestamp(), "observed_at": now.timestamp(),
+            "orderbook_fp": {
+                "yes_dollars": [[".39", "10"]],
+                "no_dollars": [[".59", "10"]],
+            },
+        }
+        journal.mark_submission_started(
+            "m1", account_snapshot=snapshot(), quote_snapshot=quote
+        )
+        fill = {
+            "fill_id": "fill-1", "order_id": "broker-1", "ticker": "TEST",
+            "outcome_side": "yes", "book_side": "bid", "subaccount_number": 0,
+            "count_fp": "1", "yes_price_dollars": ".40", "fee_cost": "0",
+            "created_time": (now - timedelta(seconds=2)).isoformat(),
+        }
+        journal.reconcile(
+            "m1", broker_id="broker-1", filled=1, remaining=0, terminal=True,
+            evidence={"fills": [fill], "gross_dollars": ".40", "fees_dollars": "0"},
+        )
+        journal.record_settlement({
+            "ticker": "TEST", "market_result": "yes", "revenue": 100,
+            "yes_count_fp": "1", "no_count_fp": "0",
+            "yes_total_cost_dollars": ".40", "no_total_cost_dollars": "0",
+            "fee_cost": "0", "value": 100, "exchange_index": 0,
+            "settled_time": (now - timedelta(seconds=1)).isoformat(),
+        })
+        journal.stop()
+
+        broker = FlatRecoveryBroker()
+        recover(state, journal, broker)
+
+        assert broker.reconciled == 1
+        assert journal.db.execute(
+            "SELECT stopped FROM controls WHERE id=1"
+        ).fetchone()[0] == 0
+        assert state.load(TERMINAL_FLAT_STOP_RECOVERY) is True
+        assert state.db.execute(
+            "SELECT count(*) FROM actions WHERE detail LIKE '%verified_terminal_flat%'"
+        ).fetchone()[0] == 1
     finally:
         journal.close(); state.close()
 

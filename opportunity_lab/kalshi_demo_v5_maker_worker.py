@@ -54,6 +54,7 @@ COHORT_SELECTOR = "diverse_game_markets_v5"
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
 FRESH_FLAT_RECOVERY = "v7_fresh_flat_startup_recovery_20260919"
+TERMINAL_FLAT_STOP_RECOVERY = "v9_terminal_flat_stop_recovery_20260922"
 RECONCILIATION_WAIT_SECONDS = 30
 UNRESOLVED_QUARANTINE_SECONDS = 5 * 60
 UNRESOLVED_REQUIRED_OBSERVATIONS = 2
@@ -299,6 +300,24 @@ def recover(state, journal, broker):
             state.save(ZERO_FILL_RECOVERY, True)
             state.record(None, {"action": "verified_zero_fill_stop_recovery",
                                 "attempts": len(maker), "environment": "demo"})
+            stopped = 0
+    if stopped and state.load(TERMINAL_FLAT_STOP_RECOVERY) is None:
+        accounting = journal.accounting()
+        # Reconciliation above has independently established that the Demo
+        # exchange has no position or resting order. Release only a safety stop
+        # whose complete local ledger is also terminal and flat. This covers a
+        # transient settlement/position visibility mismatch across a restart;
+        # it cannot release uncertainty, working orders, or open exposure.
+        if (records and all(row["state"] == "terminal" for row in records)
+                and any(row["filled"] for row in records)
+                and not accounting["positions"] and accounting["open_basis"] == 0
+                and accounting["pending_reserves"] == 0):
+            journal.db.execute("UPDATE controls SET stopped=0 WHERE id=1")
+            state.save(TERMINAL_FLAT_STOP_RECOVERY, True)
+            state.record(None, {
+                "action": "verified_terminal_flat_stop_recovery",
+                "orders": len(records), "environment": "demo",
+            })
 
 
 def quarantine_stale_unresolved(state, journal, broker, client_id):
