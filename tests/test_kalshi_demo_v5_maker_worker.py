@@ -321,18 +321,18 @@ class UnresolvedBroker:
         raise ValueError("submission_unresolved")
 
 
-def uncertain_maker(state, journal):
-    journal.reserve("m1", "TEST", 1, 40, 5, outcome="yes", action="buy",
+def uncertain_maker(state, journal, client_id="m1"):
+    journal.reserve(client_id, "TEST", 1, 40, 5, outcome="yes", action="buy",
                     account_snapshot=snapshot(), order_mode="post_only_gtc")
     now = datetime.now(timezone.utc).timestamp()
     quote = {"environment": "demo", "ticker": "TEST", "started_at": now,
              "observed_at": now,
              "orderbook_fp": {"yes_dollars": [[".39", "10"]],
                               "no_dollars": [[".50", "10"]]}}
-    journal.mark_submission_started("m1", account_snapshot=snapshot(),
+    journal.mark_submission_started(client_id, account_snapshot=snapshot(),
                                     quote_snapshot=quote)
     state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
-                     ("m1", "maker_entry", "EVENT", "TEST", "yes", 100.0))
+                     (client_id, "maker_entry", "EVENT", "TEST", "yes", 100.0))
 
 
 def test_unresolved_startup_stays_healthy_read_only_and_writes_status(tmp_path):
@@ -451,21 +451,24 @@ def test_terminal_flat_ledger_recovers_reconciled_safety_stop(tmp_path):
 
 
 class NegativeEvidenceClient:
-    def __init__(self, *, resting=()):
+    def __init__(self, *, resting=(), fills=()):
         self.resting = list(resting)
+        self.fills = list(fills)
         self.calls = []
 
     def pages(self, path, field, **params):
         self.calls.append((path, field, params))
         if path == "/portfolio/orders" and params.get("status") == "resting":
             return self.resting
+        if path == "/portfolio/fills":
+            return self.fills
         return []
 
 
 class NegativeEvidenceBroker(UnresolvedBroker):
-    def __init__(self, *, resting=()):
+    def __init__(self, *, resting=(), fills=()):
         super().__init__()
-        self.client = NegativeEvidenceClient(resting=resting)
+        self.client = NegativeEvidenceClient(resting=resting, fills=fills)
 
 
 def age_submission(journal, seconds=13 * 60 * 60):
@@ -517,5 +520,43 @@ def test_unresolved_with_resting_order_is_not_quarantined(tmp_path):
         assert quarantine_stale_unresolved(state, journal, broker, "m1") is False
         assert journal.get("m1")["state"] == "uncertain"
         assert journal.db.execute("SELECT count(*) FROM uncertain_quarantine").fetchone()[0] == 0
+    finally:
+        journal.close(); state.close()
+
+
+def test_unresolved_ignores_fills_from_a_known_journaled_order(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    clock = [datetime.now(timezone.utc) + timedelta(seconds=1)]
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100,
+                            clock=lambda: clock[0])
+    try:
+        uncertain_maker(state, journal, client_id="known")
+        journal.acknowledge("known", "known-order", 0)
+        journal.reconcile(
+            "known", broker_id="known-order", filled=0, remaining=0, terminal=True,
+            evidence={"fills": [], "gross_dollars": "0", "fees_dollars": "0"},
+        )
+        uncertain_maker(state, journal); age_submission(journal)
+        # The fill belongs to the earlier acknowledged order on this ticker.
+        broker = NegativeEvidenceBroker(fills=[{"order_id": "known-order"}])
+        assert quarantine_stale_unresolved(state, journal, broker, "m1") is False
+        clock[0] += timedelta(seconds=61)
+        assert quarantine_stale_unresolved(state, journal, broker, "m1") is True
+    finally:
+        journal.close(); state.close()
+
+
+def test_unresolved_with_unattributed_fill_is_not_quarantined(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        uncertain_maker(state, journal); age_submission(journal)
+        broker = NegativeEvidenceBroker(fills=[{"order_id": "unknown-order"}])
+        assert quarantine_stale_unresolved(state, journal, broker, "m1") is False
+        assert state.db.execute(
+            "SELECT count(*) FROM uncertainty_checks WHERE client_id='m1'"
+        ).fetchone()[0] == 0
     finally:
         journal.close(); state.close()

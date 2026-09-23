@@ -157,7 +157,8 @@ class BinaryJournal(Journal):
         bounded proof remain durable for later audit.
         """
         required_zero = ('current_exact_orders','historical_exact_orders',
-                         'ticker_current_fills','ticker_historical_fills',
+                         'ticker_unattributed_current_fills',
+                         'ticker_unattributed_historical_fills',
                          'ticker_positions','all_positions','all_resting_orders')
         observations=evidence.get('negative_observations') if isinstance(evidence,dict) else None
         if (self.environment != 'demo' or not isinstance(evidence,dict)

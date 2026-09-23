@@ -346,16 +346,35 @@ def quarantine_stale_unresolved(state, journal, broker, client_id):
         "/portfolio/positions", "market_positions", subaccount=0, count_filter="position"
     )
     resting = broker.client.pages("/portfolio/orders", "orders", subaccount=0, status="resting")
+    # Kalshi fill rows identify the exchange order, not the client order.  A
+    # ticker may therefore contain fills from earlier, fully journaled orders.
+    # Those known fills are unrelated to this uncertain submission and must not
+    # prevent zero-exposure quarantine forever.  Any fill whose order ID is not
+    # already durable in the journal remains blocking evidence.
+    known_broker_ids = {
+        row["broker_id"] for row in journal.records() if row["broker_id"] is not None
+    }
     proof = {
         "environment": "demo", "observed_at": now,
         "current_exact_orders": sum(row.get("client_order_id") == client_id for row in current),
         "historical_exact_orders": sum(row.get("client_order_id") == client_id for row in historical),
         "ticker_current_fills": len(current_fills),
         "ticker_historical_fills": len(historical_fills),
+        "ticker_unattributed_current_fills": sum(
+            row.get("order_id") not in known_broker_ids for row in current_fills
+        ),
+        "ticker_unattributed_historical_fills": sum(
+            row.get("order_id") not in known_broker_ids for row in historical_fills
+        ),
         "ticker_positions": sum(row.get("ticker") == ticker for row in positions),
         "all_positions": len(positions), "all_resting_orders": len(resting),
     }
-    if any(proof[key] for key in proof if key not in ("environment", "observed_at")):
+    blocking_keys = (
+        "current_exact_orders", "historical_exact_orders",
+        "ticker_unattributed_current_fills", "ticker_unattributed_historical_fills",
+        "ticker_positions", "all_positions", "all_resting_orders",
+    )
+    if any(proof[key] for key in blocking_keys):
         state.db.execute("DELETE FROM uncertainty_checks WHERE client_id=?", (client_id,))
         return False
     state.db.execute(
