@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
+import json
 
 from opportunity_lab.kalshi_binary_journal import BinaryJournal
 from opportunity_lab.kalshi_demo_v5_maker_worker import (
@@ -332,6 +333,30 @@ def test_failed_discovery_refresh_keeps_existing_cohort_and_backs_off():
     )
     assert cohort == existing
     assert cohort_at == 100.0
+
+
+def test_long_discovery_rotates_from_partial_eligible_universe(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    existing = [candidate("OLD-A", "OLD-1")]
+    markets = FakeMarkets([
+        [candidate("SPORT-A", "SPORT-1", volume="5")],
+        [candidate("WEATHER-A", "WEATHER-1", volume="9")],
+    ])
+    try:
+        cohort, cohort_at = refresh_cohort(
+            state, markets, existing, 100.0, now=2000.0
+        )
+        assert [row["ticker"] for row in cohort] == ["SPORT-A"]
+        assert cohort_at == 2000.0
+        assert state.load("market_discovery")["in_progress"] is True
+        action = state.db.execute(
+            "SELECT detail FROM actions ORDER BY at DESC LIMIT 1"
+        ).fetchone()
+        assert json.loads(action[0])["action"] == (
+            "partial_market_discovery_cohort_rotated"
+        )
+    finally:
+        state.close()
 
 
 def test_safe_cycle_error_only_exposes_bounded_internal_codes():

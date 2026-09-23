@@ -52,6 +52,7 @@ TAKE_PROFIT_CENTS = 2
 MARKOUT_HORIZONS = (5, 30, 300)
 COHORT_SELECTOR = "all_open_binary_markets_v1"
 COHORT_LIMIT = 16
+COHORT_ROTATION_SECONDS = 30 * 60
 MARKET_PAGE_LIMIT = 200
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
@@ -204,7 +205,8 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
     error loop; fresh per-market books still validate every later signal.
     """
     discovery = state.load("market_discovery", {})
-    if cohort and now - cohort_at < 1800 and not discovery.get("in_progress"):
+    if (cohort and now - cohort_at < COHORT_ROTATION_SECONDS
+            and not discovery.get("in_progress")):
         return cohort, cohort_at
     try:
         refreshed, discovery = advance_market_discovery(state, markets, now=now)
@@ -214,6 +216,33 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
         state.save("cohort", refreshed)
         state.save("cohort_at", now)
         return refreshed, now
+    if cohort and now - cohort_at >= COHORT_ROTATION_SECONDS:
+        # The Demo universe can contain well over 100,000 contracts. Do not
+        # make active evidence collection wait for an unbounded cursor walk.
+        # Rotate through the eligible events accumulated in the current pass
+        # while discovery continues one page at a time in the background.
+        generation = discovery.get("generation")
+        partial = [json.loads(row[0]) for row in state.db.execute(
+            "SELECT detail FROM market_universe WHERE generation=?", (generation,)
+        )] if generation else []
+        rotation = int(state.load("partial_cohort_rotation", 0))
+        partial = select_maker_markets(
+            partial, now=now, limit=COHORT_LIMIT,
+            offset=rotation * COHORT_LIMIT,
+        )
+        if partial:
+            state.save("partial_cohort_rotation", rotation + 1)
+            state.save("cohort", partial)
+            state.save("cohort_at", now)
+            state.record(None, {
+                "action": "partial_market_discovery_cohort_rotated",
+                "generation": generation,
+                "pages": discovery.get("pages", 0),
+                "markets_scanned": discovery.get("markets_scanned", 0),
+                "eligible_markets": discovery.get("eligible_markets", 0),
+                "selected_markets": len(partial),
+            })
+            return partial, now
     if cohort:
         return cohort, cohort_at
     generation = discovery.get("generation")
