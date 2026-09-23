@@ -5,8 +5,8 @@ from opportunity_lab.kalshi_binary_journal import BinaryJournal
 from opportunity_lab.kalshi_demo_v5_maker_worker import (
     LEGACY_UNCERTAINTY_STOP_RECOVERY,
     FRESH_FLAT_RECOVERY,
-    MAKER_SERIES,
     MakerState,
+    advance_market_discovery,
     current_position,
     evidence,
     observe_v10_shadow,
@@ -246,13 +246,18 @@ def test_current_position_requires_matching_maker_metadata(tmp_path):
 
 
 class FakeMarkets:
-    def __init__(self, rows):
-        self.rows = rows
-        self.series = []
+    def __init__(self, pages=(), *, error=None):
+        self.pages = list(pages)
+        self.error = error
+        self.calls = []
 
     def get(self, *, params):
-        self.series.append(params["series_ticker"])
-        return {"markets": self.rows.get(params["series_ticker"], [])}, 1.0, 1.1
+        self.calls.append(dict(params))
+        if self.error:
+            raise ValueError(self.error)
+        index = int(params.get("cursor") or 0)
+        cursor = str(index + 1) if index + 1 < len(self.pages) else ""
+        return {"markets": self.pages[index], "cursor": cursor}, 1.0, 1.1
 
 
 def candidate(ticker, event, *, bid=".40", ask=".44", bid_size="20", ask_size="18", volume="1"):
@@ -265,20 +270,42 @@ def candidate(ticker, event, *, bid=".40", ask=".44", bid_size="20", ask_size="1
     }
 
 
-def test_maker_selector_queries_each_series_and_enforces_event_diversity():
-    rows = {
-        "KXMLBGAME": [candidate("MLB-A", "GAME-1", volume="10"),
-                       candidate("MLB-B", "GAME-1", volume="9")],
-        "KXNFLGAME": [candidate("NFL-A", "GAME-2", volume="8")],
-        "KXNCAAFGAME": [candidate("NCAAF-WIDE", "GAME-3", bid=".30", ask=".50")],
-        "KXEPLGAME": [candidate("EPL-THIN", "GAME-4", bid_size="1")],
-        "KXFEDDECISION": [candidate("FED-A", "FED-1", volume="7")],
-    }
-    markets = FakeMarkets(rows)
-    result = select_maker_markets(markets, now=1_700_000_000)
-    assert markets.series == list(MAKER_SERIES)
+def test_maker_selector_accepts_all_categories_and_enforces_event_diversity():
+    rows = [
+        candidate("MLB-A", "GAME-1", volume="10"),
+        candidate("MLB-B", "GAME-1", volume="9"),
+        candidate("NFL-A", "GAME-2", volume="8"),
+        candidate("POLITICS-WIDE", "EVENT-3", bid=".30", ask=".50"),
+        candidate("WEATHER-THIN", "EVENT-4", bid_size="1"),
+        candidate("FED-A", "FED-1", volume="7"),
+    ]
+    result = select_maker_markets(rows, now=1_700_000_000)
     assert [row["ticker"] for row in result] == ["MLB-A", "NFL-A", "FED-A"]
     assert len({row["event_ticker"] for row in result}) == len(result)
+
+
+def test_market_discovery_paginates_full_universe_before_rotating_cohort(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    markets = FakeMarkets([
+        [candidate("SPORT-A", "SPORT-1", volume="5")],
+        [candidate("WEATHER-A", "WEATHER-1", volume="9"),
+         candidate("ECON-A", "ECON-1", volume="7")],
+    ])
+    try:
+        selected, scan = advance_market_discovery(
+            state, markets, now=1_700_000_000, limit=2
+        )
+        assert selected is None and scan["in_progress"] is True
+        selected, scan = advance_market_discovery(
+            state, markets, now=1_700_000_001, limit=2
+        )
+        assert [row["ticker"] for row in selected] == ["WEATHER-A", "ECON-A"]
+        assert scan["markets_scanned"] == 3
+        assert scan["eligible_markets"] == scan["eligible_events"] == 3
+        assert all("series_ticker" not in call for call in markets.calls)
+        assert markets.calls[1]["cursor"] == "1"
+    finally:
+        state.close()
 
 
 class FakeState:
@@ -289,21 +316,22 @@ class FakeState:
     def save(self, name, value):
         self.saved[name] = value
 
+    def load(self, name, default=None):
+        return self.saved.get(name, default)
+
     def record(self, ticker, detail):
         self.actions.append((ticker, detail))
 
 
 def test_failed_discovery_refresh_keeps_existing_cohort_and_backs_off():
     state = FakeState()
-    markets = FakeMarkets({})
+    markets = FakeMarkets(error="stale_demo_market_data")
     existing = [candidate("MLB-A", "GAME-1")]
     cohort, cohort_at = refresh_cohort(
         state, markets, existing, 100.0, now=2000.0
     )
     assert cohort == existing
-    assert cohort_at == 500.0
-    assert state.saved["cohort_at"] == 500.0
-    assert state.actions[-1][1]["action"] == "cohort_refresh_deferred"
+    assert cohort_at == 100.0
 
 
 def test_safe_cycle_error_only_exposes_bounded_internal_codes():

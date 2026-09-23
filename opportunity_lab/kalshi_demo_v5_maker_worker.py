@@ -50,7 +50,9 @@ DEPTH_ADVERSE_MOVE_CENTS = 1
 MAX_HOLD_SECONDS = 300
 TAKE_PROFIT_CENTS = 2
 MARKOUT_HORIZONS = (5, 30, 300)
-COHORT_SELECTOR = "diverse_game_markets_v5"
+COHORT_SELECTOR = "all_open_binary_markets_v1"
+COHORT_LIMIT = 16
+MARKET_PAGE_LIMIT = 200
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
 FRESH_FLAT_RECOVERY = "v7_fresh_flat_startup_recovery_20260919"
@@ -66,78 +68,132 @@ RECONCILIATION_BLOCK_CODES = frozenset({
     "TimeoutError",
     "ConnectionError",
 })
-MAKER_SERIES = (
-    "KXMLBGAME",
-    "KXNFLGAME",
-    "KXNCAAFGAME",
-    "KXEPLGAME",
-    "KXFEDDECISION",
-)
-
-
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def select_maker_markets(markets, *, now, limit=16):
-    """Select liquid-looking contracts while enforcing event diversity.
-
-    The exact signal still uses a fresh order book. Top-of-book fields here are
-    only a cheap prefilter that keeps the scan focused and prevents one series or
-    one event from consuming the entire cohort.
-    """
+def eligible_market_candidates(rows, *, now):
+    """Rank eligible contracts from any Kalshi market-list page."""
     candidates = []
-    for series in MAKER_SERIES:
+    for market in rows:
         try:
-            page, _started, _observed = markets.get(params={
-                "status": "open", "limit": 200, "mve_filter": "exclude",
-                "series_ticker": series,
-            })
-        except ValueError:
-            continue
-        for market in page.get("markets", []):
             if (market.get("status") != "active" or market.get("market_type") != "binary"
                     or market.get("exchange_index", 0) != 0):
                 continue
-            try:
-                close = datetime.fromisoformat(
-                    market["close_time"].replace("Z", "+00:00")
-                ).timestamp()
-                bid = Decimal(str(market.get("yes_bid_dollars") or "0"))
-                ask = Decimal(str(market.get("yes_ask_dollars") or "0"))
-                bid_size = Decimal(str(market.get("yes_bid_size_fp") or "0"))
-                ask_size = Decimal(str(market.get("yes_ask_size_fp") or "0"))
-                volume = Decimal(str(
-                    market.get("volume_24h_fp") or market.get("volume_24h") or "0"
-                ))
-            except (KeyError, ValueError, ArithmeticError):
-                continue
+            close = datetime.fromisoformat(
+                market["close_time"].replace("Z", "+00:00")
+            ).timestamp()
+            bid = Decimal(str(market.get("yes_bid_dollars") or "0"))
+            ask = Decimal(str(market.get("yes_ask_dollars") or "0"))
+            bid_size = Decimal(str(market.get("yes_bid_size_fp") or "0"))
+            ask_size = Decimal(str(market.get("yes_ask_size_fp") or "0"))
+            volume = Decimal(str(
+                market.get("volume_24h_fp") or market.get("volume_24h") or "0"
+            ))
             if close <= now + 1800:
                 continue
             midpoint_value = (bid + ask) / 2
             spread = ask - bid
             if not Decimal(".20") <= midpoint_value <= Decimal(".80"):
                 continue
-            if not Decimal(".03") <= spread <= Decimal(".08"):
+            # Use the union of the frozen V9 execution screen and V10 shadow
+            # screen. V9 will still decline 9-10 cent spreads or books beyond
+            # its 2:1 balance rule; including them here lets V10 assess every
+            # market allowed by its registered 10-cent/4:1 hypothesis.
+            if not Decimal(".03") <= spread <= Decimal(".10"):
                 continue
             if min(bid_size, ask_size) < 3:
                 continue
-            if max(bid_size, ask_size) > min(bid_size, ask_size) * 2:
+            if max(bid_size, ask_size) > min(bid_size, ask_size) * 4:
                 continue
             candidates.append((volume, min(bid_size, ask_size), spread, market))
+        except (KeyError, ValueError, ArithmeticError):
+            continue
+    return candidates
+
+
+def select_maker_markets(rows, *, now, limit=COHORT_LIMIT, offset=0):
+    """Select one liquid contract per event from an already complete universe."""
+    candidates = eligible_market_candidates(rows, now=now)
 
     candidates.sort(key=lambda row: (-row[0], -row[1], -row[2], row[3]["ticker"]))
-    selected = []
+    diverse = []
     selected_events = set()
     for _volume, _depth, _spread, market in candidates:
         identity = event_id(market)
         if identity in selected_events:
             continue
-        selected.append(market)
+        diverse.append(market)
         selected_events.add(identity)
-        if len(selected) >= limit:
-            break
-    return selected
+    if not diverse:
+        return []
+    offset %= len(diverse)
+    return [diverse[(offset + index) % len(diverse)]
+            for index in range(min(limit, len(diverse)))]
+
+
+def advance_market_discovery(state, markets, *, now, limit=COHORT_LIMIT):
+    """Scan one page of the complete open-market universe without blocking status.
+
+    Every open non-combo market is examined. Only active binary contracts with
+    executable midpoint, spread, depth, balance and time-to-close enter the
+    rotating order-book cohort. One contract per event prevents correlated
+    variants from inflating the independent-event evidence gate.
+    """
+    scan = state.load("market_discovery", {})
+    if not scan.get("in_progress"):
+        generation = int(scan.get("generation", 0)) + 1
+        scan = {
+            "in_progress": True, "generation": generation, "cursor": None,
+            "started_at": now, "pages": 0, "markets_scanned": 0,
+            "eligible_markets": 0,
+        }
+    params = {"status": "open", "limit": MARKET_PAGE_LIMIT, "mve_filter": "exclude"}
+    if scan.get("cursor"):
+        params["cursor"] = scan["cursor"]
+    page, _started, _observed = markets.get(params=params)
+    rows = page.get("markets", [])
+    generation = scan["generation"]
+    ranked = eligible_market_candidates(rows, now=now)
+    for volume, depth, spread, market in ranked:
+        state.db.execute(
+            "INSERT OR REPLACE INTO market_universe VALUES(?,?,?,?,?,?,?)",
+            (market["ticker"], event_id(market), generation,
+             json.dumps(market, sort_keys=True), str(volume), str(depth), str(spread)),
+        )
+    scan["pages"] += 1
+    scan["markets_scanned"] += len(rows)
+    scan["eligible_markets"] += len(ranked)
+    scan["cursor"] = page.get("cursor") or None
+    if scan["cursor"]:
+        state.save("market_discovery", scan)
+        return None, scan
+
+    universe = [json.loads(row[0]) for row in state.db.execute(
+        "SELECT detail FROM market_universe WHERE generation=?", (generation,)
+    )]
+    rotation = int(state.load("cohort_rotation", 0))
+    selected = select_maker_markets(
+        universe, now=now, limit=limit, offset=rotation * limit
+    )
+    distinct_events = state.db.execute(
+        "SELECT count(DISTINCT event_id) FROM market_universe WHERE generation=?",
+        (generation,),
+    ).fetchone()[0]
+    scan.update({
+        "in_progress": False, "cursor": None, "completed_at": now,
+        "eligible_events": distinct_events, "selected_markets": len(selected),
+    })
+    state.db.execute("DELETE FROM market_universe WHERE generation!=?", (generation,))
+    state.save("market_discovery", scan)
+    state.save("cohort_rotation", rotation + 1)
+    state.record(None, {"action": "all_market_discovery_complete", **{
+        key: scan[key] for key in (
+            "generation", "pages", "markets_scanned", "eligible_markets",
+            "eligible_events", "selected_markets",
+        )
+    }})
+    return selected, scan
 
 
 def refresh_cohort(state, markets, cohort, cohort_at, *, now):
@@ -147,18 +203,29 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
     A failed refresh must not turn that transient read failure into a two-second
     error loop; fresh per-market books still validate every later signal.
     """
-    if cohort and now - cohort_at < 1800:
+    discovery = state.load("market_discovery", {})
+    if cohort and now - cohort_at < 1800 and not discovery.get("in_progress"):
         return cohort, cohort_at
-    refreshed = select_maker_markets(markets, now=now)
+    try:
+        refreshed, discovery = advance_market_discovery(state, markets, now=now)
+    except ValueError:
+        refreshed = None
     if refreshed:
         state.save("cohort", refreshed)
         state.save("cohort_at", now)
         return refreshed, now
     if cohort:
-        retry_at = now - 1500  # keep scanning and retry discovery in five minutes
-        state.save("cohort_at", retry_at)
-        state.record(None, {"action": "cohort_refresh_deferred", "existing": len(cohort)})
-        return cohort, retry_at
+        return cohort, cohort_at
+    generation = discovery.get("generation")
+    if generation:
+        provisional = [json.loads(row[0]) for row in state.db.execute(
+            "SELECT detail FROM market_universe WHERE generation=?", (generation,)
+        )]
+        provisional = select_maker_markets(provisional, now=now, limit=COHORT_LIMIT)
+        if provisional:
+            state.save("cohort", provisional)
+            state.save("cohort_at", now)
+            return provisional, now
     raise ValueError("no_eligible_demo_markets")
 
 
@@ -201,6 +268,9 @@ class MakerState:
             PRIMARY KEY(signal_id,horizon_seconds));
           CREATE TABLE IF NOT EXISTS v10_shadow_evaluations(
             reason TEXT PRIMARY KEY,count INTEGER NOT NULL,last_at REAL NOT NULL);
+          CREATE TABLE IF NOT EXISTS market_universe(
+            ticker TEXT PRIMARY KEY,event_id TEXT NOT NULL,generation INTEGER NOT NULL,
+            detail TEXT NOT NULL,volume TEXT NOT NULL,depth TEXT NOT NULL,spread TEXT NOT NULL);
         """)
         if "event_id" not in {
                 row[1] for row in self.db.execute("PRAGMA table_info(v10_shadow_signals)")}:
@@ -723,8 +793,16 @@ def evidence(state, journal):
         v10_lcb[str(horizon)] = None if len(clusters) < 2 else (
             statistics.mean(clusters) - 1.96 * statistics.stdev(clusters) / len(clusters) ** .5
         )
+    discovery = state.load("market_discovery", {})
     return {
         "environment": "demo", "post_only": True,
+        "market_discovery": {
+            key: discovery.get(key) for key in (
+                "in_progress", "generation", "pages", "markets_scanned",
+                "eligible_markets", "eligible_events", "selected_markets",
+                "started_at", "completed_at",
+            )
+        },
         "markets": len({row[1] for row in metadata}),
         "post_only_attempts": len(maker), "terminal_orders": sum(r["state"] == "terminal" for r in maker),
         "queue_position_records": state.db.execute("SELECT count(DISTINCT client_id) FROM queue_records").fetchone()[0],
@@ -807,7 +885,9 @@ def run(data_root, *, cycles=None):
     markets = DemoMarkets(); broker = BinaryDemoBroker(journal, client)
     cohort = state.load("cohort", []); cohort_at = state.load("cohort_at", 0)
     if state.load("cohort_selector") != COHORT_SELECTOR:
-        cohort = []; cohort_at = 0
+        # Keep the last validated cohort serving while the first full-universe
+        # paginated scan is assembled incrementally.
+        cohort_at = 0
         state.save("cohort_selector", COHORT_SELECTOR)
     scan = int(state.load("scan", 0)); cycle = 0
     try:
