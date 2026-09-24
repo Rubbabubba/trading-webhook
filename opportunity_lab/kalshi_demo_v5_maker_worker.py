@@ -225,6 +225,23 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
         partial = [json.loads(row[0]) for row in state.db.execute(
             "SELECT detail FROM market_universe WHERE generation=?", (generation,)
         )] if generation else []
+        source_generation = generation
+        if not partial and hasattr(state, "db"):
+            # Early pages in Kalshi's very large ordering may contain no
+            # executable books. Keep rotating through the last completed,
+            # still-live eligible universe until the new pass reaches useful
+            # candidates. Each selected contract is revalidated from its live
+            # order book before any quote can be submitted.
+            previous = state.db.execute(
+                "SELECT MAX(generation) FROM market_universe WHERE generation!=?",
+                (generation,),
+            ).fetchone()[0]
+            if previous is not None:
+                source_generation = previous
+                partial = [json.loads(row[0]) for row in state.db.execute(
+                    "SELECT detail FROM market_universe WHERE generation=?",
+                    (previous,),
+                )]
         rotation = int(state.load("partial_cohort_rotation", 0))
         partial = select_maker_markets(
             partial, now=now, limit=COHORT_LIMIT,
@@ -237,6 +254,7 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
             state.record(None, {
                 "action": "partial_market_discovery_cohort_rotated",
                 "generation": generation,
+                "source_generation": source_generation,
                 "pages": discovery.get("pages", 0),
                 "markets_scanned": discovery.get("markets_scanned", 0),
                 "eligible_markets": discovery.get("eligible_markets", 0),

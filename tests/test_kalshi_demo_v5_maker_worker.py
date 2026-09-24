@@ -359,6 +359,36 @@ def test_long_discovery_rotates_from_partial_eligible_universe(tmp_path):
         state.close()
 
 
+def test_long_discovery_rotates_previous_universe_before_new_candidates(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    existing = [candidate("OLD-A", "OLD-1")]
+    previous = candidate("WEATHER-A", "WEATHER-1", volume="9")
+    state.db.execute(
+        "INSERT INTO market_universe VALUES(?,?,?,?,?,?,?)",
+        (previous["ticker"], previous["event_ticker"], 1,
+         json.dumps(previous), "9", "18", ".04"),
+    )
+    state.save("market_discovery", {
+        "in_progress": True, "generation": 2, "cursor": "1",
+        "started_at": 100.0, "pages": 1, "markets_scanned": 1,
+        "eligible_markets": 0,
+    })
+    markets = FakeMarkets([[], [], []])
+    try:
+        cohort, cohort_at = refresh_cohort(
+            state, markets, existing, 100.0, now=2000.0
+        )
+        assert [row["ticker"] for row in cohort] == ["WEATHER-A"]
+        assert cohort_at == 2000.0
+        action = json.loads(state.db.execute(
+            "SELECT detail FROM actions ORDER BY at DESC LIMIT 1"
+        ).fetchone()[0])
+        assert action["generation"] == 2
+        assert action["source_generation"] == 1
+    finally:
+        state.close()
+
+
 def test_safe_cycle_error_only_exposes_bounded_internal_codes():
     assert safe_cycle_error(ValueError("fills_not_reconciled")) == "fills_not_reconciled"
     assert safe_cycle_error(ValueError("secret path C:/keys/private.pem")) == "ValueError"
