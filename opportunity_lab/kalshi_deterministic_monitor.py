@@ -19,6 +19,7 @@ PERSISTENT_FAULT_CHECKS = 3
 EVIDENCE_STALE_SECONDS = 15 * 60
 DAILY_REVIEW_SECONDS = 24 * 60 * 60
 EXPECTED_STRATEGY = "stable_balanced_maker_v9"
+EXPECTED_EXECUTION_POLICY = "v9_retired_after_8_losses_20260924"
 EXPECTED_V10 = "queue_toxicity_maker_v10_shadow"
 MAX_PACKET_BYTES = 12_000
 
@@ -106,6 +107,10 @@ def faults(status, *, now):
         result.append("production_execution_changed")
     if status.get("strategy_id") != EXPECTED_STRATEGY:
         result.append("strategy_changed")
+    if status.get("execution_policy_id") != EXPECTED_EXECUTION_POLICY:
+        result.append("execution_policy_changed")
+    if status.get("strategy_execution_enabled") is not False:
+        result.append("retired_strategy_execution_enabled")
     evidence = status.get("evidence", {})
     shadow = evidence.get("v10_shadow", {})
     if shadow.get("strategy_id") != EXPECTED_V10:
@@ -192,6 +197,8 @@ def check(status, checkpoint, registration, *, now):
             "environment": status.get("environment"),
             "phase": status.get("phase"),
             "production_execution_enabled": status.get("production_execution_enabled"),
+            "strategy_execution_enabled": status.get("strategy_execution_enabled"),
+            "execution_policy_id": status.get("execution_policy_id"),
             "status_at": status.get("at"),
             "status_age_seconds": max(0, round(now - datetime.fromisoformat(
                 status.get("at", "1970-01-01T00:00:00+00:00").replace("Z", "+00:00")

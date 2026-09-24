@@ -1,0 +1,22 @@
+{
+  "version": "v9_retired_after_8_losses_20260924",
+  "registered_at": "2026-09-24T15:00:00Z",
+  "environment": "demo",
+  "strategy_id": "stable_balanced_maker_v9",
+  "execution_enabled": false,
+  "observed_evidence": {
+    "completed_trade_cycles": 8,
+    "wins": 0,
+    "losses": 8,
+    "net_pnl_cents": -43.91,
+    "actual_fees_cents": 9.91,
+    "timed_taker_exit_losses": 7,
+    "settlement_losses": 1
+  },
+  "decision": "Retire V9 from opening new positions. Continue reconciliation, full-universe scanning, and frozen V10 shadow evidence collection.",
+  "failure_mode": "V9 selected economic direction for side balance rather than forecast evidence, then used fee-bearing marketable exits after its maximum hold. Every completed cycle lost after actual fees.",
+  "replacement_candidate": "queue_toxicity_maker_v10_shadow",
+  "replacement_execution_enabled": false,
+  "replacement_gate": "configs/kalshi_maker_v10_20260921/registration.json",
+  "production_execution_enabled": false
+}

@@ -34,6 +34,14 @@ from .kalshi_shadow import cost, price_book
 
 STRATEGY_ID = "stable_balanced_maker_v9"
 CLIENT_ID_PREFIX = "v9-maker-"
+# V9 is retired from opening new positions after its first eight completed
+# Demo trades all lost money (seven timed taker exits and one settlement).
+# Keep the worker alive so it can reconcile existing state, scan the complete
+# market universe, and collect the frozen V10 shadow evidence.  Re-enabling an
+# executable strategy requires a separate, explicitly gated Demo trial.
+EXECUTION_ENABLED = False
+EXECUTION_POLICY_ID = "v9_retired_after_8_losses_20260924"
+EXECUTION_DISABLED_REASON = "retired_negative_demo_evidence"
 CAPITAL_LIMIT_CENTS = 160
 ORDER_LIMIT_CENTS = 110
 DAILY_LOSS_CENTS = 100
@@ -337,6 +345,14 @@ class MakerState:
         if saved is not None and saved != protocol:
             raise ValueError("maker_protocol_changed")
         self.save("protocol", protocol)
+        self.save("execution_policy", {
+            "policy_id": EXECUTION_POLICY_ID,
+            "strategy_id": STRATEGY_ID,
+            "execution_enabled": EXECUTION_ENABLED,
+            "reason": EXECUTION_DISABLED_REASON,
+            "replacement_candidate": V10_STRATEGY_ID,
+            "replacement_execution_enabled": False,
+        })
         shadow_protocol = {
             "strategy_id": V10_STRATEGY_ID,
             "execution_enabled": False,
@@ -617,6 +633,11 @@ def preferred_outcome(state, journal, ticker):
     return "yes" if counts["yes"] <= counts["no"] else "no"
 
 
+def v9_submission_allowed(signal, *, event_locked):
+    """Fail closed after V9's negative live-Demo evidence review."""
+    return EXECUTION_ENABLED and signal is not None and not event_locked
+
+
 def observe_working_quote(state, record, frame):
     """Record live quote health and return a bounded early-cancel reason.
 
@@ -890,7 +911,11 @@ def evidence(state, journal):
 
 def write_status(path, state, journal, **values):
     payload = {"at": now_iso(), "environment": "demo", "production_execution_enabled": False,
-               "strategy_id": STRATEGY_ID, "evidence": evidence(state, journal), **values}
+               "strategy_id": STRATEGY_ID,
+               "strategy_execution_enabled": EXECUTION_ENABLED,
+               "execution_policy_id": EXECUTION_POLICY_ID,
+               "execution_disabled_reason": EXECUTION_DISABLED_REASON,
+               "evidence": evidence(state, journal), **values}
     temp = path.with_suffix(".tmp"); temp.write_text(json.dumps(payload, indent=2) + "\n")
     temp.replace(path)
     # Monitoring is deterministic and isolated from execution.  It is bounded
@@ -1041,7 +1066,7 @@ def run(data_root, *, cycles=None):
                                 state.record(market["ticker"], {"action": "scan_skip", "reason": "missing_book"})
                         if frame is not None:
                             locked = state.db.execute("SELECT 1 FROM entered_events WHERE event_id=?", (event_id(market),)).fetchone()
-                            if signal and not locked:
+                            if v9_submission_allowed(signal, event_locked=bool(locked)):
                                 result = submit(state, journal, broker, markets, market, signal["side"], "buy",
                                                 signal["price_cents"], maker=True, context=signal)
                                 if result["filled"]:

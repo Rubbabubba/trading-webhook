@@ -18,6 +18,8 @@ def healthy(at="2026-09-21T18:00:00+00:00"):
     return {
         "at": at, "environment": "demo", "phase": "running", "errors": [],
         "production_execution_enabled": False, "strategy_id": "stable_balanced_maker_v9",
+        "strategy_execution_enabled": False,
+        "execution_policy_id": "v9_retired_after_8_losses_20260924",
         "evidence": {
             "post_only_attempts": 194, "maker_fills": 1, "terminal_orders": 194,
             "unresolved_orders": 0, "ending_position_contracts": 0,
@@ -97,6 +99,13 @@ def test_safeguard_change_triggers_once():
     assert "production_execution_changed" in packet["health"]["faults"]
     packet, _, duplicate = check(status, checkpoint, REGISTRATION, now=1790013661)
     assert duplicate and not packet["investigation_needed"]
+
+
+def test_retired_strategy_cannot_be_reenabled_silently():
+    status = healthy()
+    status["strategy_execution_enabled"] = True
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601)
+    assert "retired_strategy_execution_enabled" in packet["health"]["faults"]
 
 
 def test_stopped_or_stale_worker_is_detected_without_ai():

@@ -4,6 +4,9 @@ import json
 
 from opportunity_lab.kalshi_binary_journal import BinaryJournal
 from opportunity_lab.kalshi_demo_v5_maker_worker import (
+    EXECUTION_DISABLED_REASON,
+    EXECUTION_ENABLED,
+    EXECUTION_POLICY_ID,
     LEGACY_UNCERTAINTY_STOP_RECOVERY,
     FRESH_FLAT_RECOVERY,
     MakerState,
@@ -22,6 +25,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     select_maker_markets,
     QUOTE_TTL_SECONDS,
     TERMINAL_FLAT_STOP_RECOVERY,
+    v9_submission_allowed,
 )
 
 
@@ -29,6 +33,26 @@ def snapshot(cash=50000):
     now = datetime.now(timezone.utc).timestamp()
     return {"environment": "demo", "started_at": now, "observed_at": now,
             "balance": {"balance": cash}, "positions": [], "resting_orders": []}
+
+
+def test_v9_is_retired_from_new_demo_submissions(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    try:
+        policy = state.load("execution_policy")
+        assert EXECUTION_ENABLED is False
+        assert policy == {
+            "policy_id": EXECUTION_POLICY_ID,
+            "strategy_id": "stable_balanced_maker_v9",
+            "execution_enabled": False,
+            "reason": EXECUTION_DISABLED_REASON,
+            "replacement_candidate": "queue_toxicity_maker_v10_shadow",
+            "replacement_execution_enabled": False,
+        }
+        assert v9_submission_allowed({"side": "yes"}, event_locked=False) is False
+        assert v9_submission_allowed(None, event_locked=False) is False
+        assert v9_submission_allowed({"side": "yes"}, event_locked=True) is False
+    finally:
+        state.close()
 
 
 def test_empty_maker_evidence_is_demo_only_and_flat(tmp_path):
