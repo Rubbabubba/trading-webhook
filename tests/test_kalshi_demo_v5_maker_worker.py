@@ -413,6 +413,38 @@ def test_long_discovery_rotates_previous_universe_before_new_candidates(tmp_path
         state.close()
 
 
+def test_long_discovery_expands_underfilled_cohort_before_rotation_ttl(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    existing = [candidate(f"OLD-{index}", f"OLD-{index}") for index in range(6)]
+    for index in range(20):
+        market = candidate(f"SPORT-{index}", f"EVENT-{index}", volume=str(100 - index))
+        state.db.execute(
+            "INSERT INTO market_universe VALUES(?,?,?,?,?,?,?)",
+            (market["ticker"], market["event_ticker"], 2,
+             json.dumps(market), str(100 - index), "18", ".04"),
+        )
+    state.save("market_discovery", {
+        "in_progress": True, "generation": 2, "cursor": "1",
+        "started_at": 100.0, "pages": 1, "markets_scanned": 200,
+        "eligible_markets": 20,
+    })
+    markets = FakeMarkets([[], [], []])
+    try:
+        cohort, cohort_at = refresh_cohort(
+            state, markets, existing, 1900.0, now=2000.0
+        )
+        assert len(cohort) == 16
+        assert len({row["event_ticker"] for row in cohort}) == 16
+        assert cohort_at == 2000.0
+        action = json.loads(state.db.execute(
+            "SELECT detail FROM actions ORDER BY at DESC LIMIT 1"
+        ).fetchone()[0])
+        assert action["action"] == "partial_market_discovery_cohort_rotated"
+        assert action["selected_markets"] == 16
+    finally:
+        state.close()
+
+
 def test_safe_cycle_error_only_exposes_bounded_internal_codes():
     assert safe_cycle_error(ValueError("fills_not_reconciled")) == "fills_not_reconciled"
     assert safe_cycle_error(ValueError("secret path C:/keys/private.pem")) == "ValueError"

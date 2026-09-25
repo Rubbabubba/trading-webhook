@@ -224,7 +224,9 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
         state.save("cohort", refreshed)
         state.save("cohort_at", now)
         return refreshed, now
-    if cohort and now - cohort_at >= COHORT_ROTATION_SECONDS:
+    cohort_stale = bool(cohort and now - cohort_at >= COHORT_ROTATION_SECONDS)
+    cohort_underfilled = bool(cohort and len(cohort) < COHORT_LIMIT)
+    if cohort and (cohort_stale or cohort_underfilled):
         # The Demo universe can contain well over 100,000 contracts. Do not
         # make active evidence collection wait for an unbounded cursor walk.
         # Rotate through the eligible events accumulated in the current pass
@@ -255,7 +257,11 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
             partial, now=now, limit=COHORT_LIMIT,
             offset=rotation * COHORT_LIMIT,
         )
-        if partial:
+        # During a long universe walk, early pages may yield only a handful of
+        # eligible events. Expand that provisional cohort as soon as later
+        # pages provide better coverage instead of waiting a full rotation.
+        # Once full, preserve the normal rotation interval.
+        if partial and (cohort_stale or len(partial) > len(cohort)):
             state.save("partial_cohort_rotation", rotation + 1)
             state.save("cohort", partial)
             state.save("cohort_at", now)
