@@ -22,6 +22,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     recover,
     release_legacy_uncertainty_stop,
     safe_cycle_error,
+    scan_market_candidate,
     select_maker_markets,
     QUOTE_TTL_SECONDS,
     TERMINAL_FLAT_STOP_RECOVERY,
@@ -183,6 +184,33 @@ def working_frame(yes_bid, yes_ask, bid_depth=10, ask_depth=10, *, at=100.0):
 
 def working_record(client_id="m1"):
     return {"payload": {"client_order_id": client_id}}
+
+
+class EmptyBookMarkets:
+    def quote(self, market):
+        return {
+            "ticker": market["ticker"], "observed_at": 100.0,
+            "orderbook_fp": {"yes_dollars": [], "no_dollars": []},
+        }
+
+
+def test_scan_candidate_skips_empty_book_without_blocking_cycle(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        frame, signal = scan_market_candidate(
+            state, journal, EmptyBookMarkets(),
+            {"ticker": "TEST", "event_ticker": "EVENT"},
+        )
+        assert frame is signal is None
+        action = json.loads(state.db.execute(
+            "SELECT detail FROM actions ORDER BY at DESC LIMIT 1"
+        ).fetchone()[0])
+        assert action == {"action": "scan_skip", "reason": "missing_book"}
+        assert state.db.execute("SELECT count(*) FROM history").fetchone()[0] == 0
+    finally:
+        journal.close(); state.close()
 
 
 def seed_working_quote(state, *, outcome="yes", initial_mid="1/2"):

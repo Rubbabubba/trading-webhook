@@ -806,6 +806,24 @@ def observe_frame(state, ticker, frame, independent_event=None):
     return history
 
 
+def scan_market_candidate(state, journal, markets, market):
+    """Return a validated scan frame and signal, or skip an empty book safely."""
+    try:
+        quote = markets.quote({"ticker": market["ticker"]})
+        frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
+        rows = observe_frame(state, market["ticker"], frame, event_id(market))
+        preferred = preferred_outcome(state, journal, market["ticker"])
+        signal = maker_quote(rows, frame, preferred)
+        return frame, signal
+    except ValueError as error:
+        if str(error) != "missing_book":
+            raise
+        state.record(market["ticker"], {
+            "action": "scan_skip", "reason": "missing_book"
+        })
+        return None, None
+
+
 def evidence(state, journal):
     maker = [row for row in journal.records() if row["intent"].get("order_mode") == "post_only_gtc"]
     maker_ids = {row["payload"]["client_order_id"] for row in maker}
@@ -1052,24 +1070,9 @@ def run(data_root, *, cycles=None):
                         record_due_markouts(state, pending, frame)
                     else:
                         market = cohort[scan % len(cohort)]; scan += 1; state.save("scan", scan)
-                        try:
-                            quote = markets.quote({"ticker": market["ticker"]})
-                            frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
-                        except ValueError as error:
-                            if str(error) != "missing_book":
-                                raise
-                            frame = None
-                            state.record(market["ticker"], {"action": "scan_skip", "reason": "missing_book"})
-                        if frame is not None:
-                            rows = observe_frame(state, market["ticker"], frame, event_id(market))
-                            preferred = preferred_outcome(state, journal, market["ticker"])
-                            try:
-                                signal = maker_quote(rows, frame, preferred)
-                            except ValueError as error:
-                                if str(error) != "missing_book":
-                                    raise
-                                frame = None
-                                state.record(market["ticker"], {"action": "scan_skip", "reason": "missing_book"})
+                        frame, signal = scan_market_candidate(
+                            state, journal, markets, market
+                        )
                         if frame is not None:
                             locked = state.db.execute("SELECT 1 FROM entered_events WHERE event_id=?", (event_id(market),)).fetchone()
                             if v9_submission_allowed(signal, event_locked=bool(locked)):
