@@ -58,8 +58,8 @@ DEPTH_ADVERSE_MOVE_CENTS = 1
 MAX_HOLD_SECONDS = 300
 TAKE_PROFIT_CENTS = 2
 MARKOUT_HORIZONS = (5, 30, 300)
-COHORT_SELECTOR = "all_open_binary_markets_v1"
-COHORT_LIMIT = 16
+COHORT_SELECTOR = "all_open_binary_events_v2"
+COHORT_MINIMUM = 16
 COHORT_ROTATION_SECONDS = 30 * 60
 MARKET_PAGE_LIMIT = 200
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
@@ -121,7 +121,7 @@ def eligible_market_candidates(rows, *, now):
     return candidates
 
 
-def select_maker_markets(rows, *, now, limit=COHORT_LIMIT, offset=0):
+def select_maker_markets(rows, *, now, limit=None, offset=0):
     """Select one liquid contract per event from an already complete universe."""
     candidates = eligible_market_candidates(rows, now=now)
 
@@ -137,11 +137,12 @@ def select_maker_markets(rows, *, now, limit=COHORT_LIMIT, offset=0):
     if not diverse:
         return []
     offset %= len(diverse)
+    selected_count = len(diverse) if limit is None else min(limit, len(diverse))
     return [diverse[(offset + index) % len(diverse)]
-            for index in range(min(limit, len(diverse)))]
+            for index in range(selected_count)]
 
 
-def advance_market_discovery(state, markets, *, now, limit=COHORT_LIMIT):
+def advance_market_discovery(state, markets, *, now, limit=None):
     """Scan one page of the complete open-market universe without blocking status.
 
     Every open non-combo market is examined. Only active binary contracts with
@@ -183,7 +184,8 @@ def advance_market_discovery(state, markets, *, now, limit=COHORT_LIMIT):
     )]
     rotation = int(state.load("cohort_rotation", 0))
     selected = select_maker_markets(
-        universe, now=now, limit=limit, offset=rotation * limit
+        universe, now=now, limit=limit,
+        offset=rotation * limit if limit is not None else 0,
     )
     distinct_events = state.db.execute(
         "SELECT count(DISTINCT event_id) FROM market_universe WHERE generation=?",
@@ -225,8 +227,9 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
         state.save("cohort_at", now)
         return refreshed, now
     cohort_stale = bool(cohort and now - cohort_at >= COHORT_ROTATION_SECONDS)
-    cohort_underfilled = bool(cohort and len(cohort) < COHORT_LIMIT)
-    if cohort and (cohort_stale or cohort_underfilled):
+    cohort_underfilled = bool(cohort and len(cohort) < COHORT_MINIMUM)
+    if cohort and (cohort_stale or cohort_underfilled
+                   or discovery.get("in_progress")):
         # The Demo universe can contain well over 100,000 contracts. Do not
         # make active evidence collection wait for an unbounded cursor walk.
         # Rotate through the eligible events accumulated in the current pass
@@ -252,17 +255,16 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
                     "SELECT detail FROM market_universe WHERE generation=?",
                     (previous,),
                 )]
-        rotation = int(state.load("partial_cohort_rotation", 0))
-        partial = select_maker_markets(
-            partial, now=now, limit=COHORT_LIMIT,
-            offset=rotation * COHORT_LIMIT,
-        )
-        # During a long universe walk, early pages may yield only a handful of
-        # eligible events. Expand that provisional cohort as soon as later
-        # pages provide better coverage instead of waiting a full rotation.
-        # Once full, preserve the normal rotation interval.
-        if partial and (cohort_stale or len(partial) > len(cohort)):
-            state.save("partial_cohort_rotation", rotation + 1)
+        # Preserve still-live events from the last complete pass while adding
+        # every newly discovered event. Per-market book reads revalidate each
+        # candidate, and the completed pass later removes stale events.
+        partial = select_maker_markets(partial + cohort, now=now)
+        # During a long universe walk, expand the active scan set whenever a
+        # new eligible event appears. Never replace a broad serving set with a
+        # smaller partial page while the full discovery pass is incomplete.
+        old_tickers = {market["ticker"] for market in cohort}
+        new_tickers = {market["ticker"] for market in partial}
+        if partial and len(partial) >= len(cohort) and new_tickers != old_tickers:
             state.save("cohort", partial)
             state.save("cohort_at", now)
             state.record(None, {
@@ -282,7 +284,7 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
         provisional = [json.loads(row[0]) for row in state.db.execute(
             "SELECT detail FROM market_universe WHERE generation=?", (generation,)
         )]
-        provisional = select_maker_markets(provisional, now=now, limit=COHORT_LIMIT)
+        provisional = select_maker_markets(provisional, now=now)
         if provisional:
             state.save("cohort", provisional)
             state.save("cohort_at", now)

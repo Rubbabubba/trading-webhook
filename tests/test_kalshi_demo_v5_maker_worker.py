@@ -337,6 +337,13 @@ def test_maker_selector_accepts_all_categories_and_enforces_event_diversity():
     assert len({row["event_ticker"] for row in result}) == len(result)
 
 
+def test_maker_selector_has_no_event_ceiling():
+    rows = [candidate(f"MARKET-{index}", f"EVENT-{index}") for index in range(40)]
+    result = select_maker_markets(rows, now=1_700_000_000)
+    assert len(result) == 40
+    assert len({row["event_ticker"] for row in result}) == 40
+
+
 def test_market_discovery_paginates_full_universe_before_rotating_cohort(tmp_path):
     state = MakerState(tmp_path / "state.sqlite3")
     markets = FakeMarkets([
@@ -398,7 +405,7 @@ def test_long_discovery_rotates_from_partial_eligible_universe(tmp_path):
         cohort, cohort_at = refresh_cohort(
             state, markets, existing, 100.0, now=2000.0
         )
-        assert [row["ticker"] for row in cohort] == ["SPORT-A"]
+        assert {row["ticker"] for row in cohort} == {"OLD-A", "SPORT-A"}
         assert cohort_at == 2000.0
         assert state.load("market_discovery")["in_progress"] is True
         action = state.db.execute(
@@ -430,7 +437,7 @@ def test_long_discovery_rotates_previous_universe_before_new_candidates(tmp_path
         cohort, cohort_at = refresh_cohort(
             state, markets, existing, 100.0, now=2000.0
         )
-        assert [row["ticker"] for row in cohort] == ["WEATHER-A"]
+        assert {row["ticker"] for row in cohort} == {"OLD-A", "WEATHER-A"}
         assert cohort_at == 2000.0
         action = json.loads(state.db.execute(
             "SELECT detail FROM actions ORDER BY at DESC LIMIT 1"
@@ -443,7 +450,7 @@ def test_long_discovery_rotates_previous_universe_before_new_candidates(tmp_path
 
 def test_long_discovery_expands_underfilled_cohort_before_rotation_ttl(tmp_path):
     state = MakerState(tmp_path / "state.sqlite3")
-    existing = [candidate(f"OLD-{index}", f"OLD-{index}") for index in range(6)]
+    existing = [candidate(f"OLD-{index}", f"OLD-{index}") for index in range(16)]
     for index in range(20):
         market = candidate(f"SPORT-{index}", f"EVENT-{index}", volume=str(100 - index))
         state.db.execute(
@@ -461,14 +468,14 @@ def test_long_discovery_expands_underfilled_cohort_before_rotation_ttl(tmp_path)
         cohort, cohort_at = refresh_cohort(
             state, markets, existing, 1900.0, now=2000.0
         )
-        assert len(cohort) == 16
-        assert len({row["event_ticker"] for row in cohort}) == 16
+        assert len(cohort) == 36
+        assert len({row["event_ticker"] for row in cohort}) == 36
         assert cohort_at == 2000.0
         action = json.loads(state.db.execute(
             "SELECT detail FROM actions ORDER BY at DESC LIMIT 1"
         ).fetchone()[0])
         assert action["action"] == "partial_market_discovery_cohort_rotated"
-        assert action["selected_markets"] == 16
+        assert action["selected_markets"] == 36
     finally:
         state.close()
 
