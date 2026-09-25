@@ -107,7 +107,9 @@ class BinaryDemoBroker(DemoBroker):
 
     def reconcile_settlements(self):
         """Record settlements for this ledger without claiming account-wide history."""
+        import json
         tickers = {r['payload']['ticker'] for r in self.journal.records()}
+        active = set(self.journal.accounting()['positions'])
         matches = {}
         for row in self.client.pages('/portfolio/settlements', 'settlements', subaccount=0):
             ticker = row.get('ticker')
@@ -116,6 +118,20 @@ class BinaryDemoBroker(DemoBroker):
             if ticker in matches and matches[ticker] != row:
                 raise ValueError('duplicate_settlement')
             matches[ticker] = row
-        for row in matches.values():
+        reconciled = 0
+        for ticker, row in matches.items():
+            old = self.journal.db.execute(
+                'SELECT detail FROM settlements WHERE ticker=?', (ticker,)
+            ).fetchone()
+            if old:
+                if json.loads(old[0]) != row:
+                    raise ValueError('settlement_history_changed')
+                continue
+            # Account-wide settlement history can include a market this ledger
+            # already exited completely. It has no remaining basis to settle,
+            # so recording it would manufacture an unsupported second close.
+            if ticker not in active:
+                continue
             self.journal.record_settlement(row)
-        return dict(reconciled_settlements=len(matches))
+            reconciled += 1
+        return dict(reconciled_settlements=reconciled)

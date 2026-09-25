@@ -121,6 +121,28 @@ def test_partial_cancel_then_exit_and_settle_no(tmp_path):
     j.close()
 
 
+def test_restart_ignores_settlement_after_complete_market_exit(tmp_path):
+    path = tmp_path / 'j.db'
+    j = BinaryJournal(path); x = Exchange(j); b = BinaryDemoBroker(j, x)
+    for cid, action, price in [('buy', 'buy', 30), ('sell', 'sell', 50)]:
+        j.reserve(cid, 'T', 1, price, 1, outcome='no', action=action,
+                  account_snapshot=snapshot(j))
+        b.submit(cid, quote_snapshot=quote(j, cid))
+    assert j.accounting()['positions'] == {}
+    j.close(); j = BinaryJournal(path); x.j = j; b = BinaryDemoBroker(j, x)
+    x.settlements = [dict(
+        ticker='T', market_result='no', revenue=0, yes_count_fp='0',
+        no_count_fp='0', yes_total_cost_dollars='0',
+        no_total_cost_dollars='0', fee_cost='0', value=0,
+        exchange_index=0, settled_time=datetime.now(timezone.utc).isoformat(),
+    )]
+
+    assert b.reconcile_settlements() == {'reconciled_settlements': 0}
+    assert j.db.execute('SELECT count(*) FROM settlements').fetchone()[0] == 0
+    assert j.accounting()['positions'] == {}
+    j.close()
+
+
 def test_invalid_reconciliation_rolls_back_evidence(tmp_path):
     j=BinaryJournal(tmp_path/'j.db');x=Exchange(j);b=BinaryDemoBroker(j,x)
     j.reserve('buy','T',1,30,1,outcome='no',action='buy',account_snapshot=snapshot(j))
