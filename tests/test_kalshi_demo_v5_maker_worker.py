@@ -13,12 +13,14 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     advance_market_discovery,
     current_position,
     evidence,
+    next_sampling_market,
     observe_v10_shadow,
     observe_working_quote,
     preferred_outcome,
     quarantine_stale_unresolved,
     recover_or_report,
     refresh_cohort,
+    sampling_window,
     recover,
     release_legacy_uncertainty_stop,
     safe_cycle_error,
@@ -342,6 +344,25 @@ def test_maker_selector_has_no_event_ceiling():
     result = select_maker_markets(rows, now=1_700_000_000)
     assert len(result) == 40
     assert len({row["event_ticker"] for row in result}) == 40
+
+
+def test_sampling_windows_preserve_all_event_coverage_and_signal_cadence(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    cohort = [candidate(f"MARKET-{index:02d}", f"EVENT-{index:02d}")
+              for index in range(40)]
+    try:
+        first = sampling_window(state, cohort, now=1_000.0)
+        assert len(first) == 16
+        assert len({next_sampling_market(state, cohort, now=1_100.0)["ticker"]
+                    for _ in range(16)}) == 16
+
+        second = sampling_window(state, cohort, now=1_901.0)
+        third = sampling_window(state, cohort, now=2_802.0)
+        assert len(second) == 16 and len(third) == 16
+        assert len({row["ticker"] for row in first + second + third}) == 40
+        assert state.load("sampling_window")["cohort_size"] == 40
+    finally:
+        state.close()
 
 
 def test_market_discovery_paginates_full_universe_before_rotating_cohort(tmp_path):

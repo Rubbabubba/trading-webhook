@@ -61,6 +61,8 @@ MARKOUT_HORIZONS = (5, 30, 300)
 COHORT_SELECTOR = "all_open_binary_events_v2"
 COHORT_MINIMUM = 16
 COHORT_ROTATION_SECONDS = 30 * 60
+SAMPLING_WINDOW_SIZE = 16
+SAMPLING_WINDOW_SECONDS = 15 * 60
 MARKET_PAGE_LIMIT = 200
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"
 LEGACY_UNCERTAINTY_STOP_RECOVERY = "v5_legacy_uncertainty_stop_recovery_20260919"
@@ -290,6 +292,59 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
             state.save("cohort_at", now)
             return provisional, now
     raise ValueError("no_eligible_demo_markets")
+
+
+def sampling_window(state, cohort, *, now):
+    """Serve every eligible event through cadence-safe rotating windows.
+
+    A public Demo quote needs two rate-limited reads. Walking a large all-event
+    cohort once therefore takes longer than V10's frozen 300-second history
+    window and leaves every market permanently short of its three anchors.
+    Keep the complete cohort for coverage, but observe a stable bounded window
+    long enough to form valid history and future markouts before rotating to
+    the next events.
+    """
+    if not cohort:
+        raise ValueError("no_eligible_demo_markets")
+    by_ticker = {market["ticker"]: market for market in cohort}
+    current = state.load("sampling_window", {})
+    tickers = [ticker for ticker in current.get("tickers", []) if ticker in by_ticker]
+    started_at = current.get("started_at")
+    if (len(tickers) == min(SAMPLING_WINDOW_SIZE, len(cohort))
+            and type(started_at) in (int, float)
+            and now - started_at < SAMPLING_WINDOW_SECONDS):
+        return [by_ticker[ticker] for ticker in tickers]
+
+    ordered = sorted(cohort, key=lambda market: market["ticker"])
+    offset = int(state.load("sampling_window_offset", 0)) % len(ordered)
+    count = min(SAMPLING_WINDOW_SIZE, len(ordered))
+    selected = [ordered[(offset + index) % len(ordered)] for index in range(count)]
+    next_offset = (offset + count) % len(ordered)
+    window = {
+        "started_at": now,
+        "offset": offset,
+        "next_offset": next_offset,
+        "size": count,
+        "cohort_size": len(ordered),
+        "tickers": [market["ticker"] for market in selected],
+    }
+    state.save("sampling_window", window)
+    state.save("sampling_window_offset", next_offset)
+    state.save("sampling_window_scan", 0)
+    state.record(None, {"action": "sampling_window_rotated", **{
+        key: window[key] for key in (
+            "started_at", "offset", "next_offset", "size", "cohort_size",
+        )
+    }})
+    return selected
+
+
+def next_sampling_market(state, cohort, *, now):
+    window = sampling_window(state, cohort, now=now)
+    scan = int(state.load("sampling_window_scan", 0))
+    market = window[scan % len(window)]
+    state.save("sampling_window_scan", scan + 1)
+    return market
 
 
 class MakerState:
@@ -888,6 +943,7 @@ def evidence(state, journal):
             statistics.mean(clusters) - 1.96 * statistics.stdev(clusters) / len(clusters) ** .5
         )
     discovery = state.load("market_discovery", {})
+    sample = state.load("sampling_window", {})
     return {
         "environment": "demo", "post_only": True,
         "market_discovery": {
@@ -895,6 +951,11 @@ def evidence(state, journal):
                 "in_progress", "generation", "pages", "markets_scanned",
                 "eligible_markets", "eligible_events", "selected_markets",
                 "started_at", "completed_at",
+            )
+        },
+        "sampling_window": {
+            key: sample.get(key) for key in (
+                "started_at", "offset", "next_offset", "size", "cohort_size",
             )
         },
         "markets": len({row[1] for row in metadata}),
@@ -1071,7 +1132,8 @@ def run(data_root, *, cycles=None):
                                       pending_event[0] if pending_event else pending)
                         record_due_markouts(state, pending, frame)
                     else:
-                        market = cohort[scan % len(cohort)]; scan += 1; state.save("scan", scan)
+                        market = next_sampling_market(state, cohort, now=time.time())
+                        scan += 1; state.save("scan", scan)
                         frame, signal = scan_market_candidate(
                             state, journal, markets, market
                         )
