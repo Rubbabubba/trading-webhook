@@ -61,7 +61,10 @@ MARKOUT_HORIZONS = (5, 30, 300)
 COHORT_SELECTOR = "all_open_binary_events_v2"
 COHORT_MINIMUM = 16
 COHORT_ROTATION_SECONDS = 30 * 60
-SAMPLING_WINDOW_SIZE = 16
+# A quote observation currently takes about ten seconds after exchange rate
+# limiting.  Eight markets keep revisits below 90 seconds, so V10 can retain
+# three prior 60--300 second anchors inside its frozen 300-second history.
+SAMPLING_WINDOW_SIZE = 8
 SAMPLING_WINDOW_SECONDS = 15 * 60
 MARKET_PAGE_LIMIT = 200
 ZERO_FILL_RECOVERY = "v5_all_terminal_zero_fill_recovery_20260918"

@@ -352,14 +352,20 @@ def test_sampling_windows_preserve_all_event_coverage_and_signal_cadence(tmp_pat
               for index in range(40)]
     try:
         first = sampling_window(state, cohort, now=1_000.0)
-        assert len(first) == 16
+        assert len(first) == 8
         assert len({next_sampling_market(state, cohort, now=1_100.0)["ticker"]
-                    for _ in range(16)}) == 16
+                    for _ in range(8)}) == 8
 
         second = sampling_window(state, cohort, now=1_901.0)
         third = sampling_window(state, cohort, now=2_802.0)
-        assert len(second) == 16 and len(third) == 16
-        assert len({row["ticker"] for row in first + second + third}) == 40
+        fourth = sampling_window(state, cohort, now=3_703.0)
+        fifth = sampling_window(state, cohort, now=4_604.0)
+        assert all(len(window) == 8 for window in (
+            second, third, fourth, fifth,
+        ))
+        assert len({row["ticker"] for row in (
+            first + second + third + fourth + fifth
+        )}) == 40
         assert state.load("sampling_window")["cohort_size"] == 40
     finally:
         state.close()
