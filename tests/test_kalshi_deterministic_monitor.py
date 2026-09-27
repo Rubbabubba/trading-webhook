@@ -33,6 +33,17 @@ def healthy(at="2026-09-21T18:00:00+00:00"):
                 "stressed_markout_pnl_cents": {"5": 0, "30": 0, "300": 0},
                 "event_cluster_lcb_cents": {"5": None, "30": None, "300": None},
             },
+            "v11_shadow": {
+                "strategy_id": "strong_imbalance_maker_v11_shadow",
+                "execution_enabled": False, "signals": 0, "evaluations": 10,
+                "last_evaluation_at": 1790013600,
+                "rejection_reasons": {"weak_imbalance": 1},
+                "complete_signals": 0, "independent_events": 0,
+                "markout_records": {"5": 0, "30": 0, "300": 0},
+                "stressed_markout_pnl_cents": {"5": 0, "30": 0, "300": 0},
+                "event_cluster_lcb_cents": {"5": None, "30": None, "300": None},
+                "automatic_rejection_triggered": False,
+            },
         },
     }
 
@@ -106,6 +117,17 @@ def test_retired_strategy_cannot_be_reenabled_silently():
     status["strategy_execution_enabled"] = True
     packet, _, _ = check(status, {}, REGISTRATION, now=1790013601)
     assert "retired_strategy_execution_enabled" in packet["health"]["faults"]
+
+
+def test_challenger_cannot_be_replaced_or_enabled_silently():
+    status = healthy()
+    status["evidence"]["v11_shadow"]["execution_enabled"] = True
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601)
+    assert "v11_execution_enabled" in packet["health"]["faults"]
+    status["evidence"]["v11_shadow"]["execution_enabled"] = False
+    status["evidence"]["v11_shadow"]["strategy_id"] = "changed"
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601)
+    assert "v11_strategy_changed" in packet["health"]["faults"]
 
 
 def test_stopped_or_stale_worker_is_detected_without_ai():

@@ -21,6 +21,7 @@ DAILY_REVIEW_SECONDS = 24 * 60 * 60
 EXPECTED_STRATEGY = "stable_balanced_maker_v9"
 EXPECTED_EXECUTION_POLICY = "v9_retired_after_8_losses_20260924"
 EXPECTED_V10 = "queue_toxicity_maker_v10_shadow"
+EXPECTED_V11 = "strong_imbalance_maker_v11_shadow"
 MAX_PACKET_BYTES = 12_000
 
 
@@ -117,6 +118,11 @@ def faults(status, *, now):
         result.append("v10_strategy_changed")
     if shadow.get("execution_enabled") is not False:
         result.append("v10_execution_enabled")
+    challenger = evidence.get("v11_shadow", {})
+    if challenger.get("strategy_id") != EXPECTED_V11:
+        result.append("v11_strategy_changed")
+    if challenger.get("execution_enabled") is not False:
+        result.append("v11_execution_enabled")
     if int(evidence.get("ending_position_contracts") or 0) > 1:
         result.append("inventory_limit_breached")
     # A working post-only order is represented as unresolved.  More than one
@@ -129,6 +135,7 @@ def faults(status, *, now):
 def _evidence_snapshot(status):
     evidence = status.get("evidence", {})
     shadow = evidence.get("v10_shadow", {})
+    challenger = evidence.get("v11_shadow", {})
     return {
         "post_only_attempts": int(evidence.get("post_only_attempts") or 0),
         "maker_fills": int(evidence.get("maker_fills") or 0),
@@ -142,6 +149,20 @@ def _evidence_snapshot(status):
         "v10_complete_signals": int(shadow.get("complete_signals") or 0),
         "v10_independent_events": int(shadow.get("independent_events") or 0),
         "v10_markout_records": shadow.get("markout_records", {}),
+        "v11_signals": int(challenger.get("signals") or 0),
+        "v11_evaluations": int(challenger.get("evaluations") or 0),
+        "v11_last_evaluation_at": challenger.get("last_evaluation_at"),
+        "v11_rejection_reasons": challenger.get("rejection_reasons", {}),
+        "v11_complete_signals": int(challenger.get("complete_signals") or 0),
+        "v11_independent_events": int(challenger.get("independent_events") or 0),
+        "v11_markout_records": challenger.get("markout_records", {}),
+        "v11_stressed_markout_pnl_cents": challenger.get(
+            "stressed_markout_pnl_cents", {}
+        ),
+        "v11_event_cluster_lcb_cents": challenger.get("event_cluster_lcb_cents", {}),
+        "v11_automatic_rejection_triggered": bool(
+            challenger.get("automatic_rejection_triggered")
+        ),
     }
 
 
@@ -216,6 +237,7 @@ def check(status, checkpoint, registration, *, now):
             "worker_database": "worker.sqlite3",
             "order_journal": "journal.sqlite3",
             "registration": "configs/kalshi_maker_v10_20260921/registration.json",
+            "challenger_registration": "configs/kalshi_maker_v11_20260927/registration.json",
         },
     }
     state_fingerprint = hashlib.sha256(json.dumps({

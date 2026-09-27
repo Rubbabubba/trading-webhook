@@ -28,6 +28,13 @@ from .kalshi_maker_v10 import (
     shadow_decision as v10_shadow_decision,
     stressed_markout as v10_stressed_markout,
 )
+from .kalshi_maker_v11 import (
+    MARKOUT_HORIZONS as V11_MARKOUT_HORIZONS,
+    SIGNAL_EVENT_COOLDOWN_SECONDS as V11_SIGNAL_EVENT_COOLDOWN_SECONDS,
+    STRATEGY_ID as V11_STRATEGY_ID,
+    shadow_decision as v11_shadow_decision,
+    stressed_markout as v11_stressed_markout,
+)
 from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 
@@ -392,6 +399,17 @@ class MakerState:
             PRIMARY KEY(signal_id,horizon_seconds));
           CREATE TABLE IF NOT EXISTS v10_shadow_evaluations(
             reason TEXT PRIMARY KEY,count INTEGER NOT NULL,last_at REAL NOT NULL);
+          CREATE TABLE IF NOT EXISTS v11_shadow_signals(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,ticker TEXT NOT NULL,
+            observed_at REAL NOT NULL,outcome TEXT NOT NULL,
+            price_cents INTEGER NOT NULL,detail TEXT NOT NULL,event_id TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS v11_shadow_markouts(
+            signal_id INTEGER NOT NULL,horizon_seconds INTEGER NOT NULL,
+            observed_at REAL NOT NULL,yes_mid TEXT NOT NULL,
+            gross_cents TEXT NOT NULL,stressed_cents TEXT NOT NULL,
+            PRIMARY KEY(signal_id,horizon_seconds));
+          CREATE TABLE IF NOT EXISTS v11_shadow_evaluations(
+            reason TEXT PRIMARY KEY,count INTEGER NOT NULL,last_at REAL NOT NULL);
           CREATE TABLE IF NOT EXISTS market_universe(
             ticker TEXT PRIMARY KEY,event_id TEXT NOT NULL,generation INTEGER NOT NULL,
             detail TEXT NOT NULL,volume TEXT NOT NULL,depth TEXT NOT NULL,spread TEXT NOT NULL);
@@ -432,6 +450,17 @@ class MakerState:
         if saved_shadow is not None and saved_shadow != shadow_protocol:
             raise ValueError("v10_shadow_protocol_changed")
         self.save("v10_shadow_protocol", shadow_protocol)
+        v11_protocol = {
+            "strategy_id": V11_STRATEGY_ID,
+            "execution_enabled": False,
+            "minimum_absolute_imbalance": "0.25",
+            "event_signal_cooldown_seconds": V11_SIGNAL_EVENT_COOLDOWN_SECONDS,
+            "markout_horizons": list(V11_MARKOUT_HORIZONS),
+        }
+        saved_v11 = self.load("v11_shadow_protocol")
+        if saved_v11 is not None and saved_v11 != v11_protocol:
+            raise ValueError("v11_shadow_protocol_changed")
+        self.save("v11_shadow_protocol", v11_protocol)
 
     def save(self, name, value):
         self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)",
@@ -855,14 +884,57 @@ def observe_v10_shadow(state, ticker, history, frame, independent_event=None):
     return signal
 
 
+def observe_v11_shadow(state, ticker, history, frame, independent_event=None):
+    """Record prospective V11 signals with event-level deduplication."""
+    observed_at = frame["received_at"]
+    yes_mid = midpoint(frame)
+    for signal_id, signal_at, outcome, price_cents in state.db.execute(
+            "SELECT id,observed_at,outcome,price_cents FROM v11_shadow_signals WHERE ticker=?",
+            (ticker,)).fetchall():
+        signal = {"outcome": outcome, "price_cents": price_cents}
+        markout = v11_stressed_markout(signal, yes_mid)
+        for horizon in V11_MARKOUT_HORIZONS:
+            if observed_at - signal_at >= horizon:
+                state.db.execute(
+                    "INSERT OR IGNORE INTO v11_shadow_markouts VALUES(?,?,?,?,?,?)",
+                    (signal_id, horizon, observed_at, str(yes_mid),
+                     markout["gross_cents"], markout["stressed_cents"]),
+                )
+    independent_event = independent_event or ticker
+    latest = state.db.execute(
+        "SELECT observed_at FROM v11_shadow_signals WHERE event_id=? "
+        "ORDER BY observed_at DESC LIMIT 1", (independent_event,),
+    ).fetchone()
+    if latest is not None and observed_at - latest[0] < V11_SIGNAL_EVENT_COOLDOWN_SECONDS:
+        return None
+    signal, reason = v11_shadow_decision(history, frame)
+    state.db.execute(
+        "INSERT INTO v11_shadow_evaluations(reason,count,last_at) VALUES(?,1,?) "
+        "ON CONFLICT(reason) DO UPDATE SET count=count+1,last_at=excluded.last_at",
+        (reason, observed_at),
+    )
+    if signal is None:
+        return None
+    state.db.execute(
+        "INSERT INTO v11_shadow_signals(ticker,observed_at,outcome,price_cents,detail,event_id) "
+        "VALUES(?,?,?,?,?,?)",
+        (ticker, observed_at, signal["outcome"], signal["price_cents"],
+         json.dumps(signal, sort_keys=True), independent_event),
+    )
+    state.record(ticker, {"action": "v11_shadow_signal", **signal,
+                          "execution_enabled": False, "environment": "demo"})
+    return signal
+
+
 def observe_frame(state, ticker, frame, independent_event=None):
-    """Feed one decision-time frame to both frozen V9 and shadow V10."""
+    """Feed one decision-time frame to frozen V10 and prospective V11."""
     rows = state.db.execute(
         "SELECT at,mid FROM history WHERE ticker=? AND at>=? ORDER BY at",
         (ticker, frame["received_at"] - 300),
     ).fetchall()
     history = [(at, Fraction(mid)) for at, mid in rows]
     observe_v10_shadow(state, ticker, history, frame, independent_event)
+    observe_v11_shadow(state, ticker, history, frame, independent_event)
     state.db.execute("INSERT INTO history VALUES(?,?,?)",
                      (frame["received_at"], ticker, str(midpoint(frame))))
     state.db.execute("DELETE FROM history WHERE at<?", (frame["received_at"] - 300,))
@@ -948,6 +1020,42 @@ def evidence(state, journal):
         v10_lcb[str(horizon)] = None if len(clusters) < 2 else (
             statistics.mean(clusters) - 1.96 * statistics.stdev(clusters) / len(clusters) ** .5
         )
+    v11_marks = {str(h): state.db.execute(
+        "SELECT count(*) FROM v11_shadow_markouts WHERE horizon_seconds=?", (h,)
+    ).fetchone()[0] for h in V11_MARKOUT_HORIZONS}
+    v11_pnl = {str(h): state.db.execute(
+        "SELECT coalesce(sum(CAST(stressed_cents AS REAL)),0) FROM v11_shadow_markouts "
+        "WHERE horizon_seconds=?", (h,)
+    ).fetchone()[0] for h in V11_MARKOUT_HORIZONS}
+    v11_evaluation_rows = state.db.execute(
+        "SELECT reason,count,last_at FROM v11_shadow_evaluations"
+    ).fetchall()
+    v11_complete_signals = state.db.execute(
+        "SELECT count(*) FROM (SELECT signal_id FROM v11_shadow_markouts "
+        "GROUP BY signal_id HAVING count(DISTINCT horizon_seconds)=?)",
+        (len(V11_MARKOUT_HORIZONS),),
+    ).fetchone()[0]
+    v11_independent_events = state.db.execute(
+        "SELECT count(DISTINCT s.event_id) FROM v11_shadow_signals s JOIN "
+        "(SELECT signal_id FROM v11_shadow_markouts GROUP BY signal_id "
+        "HAVING count(DISTINCT horizon_seconds)=?) c ON c.signal_id=s.id",
+        (len(V11_MARKOUT_HORIZONS),),
+    ).fetchone()[0]
+    v11_lcb = {}
+    v11_cluster_means = {}
+    for horizon in V11_MARKOUT_HORIZONS:
+        clusters = [float(row[0]) for row in state.db.execute(
+            "SELECT avg(CAST(m.stressed_cents AS REAL)) FROM v11_shadow_markouts m "
+            "JOIN v11_shadow_signals s ON s.id=m.signal_id "
+            "WHERE m.horizon_seconds=? GROUP BY s.event_id", (horizon,),
+        ).fetchall()]
+        v11_cluster_means[str(horizon)] = None if not clusters else statistics.mean(clusters)
+        v11_lcb[str(horizon)] = None if len(clusters) < 2 else (
+            statistics.mean(clusters) - 1.96 * statistics.stdev(clusters) / len(clusters) ** .5
+        )
+    v11_early_stop = v11_independent_events >= 15 and any(
+        value is not None and value <= -1 for value in v11_cluster_means.values()
+    )
     discovery = state.load("market_discovery", {})
     sample = state.load("sampling_window", {})
     return {
@@ -998,6 +1106,23 @@ def evidence(state, journal):
             "markout_records": v10_marks,
             "stressed_markout_pnl_cents": v10_pnl,
             "event_cluster_lcb_cents": v10_lcb,
+        },
+        "v11_shadow": {
+            "strategy_id": V11_STRATEGY_ID,
+            "execution_enabled": False,
+            "signals": state.db.execute("SELECT count(*) FROM v11_shadow_signals").fetchone()[0],
+            "evaluations": sum(row[1] for row in v11_evaluation_rows),
+            "last_evaluation_at": max((row[2] for row in v11_evaluation_rows), default=None),
+            "rejection_reasons": {
+                reason: count for reason, count, _at in v11_evaluation_rows if reason != "signal"
+            },
+            "complete_signals": v11_complete_signals,
+            "independent_events": v11_independent_events,
+            "markout_records": v11_marks,
+            "stressed_markout_pnl_cents": v11_pnl,
+            "event_cluster_mean_cents": v11_cluster_means,
+            "event_cluster_lcb_cents": v11_lcb,
+            "automatic_rejection_triggered": v11_early_stop,
         },
     }
 
