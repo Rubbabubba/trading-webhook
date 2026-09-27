@@ -309,14 +309,16 @@ def sampling_window(state, cohort, *, now):
     """
     if not cohort:
         raise ValueError("no_eligible_demo_markets")
-    by_ticker = {market["ticker"]: market for market in cohort}
     current = state.load("sampling_window", {})
-    tickers = [ticker for ticker in current.get("tickers", []) if ticker in by_ticker]
+    current_markets = current.get("markets", [])
     started_at = current.get("started_at")
-    if (len(tickers) == min(SAMPLING_WINDOW_SIZE, len(cohort))
+    if (len(current_markets) == min(SAMPLING_WINDOW_SIZE, len(cohort))
             and type(started_at) in (int, float)
             and now - started_at < SAMPLING_WINDOW_SECONDS):
-        return [by_ticker[ticker] for ticker in tickers]
+        # A partial universe pass may choose a different contract for an event
+        # as new pages arrive.  Keep this observation window stable until its
+        # history and markouts mature; every order book is still read live.
+        return current_markets
 
     ordered = sorted(cohort, key=lambda market: market["ticker"])
     offset = int(state.load("sampling_window_offset", 0)) % len(ordered)
@@ -330,6 +332,7 @@ def sampling_window(state, cohort, *, now):
         "size": count,
         "cohort_size": len(ordered),
         "tickers": [market["ticker"] for market in selected],
+        "markets": selected,
     }
     state.save("sampling_window", window)
     state.save("sampling_window_offset", next_offset)

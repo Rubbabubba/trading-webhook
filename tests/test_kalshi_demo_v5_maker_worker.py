@@ -356,6 +356,11 @@ def test_sampling_windows_preserve_all_event_coverage_and_signal_cadence(tmp_pat
         assert len({next_sampling_market(state, cohort, now=1_100.0)["ticker"]
                     for _ in range(8)}) == 8
 
+        # Expanding discovery can replace the preferred contract for an event.
+        # Do not reset a live window before its history can mature.
+        changed = cohort[8:] + [candidate("REPLACEMENT", "EVENT-00")]
+        assert sampling_window(state, changed, now=1_200.0) == first
+
         second = sampling_window(state, cohort, now=1_901.0)
         third = sampling_window(state, cohort, now=2_802.0)
         fourth = sampling_window(state, cohort, now=3_703.0)
