@@ -942,7 +942,7 @@ def observe_frame(state, ticker, frame, independent_event=None):
 
 
 def scan_market_candidate(state, journal, markets, market):
-    """Return a validated scan frame and signal, or skip an empty book safely."""
+    """Return a validated frame, skipping normal market-lifecycle races safely."""
     try:
         quote = markets.quote({"ticker": market["ticker"]})
         frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
@@ -951,10 +951,11 @@ def scan_market_candidate(state, journal, markets, market):
         signal = maker_quote(rows, frame, preferred)
         return frame, signal
     except ValueError as error:
-        if str(error) != "missing_book":
+        reason = str(error)
+        if reason not in {"missing_book", "demo_market_not_active_binary"}:
             raise
         state.record(market["ticker"], {
-            "action": "scan_skip", "reason": "missing_book"
+            "action": "scan_skip", "reason": reason
         })
         return None, None
 

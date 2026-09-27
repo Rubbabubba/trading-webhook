@@ -228,6 +228,11 @@ class EmptyBookMarkets:
         }
 
 
+class InactiveMarket:
+    def quote(self, market):
+        raise ValueError("demo_market_not_active_binary")
+
+
 def test_scan_candidate_skips_empty_book_without_blocking_cycle(tmp_path):
     state = MakerState(tmp_path / "state.sqlite3")
     journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
@@ -243,6 +248,26 @@ def test_scan_candidate_skips_empty_book_without_blocking_cycle(tmp_path):
         ).fetchone()[0])
         assert action == {"action": "scan_skip", "reason": "missing_book"}
         assert state.db.execute("SELECT count(*) FROM history").fetchone()[0] == 0
+    finally:
+        journal.close(); state.close()
+
+
+def test_scan_candidate_skips_market_that_closed_after_discovery(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        frame, signal = scan_market_candidate(
+            state, journal, InactiveMarket(),
+            {"ticker": "CLOSED", "event_ticker": "EVENT"},
+        )
+        assert frame is signal is None
+        action = json.loads(state.db.execute(
+            "SELECT detail FROM actions ORDER BY at DESC LIMIT 1"
+        ).fetchone()[0])
+        assert action == {
+            "action": "scan_skip", "reason": "demo_market_not_active_binary"
+        }
     finally:
         journal.close(); state.close()
 
