@@ -1,0 +1,42 @@
+"""Run the established Demo maker and the isolated sports shadow collector."""
+import argparse
+from pathlib import Path
+import threading
+import time
+
+from .kalshi_demo_v5_maker_worker import run as run_maker
+from .sports_persistent_passive_worker import run as run_sports
+
+
+def sports_supervisor(root):
+    while True:
+        try:
+            run_sports(root/'sports-challenger')
+        except Exception:
+            # The shadow collector has no order path and must never take down
+            # reconciliation or the established all-market Demo worker.
+            time.sleep(60)
+
+
+def run(data_root, cycles=None):
+    root = Path(data_root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    if cycles is None:
+        threading.Thread(target=sports_supervisor, args=(root,), daemon=True).start()
+    else:
+        # Bounded validation runs exercise both services without a background
+        # thread surviving the test process.
+        run_sports(root/'sports-challenger', cycles=cycles)
+    run_maker(root, cycles=cycles)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--data-root', default='/var/data/kalshi-demo-v9')
+    parser.add_argument('--cycles', type=int)
+    args = parser.parse_args(argv)
+    run(args.data_root, cycles=args.cycles)
+
+
+if __name__ == '__main__':
+    main()
