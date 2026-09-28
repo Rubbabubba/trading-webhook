@@ -13,6 +13,7 @@ from .kalshi_external_sleeves import (
 )
 from .kalshi_strategy_evaluation import cluster_lower_bound
 from .kalshi_sleeve_comparison import comparison_packet
+from .kalshi_demo_v5_maker_worker import eligible_market_candidates, market_family
 
 
 STRUCTURAL_ID = "kalshi_structural_arb_v1_shadow"
@@ -37,8 +38,53 @@ def open_db(path):
         generation INTEGER PRIMARY KEY,observed_at TEXT NOT NULL,market_count INTEGER NOT NULL,
         calibration_observations INTEGER NOT NULL,indicative_candidates INTEGER NOT NULL,
         confirmed_structural_signals INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS coverage_settings(
+        name TEXT PRIMARY KEY,detail TEXT NOT NULL);
     """)
     return db
+
+
+def _coverage_load(db, name, default=None):
+    row = db.execute("SELECT detail FROM coverage_settings WHERE name=?", (name,)).fetchone()
+    return json.loads(row[0]) if row else default
+
+
+def _coverage_save(db, name, value):
+    db.execute("INSERT OR REPLACE INTO coverage_settings VALUES(?,?)",
+               (name, json.dumps(value, sort_keys=True)))
+
+
+def advance_mve_coverage(db, client, now):
+    """Inventory every currently listed combo market without producing signals."""
+    scan = _coverage_load(db, "mve_discovery", {})
+    if not scan.get("in_progress"):
+        scan = {
+            "generation": int(scan.get("generation", 0)) + 1,
+            "in_progress": True, "cursor": None, "started_at": now.isoformat(),
+            "pages": 0, "markets_scanned": 0, "active_binary_markets": 0,
+            "maker_screen_candidates": 0, "market_families": {},
+        }
+    params = {"status": "open", "limit": 200, "mve_filter": "only"}
+    if scan.get("cursor"):
+        params["cursor"] = scan["cursor"]
+    page, _started, _observed = client.get(params=params)
+    rows = page.get("markets", [])
+    candidates = {row[3]["ticker"] for row in eligible_market_candidates(
+        rows, now=now.timestamp())}
+    for market in rows:
+        family = market_family(market)
+        scan["market_families"][family] = scan["market_families"].get(family, 0) + 1
+        if market.get("status") == "active" and market.get("market_type") == "binary":
+            scan["active_binary_markets"] += 1
+        scan["maker_screen_candidates"] += int(market.get("ticker") in candidates)
+    scan["pages"] += 1
+    scan["markets_scanned"] += len(rows)
+    scan["cursor"] = page.get("cursor") or None
+    if not scan["cursor"]:
+        scan["in_progress"] = False
+        scan["completed_at"] = now.isoformat()
+    _coverage_save(db, "mve_discovery", scan)
+    return scan
 
 
 def maker_snapshot(path):
@@ -189,7 +235,8 @@ def _sports(root):
     return summary, records
 
 
-def write_status(root, db, generation, market_count, coverage=None, error=None):
+def write_status(root, db, generation, market_count, coverage=None, mve_coverage=None,
+                 error=None):
     structural_records = _records(db, "structural_signals")
     flb_records = _records(db, "calibration_observations")
     structural = {"strategy_id": STRUCTURAL_ID, "execution_enabled": False,
@@ -204,6 +251,7 @@ def write_status(root, db, generation, market_count, coverage=None, error=None):
         SPORTS_ID: sports_records, STRUCTURAL_ID: structural_records, FLB_ID: flb_records,
     })
     coverage = coverage or {}
+    mve_coverage = mve_coverage or {}
     packet.update({"generated_at": utcnow().isoformat(), "execution_enabled": False,
                    "source_generation": generation, "source_markets": market_count,
                    "coverage": {
@@ -216,6 +264,9 @@ def write_status(root, db, generation, market_count, coverage=None, error=None):
                        "research_relevant_events": coverage.get("research_relevant_events"),
                        "favorite_longshot_markets": coverage.get("favorite_longshot_markets"),
                        "nested_threshold_markets": coverage.get("nested_threshold_markets"),
+                       "market_families": coverage.get("market_families"),
+                       "eligible_families": coverage.get("eligible_families"),
+                       "admission_rejections": coverage.get("admission_rejections"),
                        "coverage_accounting_complete": coverage.get(
                            "coverage_accounting_complete"),
                        "coverage_complete": bool(
@@ -223,6 +274,15 @@ def write_status(root, db, generation, market_count, coverage=None, error=None):
                            and generation == coverage.get("generation")
                            and coverage.get("coverage_accounting_complete") is True
                        ),
+                   },
+                   "multivariate_coverage": {
+                       "catalog_scope": "all_open_mve_combo_markets",
+                       "strategy_route": "inventory_only_pending_registered_mve_challenger",
+                       **{key: mve_coverage.get(key) for key in (
+                           "generation", "in_progress", "pages", "markets_scanned",
+                           "active_binary_markets", "maker_screen_candidates",
+                           "market_families", "started_at", "completed_at",
+                       )},
                    },
                    "error": error})
     destination = root / "sleeve_comparison.json"
@@ -238,14 +298,17 @@ def run(data_root, cycles=None, interval_seconds=60):
     try:
         while cycles is None or cycle < cycles:
             generation = None; markets = []; coverage = {}; error = None
+            mve_coverage = _coverage_load(db, "mve_discovery", {})
             try:
                 generation, markets, coverage = maker_snapshot(root / "worker.sqlite3")
                 if generation is not None:
                     collect_generation(db, client, generation, markets, utcnow())
                     resolve_one(db, client, utcnow())
+                mve_coverage = advance_mve_coverage(db, client, utcnow())
             except Exception as exc:
                 error = type(exc).__name__
-            packet = write_status(root, db, generation, len(markets), coverage, error)
+            packet = write_status(root, db, generation, len(markets), coverage,
+                                  mve_coverage, error)
             if cycle == 0 or error or any(row["paired"] for row in packet["paired_comparisons"]):
                 print(json.dumps({"at": packet["generated_at"],
                                   "event": "research_sleeves_status",

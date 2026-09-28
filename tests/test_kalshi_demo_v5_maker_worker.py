@@ -453,6 +453,11 @@ def test_market_discovery_paginates_full_universe_before_rotating_cohort(tmp_pat
         assert scan["eligible_markets"] == scan["eligible_events"] == 3
         assert scan["research_relevant_markets"] == 0
         assert scan["research_relevant_events"] == 0
+        assert scan["market_families"] == {
+            "ECON": 1, "SPORT": 1, "WEATHER": 1,
+        }
+        assert scan["eligible_families"] == scan["market_families"]
+        assert scan["admission_rejections"] == {}
         assert all("series_ticker" not in call for call in markets.calls)
         assert markets.calls[1]["cursor"] == "1"
     finally:

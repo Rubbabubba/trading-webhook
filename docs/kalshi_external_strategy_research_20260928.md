@@ -10,6 +10,15 @@ hypothesis using event-time data, executable prices, actual fee metadata, and
 event-clustered results. A favorable backtest is permission to run a shadow
 test, not permission to trade production capital.
 
+The system universe is every currently open tradeable Kalshi market. Sports is
+one specialist route, not the global universe. The standard-market catalog is
+fully paginated without a category or series filter and reports every observed
+family plus every admission rejection. Kalshi exposes multivariate events via
+a separate catalog, so combo markets receive their own fully paginated census.
+They remain inventory-only until a settlement- and leg-aware MVE challenger is
+separately registered; they are never silently omitted or mixed into frozen
+standard-market evidence.
+
 ## What the external evidence supports
 
 ### 1. Structural and cross-contract consistency

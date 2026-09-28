@@ -1,0 +1,44 @@
+{
+  "component_id": "kalshi_universal_market_router_v1_shadow",
+  "registered_at": "2026-09-28T11:30:00-05:00",
+  "execution_enabled": false,
+  "objective": "Account for every currently open tradeable Kalshi market and route it to every applicable preregistered sleeve without treating sports as the default universe.",
+  "catalogs": [
+    {
+      "name": "standard",
+      "api": "GET /markets?status=open&mve_filter=exclude",
+      "coverage": "all pages"
+    },
+    {
+      "name": "multivariate",
+      "api": "GET /markets?status=open&mve_filter=only",
+      "coverage": "all pages"
+    }
+  ],
+  "routing": {
+    "all_standard_active_binary_markets": [
+      "queue_toxicity_maker_v10_shadow",
+      "strong_imbalance_maker_v11_shadow"
+    ],
+    "nested_threshold_relationships": ["kalshi_structural_arb_v1_shadow"],
+    "extreme_price_bins": ["kalshi_favorite_longshot_v1_shadow"],
+    "supported_live_sports_with_exact_feed_mapping": ["sports_persistent_passive_v1_shadow"],
+    "multivariate_combo_markets": ["inventory_only_pending_registered_mve_challenger"]
+  },
+  "accounting": {
+    "required": [
+      "pages",
+      "markets_scanned",
+      "market_families",
+      "eligible_families",
+      "admission_rejections",
+      "scan_completion"
+    ],
+    "silent_drop_permitted": false
+  },
+  "safety": {
+    "a_market_without_an_applicable_validated_signal": "observe_and_record_rejection_reason",
+    "multivariate_execution": false,
+    "production_execution": false
+  }
+}

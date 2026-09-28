@@ -134,6 +134,48 @@ def eligible_market_candidates(rows, *, now):
     return candidates
 
 
+def market_family(market):
+    """Stable audit label even when market-list responses omit category."""
+    category = str(market.get("category") or "").strip()
+    if category:
+        return category
+    identity = event_id(market)
+    return identity.split("-", 1)[0] if identity else "unknown"
+
+
+def market_admission_rejection(market, *, now):
+    """Explain why an open standard contract did not enter the maker cohort."""
+    try:
+        if market.get("status") != "active":
+            return "not_active"
+        if market.get("market_type") != "binary":
+            return "not_binary"
+        if market.get("exchange_index", 0) != 0:
+            return "unsupported_exchange_index"
+        close = datetime.fromisoformat(
+            market["close_time"].replace("Z", "+00:00")
+        ).timestamp()
+        if close <= now + 1800:
+            return "closes_within_30_minutes"
+        bid = Decimal(str(market.get("yes_bid_dollars") or "0"))
+        ask = Decimal(str(market.get("yes_ask_dollars") or "0"))
+        bid_size = Decimal(str(market.get("yes_bid_size_fp") or "0"))
+        ask_size = Decimal(str(market.get("yes_ask_size_fp") or "0"))
+        midpoint_value = (bid + ask) / 2
+        spread = ask - bid
+        if not Decimal(".20") <= midpoint_value <= Decimal(".80"):
+            return "midpoint_out_of_range"
+        if not Decimal(".03") <= spread <= Decimal(".10"):
+            return "spread_out_of_range"
+        if min(bid_size, ask_size) < 3:
+            return "insufficient_depth"
+        if max(bid_size, ask_size) > min(bid_size, ask_size) * 4:
+            return "depth_imbalance"
+        return None
+    except (KeyError, ValueError, ArithmeticError):
+        return "invalid_or_incomplete_market_data"
+
+
 def select_maker_markets(rows, *, now, limit=None, offset=0):
     """Select one liquid contract per event from an already complete universe."""
     candidates = eligible_market_candidates(rows, now=now)
@@ -174,6 +216,8 @@ def advance_market_discovery(state, markets, *, now, limit=None):
             "favorite_longshot_markets": 0,
             "nested_threshold_markets": 0,
             "coverage_accounting_complete": True,
+            "market_families": {}, "eligible_families": {},
+            "admission_rejections": {},
         }
     else:
         # A deployment can resume a scan created before coverage accounting
@@ -181,12 +225,15 @@ def advance_market_discovery(state, markets, *, now, limit=None):
         # additive counters instead of failing mid-scan.
         missing_coverage = any(key not in scan for key in (
             "research_relevant_markets", "favorite_longshot_markets",
-            "nested_threshold_markets"))
+            "nested_threshold_markets", "market_families", "eligible_families",
+            "admission_rejections"))
         for key in ("research_relevant_markets", "favorite_longshot_markets",
                     "nested_threshold_markets"):
             scan.setdefault(key, 0)
         if missing_coverage:
             scan["coverage_accounting_complete"] = False
+        for key in ("market_families", "eligible_families", "admission_rejections"):
+            scan.setdefault(key, {})
     params = {"status": "open", "limit": MARKET_PAGE_LIMIT, "mve_filter": "exclude"}
     if scan.get("cursor"):
         params["cursor"] = scan["cursor"]
@@ -194,6 +241,14 @@ def advance_market_discovery(state, markets, *, now, limit=None):
     rows = page.get("markets", [])
     generation = scan["generation"]
     for market in rows:
+        family = market_family(market)
+        scan["market_families"][family] = scan["market_families"].get(family, 0) + 1
+        rejection = market_admission_rejection(market, now=now)
+        if rejection is None:
+            scan["eligible_families"][family] = scan["eligible_families"].get(family, 0) + 1
+        else:
+            scan["admission_rejections"][rejection] = (
+                scan["admission_rejections"].get(rejection, 0) + 1)
         tags = research_relevance(market)
         if tags:
             scan["research_relevant_markets"] += 1
@@ -1107,6 +1162,7 @@ def evidence(state, journal):
                 "research_relevant_markets", "research_relevant_events",
                 "favorite_longshot_markets", "nested_threshold_markets",
                 "coverage_accounting_complete",
+                "market_families", "eligible_families", "admission_rejections",
                 "started_at", "completed_at",
             )
         },

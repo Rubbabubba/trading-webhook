@@ -3,7 +3,8 @@ import json
 import sqlite3
 
 from opportunity_lab.kalshi_external_sleeves_worker import (
-    FLB_ID, STRUCTURAL_ID, collect_generation, maker_snapshot, open_db, write_status,
+    FLB_ID, STRUCTURAL_ID, advance_mve_coverage, collect_generation,
+    maker_snapshot, open_db, write_status,
 )
 
 
@@ -28,6 +29,36 @@ class Client:
                 {"yes_dollars": [[".80", "3"]]})
         observed = 100.0 if row["floor_strike"] == 10 else 104.0
         return {"market": row, "orderbook_fp": book, "observed_at": observed}
+
+
+class MveClient:
+    def __init__(self):
+        self.calls = []
+
+    def get(self, *, params):
+        self.calls.append(dict(params))
+        row = {
+            "ticker": "MVE-A", "event_ticker": "KXCOMBO-1", "category": "Politics",
+            "status": "active", "market_type": "binary", "exchange_index": 0,
+            "close_time": "2030-01-01T00:00:00Z", "yes_bid_dollars": ".40",
+            "yes_ask_dollars": ".45", "yes_bid_size_fp": "10",
+            "yes_ask_size_fp": "10", "volume_24h_fp": "5",
+            "mve_collection_ticker": "KXCOMBO",
+        }
+        return {"markets": [row], "cursor": ""}, 1.0, 1.1
+
+
+def test_multivariate_inventory_is_separate_and_shadow_only(tmp_path):
+    db = open_db(tmp_path / "research.sqlite3")
+    client = MveClient()
+    result = advance_mve_coverage(
+        db, client, datetime(2026, 9, 28, tzinfo=timezone.utc))
+    assert client.calls == [{"status": "open", "limit": 200, "mve_filter": "only"}]
+    assert result["in_progress"] is False
+    assert result["markets_scanned"] == result["active_binary_markets"] == 1
+    assert result["maker_screen_candidates"] == 1
+    assert result["market_families"] == {"Politics": 1}
+    db.close()
 
 
 def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
