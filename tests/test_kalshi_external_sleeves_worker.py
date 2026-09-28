@@ -38,8 +38,9 @@ def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
         maker.execute("INSERT INTO research_market_universe VALUES(?,?,?,?,?)",
                       (row["ticker"], "E", 7, "[]", json.dumps(row)))
     maker.commit(); maker.close()
-    generation, snapshot = maker_snapshot(tmp_path / "worker.sqlite3")
+    generation, snapshot, coverage = maker_snapshot(tmp_path / "worker.sqlite3")
     assert generation == 7 and len(snapshot) == 2
+    assert coverage == {}
 
     db = open_db(tmp_path / "research_sleeves.sqlite3")
     monkeypatch.setattr("opportunity_lab.kalshi_external_sleeves_worker.time.time", lambda: 105.0)
@@ -52,4 +53,5 @@ def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
     assert indexed[STRUCTURAL_ID]["complete_observations"] == 1
     assert indexed[FLB_ID]["complete_observations"] == 0
     assert packet["execution_enabled"] is False
+    assert packet["coverage"]["coverage_complete"] is False
     db.close()

@@ -29,7 +29,7 @@ def public_json(url):
         return json.load(response)
 
 
-def demo_markets(client, series, first_date, last_date):
+def demo_markets(client, series, first_date, last_date=None):
     rows, cursor = [], None
     while True:
         params = {'series_ticker': series, 'status': 'open', 'limit': 1000,
@@ -37,24 +37,29 @@ def demo_markets(client, series, first_date, last_date):
         if cursor:
             params['cursor'] = cursor
         page, _, _ = client.get(params=params)
-        rows.extend(m for m in page.get('markets', [])
-                    if first_date <= (event_date(m.get('event_ticker', '')) or '') <= last_date
-                    and 'COPY' not in m.get('event_ticker', '').upper())
+        for market in page.get('markets', []):
+            day = event_date(market.get('event_ticker', ''))
+            if (day and day >= first_date and (last_date is None or day <= last_date)
+                    and 'COPY' not in market.get('event_ticker', '').upper()):
+                rows.append(market)
         cursor = page.get('cursor') or None
         if not cursor:
             return rows
 
 
-def build(now, days, client= None, fetch=public_json):
+def build(now, days=None, client=None, fetch=public_json):
     client = client or DemoMarkets()
     first_date = now.date().isoformat()
-    last_date = (now + timedelta(days=days)).date().isoformat()
+    last_date = ((now + timedelta(days=days)).date().isoformat()
+                 if days is not None else None)
     manifest = {
         'strategy_id': 'sports_persistent_passive_v1_shadow',
         'execution_enabled': False,
         'generated_at': now.isoformat(),
         'first_date': first_date,
         'last_date': last_date,
+        'horizon_policy': ('bounded_days' if days is not None else
+                           'all_currently_open_upcoming_events_in_registered_series'),
         'games': [],
         'coverage': {},
     }
@@ -88,11 +93,20 @@ def build(now, days, client= None, fetch=public_json):
                 unmatched.append({'event_id': str(event.get('id')), 'game': event.get('name'),
                                   'date': event.get('date'), 'reason': 'no_unique_exact_demo_match'})
         manifest['games'].extend(mapped)
+        mapped_catalog_events = {row['market_event'] for row in mapped}
+        catalog_events = sorted({m['event_ticker'] for m in markets})
+        unmatched_catalog = [{
+            'event_ticker': ticker,
+            'date': event_date(ticker),
+            'reason': 'no_unique_exact_schedule_match',
+        } for ticker in catalog_events if ticker not in mapped_catalog_events]
         manifest['coverage'][league] = {
-            'catalog_events': len({m['event_ticker'] for m in markets}),
+            'catalog_events': len(catalog_events),
             'schedule_events': len(events),
             'mapped_events': len(mapped),
             'unmatched_schedule_events': unmatched,
+            'unmatched_catalog_events': unmatched_catalog,
+            'catalog_accounted_for': len(mapped_catalog_events) + len(unmatched_catalog),
         }
     manifest['games'].sort(key=lambda row: (row['kickoff'], row['league'], row['event_id']))
     manifest['mapped_events'] = len(manifest['games'])
@@ -101,7 +115,8 @@ def build(now, days, client= None, fetch=public_json):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--days', type=int, default=14)
+    parser.add_argument('--days', type=int, default=None,
+                        help='Optional bounded horizon; default covers every open upcoming event')
     parser.add_argument('--output', default='configs/sports_persistent_passive_v1_20260928/events.json')
     args = parser.parse_args()
     result = build(datetime.now(timezone.utc), args.days)

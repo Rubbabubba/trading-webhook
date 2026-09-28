@@ -170,7 +170,23 @@ def advance_market_discovery(state, markets, *, now, limit=None):
             "in_progress": True, "generation": generation, "cursor": None,
             "started_at": now, "pages": 0, "markets_scanned": 0,
             "eligible_markets": 0,
+            "research_relevant_markets": 0,
+            "favorite_longshot_markets": 0,
+            "nested_threshold_markets": 0,
+            "coverage_accounting_complete": True,
         }
+    else:
+        # A deployment can resume a scan created before coverage accounting
+        # existed. Preserve the generation and cursor while initializing the
+        # additive counters instead of failing mid-scan.
+        missing_coverage = any(key not in scan for key in (
+            "research_relevant_markets", "favorite_longshot_markets",
+            "nested_threshold_markets"))
+        for key in ("research_relevant_markets", "favorite_longshot_markets",
+                    "nested_threshold_markets"):
+            scan.setdefault(key, 0)
+        if missing_coverage:
+            scan["coverage_accounting_complete"] = False
     params = {"status": "open", "limit": MARKET_PAGE_LIMIT, "mve_filter": "exclude"}
     if scan.get("cursor"):
         params["cursor"] = scan["cursor"]
@@ -180,6 +196,9 @@ def advance_market_discovery(state, markets, *, now, limit=None):
     for market in rows:
         tags = research_relevance(market)
         if tags:
+            scan["research_relevant_markets"] += 1
+            scan["favorite_longshot_markets"] += int("favorite_longshot" in tags)
+            scan["nested_threshold_markets"] += int("nested_threshold" in tags)
             state.db.execute(
                 "INSERT OR REPLACE INTO research_market_universe VALUES(?,?,?,?,?)",
                 (market["ticker"], event_id(market), generation,
@@ -212,9 +231,14 @@ def advance_market_discovery(state, markets, *, now, limit=None):
         "SELECT count(DISTINCT event_id) FROM market_universe WHERE generation=?",
         (generation,),
     ).fetchone()[0]
+    research_events = state.db.execute(
+        "SELECT count(DISTINCT event_id) FROM research_market_universe WHERE generation=?",
+        (generation,),
+    ).fetchone()[0]
     scan.update({
         "in_progress": False, "cursor": None, "completed_at": now,
         "eligible_events": distinct_events, "selected_markets": len(selected),
+        "research_relevant_events": research_events,
     })
     state.db.execute("DELETE FROM market_universe WHERE generation!=?", (generation,))
     state.db.execute("DELETE FROM research_market_universe WHERE generation!=?", (generation,))
@@ -223,7 +247,9 @@ def advance_market_discovery(state, markets, *, now, limit=None):
     state.record(None, {"action": "all_market_discovery_complete", **{
         key: scan[key] for key in (
             "generation", "pages", "markets_scanned", "eligible_markets",
-            "eligible_events", "selected_markets",
+            "eligible_events", "selected_markets", "research_relevant_markets",
+            "research_relevant_events", "favorite_longshot_markets",
+            "nested_threshold_markets",
         )
     }})
     return selected, scan
@@ -1078,6 +1104,9 @@ def evidence(state, journal):
             key: discovery.get(key) for key in (
                 "in_progress", "generation", "pages", "markets_scanned",
                 "eligible_markets", "eligible_events", "selected_markets",
+                "research_relevant_markets", "research_relevant_events",
+                "favorite_longshot_markets", "nested_threshold_markets",
+                "coverage_accounting_complete",
                 "started_at", "completed_at",
             )
         },

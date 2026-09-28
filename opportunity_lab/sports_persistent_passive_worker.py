@@ -173,7 +173,7 @@ def run(data_root, cycles=None, refresh_seconds=1800):
             now = utcnow(); error = None
             try:
                 if time.monotonic() >= next_refresh:
-                    manifest = build(now, 14, client=client)
+                    manifest = build(now, None, client=client)
                     registry = sync_manifest(db, manifest)
                     (root/'events.json').write_text(json.dumps(manifest, indent=2))
                     print(json.dumps({

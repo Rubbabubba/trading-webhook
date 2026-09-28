@@ -47,13 +47,21 @@ def maker_snapshot(path):
         rows = db.execute(
             "SELECT generation,detail FROM research_market_universe ORDER BY ticker"
         ).fetchall()
+        try:
+            setting = db.execute(
+                "SELECT detail FROM settings WHERE name='market_discovery'"
+            ).fetchone()
+            coverage = json.loads(setting[0]) if setting else {}
+        except sqlite3.Error:
+            coverage = {}
         db.close()
     except (sqlite3.Error, OSError):
-        return None, []
+        return None, [], {}
     if not rows:
-        return None, []
+        return None, [], coverage
     generation = max(row[0] for row in rows)
-    return generation, [json.loads(detail) for gen, detail in rows if gen == generation]
+    return (generation, [json.loads(detail) for gen, detail in rows if gen == generation],
+            coverage)
 
 
 def collect_generation(db, client, generation, markets, now):
@@ -181,7 +189,7 @@ def _sports(root):
     return summary, records
 
 
-def write_status(root, db, generation, market_count, error=None):
+def write_status(root, db, generation, market_count, coverage=None, error=None):
     structural_records = _records(db, "structural_signals")
     flb_records = _records(db, "calibration_observations")
     structural = {"strategy_id": STRUCTURAL_ID, "execution_enabled": False,
@@ -195,8 +203,27 @@ def write_status(root, db, generation, market_count, error=None):
     packet = comparison_packet([sports, structural, flb], {
         SPORTS_ID: sports_records, STRUCTURAL_ID: structural_records, FLB_ID: flb_records,
     })
+    coverage = coverage or {}
     packet.update({"generated_at": utcnow().isoformat(), "execution_enabled": False,
                    "source_generation": generation, "source_markets": market_count,
+                   "coverage": {
+                       "catalog_scope": "all_open_standard_non_mve_markets",
+                       "scan_generation": coverage.get("generation"),
+                       "scan_in_progress": coverage.get("in_progress"),
+                       "pages": coverage.get("pages"),
+                       "markets_scanned": coverage.get("markets_scanned"),
+                       "research_relevant_markets": coverage.get("research_relevant_markets"),
+                       "research_relevant_events": coverage.get("research_relevant_events"),
+                       "favorite_longshot_markets": coverage.get("favorite_longshot_markets"),
+                       "nested_threshold_markets": coverage.get("nested_threshold_markets"),
+                       "coverage_accounting_complete": coverage.get(
+                           "coverage_accounting_complete"),
+                       "coverage_complete": bool(
+                           generation is not None and not coverage.get("in_progress", True)
+                           and generation == coverage.get("generation")
+                           and coverage.get("coverage_accounting_complete") is True
+                       ),
+                   },
                    "error": error})
     destination = root / "sleeve_comparison.json"
     temporary = destination.with_suffix(".tmp")
@@ -210,15 +237,15 @@ def run(data_root, cycles=None, interval_seconds=60):
     db = open_db(root / "research_sleeves.sqlite3"); client = DemoMarkets(); cycle = 0
     try:
         while cycles is None or cycle < cycles:
-            generation = None; markets = []; error = None
+            generation = None; markets = []; coverage = {}; error = None
             try:
-                generation, markets = maker_snapshot(root / "worker.sqlite3")
+                generation, markets, coverage = maker_snapshot(root / "worker.sqlite3")
                 if generation is not None:
                     collect_generation(db, client, generation, markets, utcnow())
                     resolve_one(db, client, utcnow())
             except Exception as exc:
                 error = type(exc).__name__
-            packet = write_status(root, db, generation, len(markets), error)
+            packet = write_status(root, db, generation, len(markets), coverage, error)
             if cycle == 0 or error or any(row["paired"] for row in packet["paired_comparisons"]):
                 print(json.dumps({"at": packet["generated_at"],
                                   "event": "research_sleeves_status",
