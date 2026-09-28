@@ -37,6 +37,7 @@ from .kalshi_maker_v11 import (
 )
 from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
+from .kalshi_external_sleeves import research_relevance
 
 
 STRATEGY_ID = "stable_balanced_maker_v9"
@@ -176,6 +177,14 @@ def advance_market_discovery(state, markets, *, now, limit=None):
     page, _started, _observed = markets.get(params=params)
     rows = page.get("markets", [])
     generation = scan["generation"]
+    for market in rows:
+        tags = research_relevance(market)
+        if tags:
+            state.db.execute(
+                "INSERT OR REPLACE INTO research_market_universe VALUES(?,?,?,?,?)",
+                (market["ticker"], event_id(market), generation,
+                 json.dumps(tags, sort_keys=True), json.dumps(market, sort_keys=True)),
+            )
     ranked = eligible_market_candidates(rows, now=now)
     for volume, depth, spread, market in ranked:
         state.db.execute(
@@ -208,6 +217,7 @@ def advance_market_discovery(state, markets, *, now, limit=None):
         "eligible_events": distinct_events, "selected_markets": len(selected),
     })
     state.db.execute("DELETE FROM market_universe WHERE generation!=?", (generation,))
+    state.db.execute("DELETE FROM research_market_universe WHERE generation!=?", (generation,))
     state.save("market_discovery", scan)
     state.save("cohort_rotation", rotation + 1)
     state.record(None, {"action": "all_market_discovery_complete", **{
@@ -413,6 +423,9 @@ class MakerState:
           CREATE TABLE IF NOT EXISTS market_universe(
             ticker TEXT PRIMARY KEY,event_id TEXT NOT NULL,generation INTEGER NOT NULL,
             detail TEXT NOT NULL,volume TEXT NOT NULL,depth TEXT NOT NULL,spread TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS research_market_universe(
+            ticker TEXT PRIMARY KEY,event_id TEXT NOT NULL,generation INTEGER NOT NULL,
+            tags TEXT NOT NULL,detail TEXT NOT NULL);
         """)
         if "event_id" not in {
                 row[1] for row in self.db.execute("PRAGMA table_info(v10_shadow_signals)")}:

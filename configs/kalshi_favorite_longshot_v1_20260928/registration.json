@@ -1,0 +1,29 @@
+{
+  "strategy_id": "kalshi_favorite_longshot_v1_shadow",
+  "registered_at": "2026-09-28T00:00:00-05:00",
+  "execution_enabled": false,
+  "hypothesis": "Selected non-sports Kalshi favorites priced from 90 to 98 cents retain higher fee-and-carry-stressed settlement returns than symmetrically priced longshots.",
+  "parameters": {
+    "price_bins_cents": [[2, 5], [5, 10], [90, 95], [95, 98]],
+    "roles": ["displayed_taker", "passive_counterfactual"],
+    "group_by_parent_event": true,
+    "sports_stratum_separate": true,
+    "observation_bucket_seconds": 3600,
+    "exclude_prices_below_cents": 2,
+    "exclude_prices_above_cents": 98
+  },
+  "historical_gate": {
+    "minimum_resolved_parent_events": 500
+  },
+  "prospective_gate": {
+    "minimum_resolved_parent_events": 300,
+    "minimum_families": 5,
+    "positive_fee_and_carry_stressed_return": true,
+    "positive_event_clustered_95pct_lower_bound": true,
+    "then": "separate one-contract Demo execution trial"
+  },
+  "comparison": {
+    "shared_metrics": ["independent_events", "complete_observations", "cost_stressed_net_cents", "event_clustered_95pct_lower_bound_cents", "capital_days", "maximum_drawdown_cents"],
+    "paired_only_when": "same event and decision-time bucket"
+  }
+}

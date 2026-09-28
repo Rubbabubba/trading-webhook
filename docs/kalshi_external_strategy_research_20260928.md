@@ -336,3 +336,34 @@ NFL/NBA test, D as a potential economics overlay, and E as a specialized
 relative-value study. Treat weather as a later, high-bar experiment because a
 large published test already found that a naive forecast advantage did not
 survive fees.
+
+## Implemented comparison and collection contract
+
+The September 28 implementation registers both initial sleeves before live
+results are collected. It reuses the existing complete Demo catalog walk and
+retains only markets relevant to the registered tests. This prevents a second
+catalog crawler from competing with reconciliation and sports collection.
+
+The first structural relationship admitted to the live shadow collector is a
+same-event nested greater-than threshold. A candidate must preserve the same
+event, expiry, occurrence time, secondary rules, and normalized primary rule
+template. It then needs near-synchronous fresh executable depth on both legs
+and a positive surplus after two cents of conservative fees per leg plus two
+cents of unfinished-leg stress. Exhaustive partitions and cross-event
+relationships remain excluded until their settlement relationship can be
+represented explicitly; `mutually_exclusive` alone is not treated as proof of
+an exhaustive partition.
+
+The favorite/longshot collector records both sides in the four frozen price
+bins once per market-hour. Sports observations carry a separate stratum and
+cannot be pooled with the primary non-sports result. No observation is treated
+as a fill. Resolved observations use a conservative two-cent cost charge and
+retain capital-days and parent-event identity.
+
+`sleeve_comparison.json` reports the sports challenger, structural sleeve, and
+favorite/longshot sleeve with the same event count, completed-observation,
+cost-stressed net, clustered lower-bound, capital-days, and drawdown fields.
+Missing evidence remains null. A paired comparison is declared only when two
+sleeves observed the same event in the same one-hour decision bucket. Other
+results remain separate portfolio comparisons, so markets outside the sports
+universe cannot create a synthetic head-to-head win rate.

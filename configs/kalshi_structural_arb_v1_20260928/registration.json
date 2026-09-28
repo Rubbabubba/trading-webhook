@@ -1,0 +1,35 @@
+{
+  "strategy_id": "kalshi_structural_arb_v1_shadow",
+  "registered_at": "2026-09-28T00:00:00-05:00",
+  "execution_enabled": false,
+  "hypothesis": "Verified logical relationships sometimes violate executable probability bounds by more than fees, depth slippage, and unfinished-leg risk.",
+  "parameters": {
+    "contracts": 1,
+    "relationship_types": ["nested_greater_than_threshold"],
+    "minimum_book_depth_contracts": 1,
+    "maximum_book_age_seconds": 10,
+    "maximum_leg_timestamp_gap_seconds": 5,
+    "conservative_fee_cents_per_leg": 2,
+    "unfinished_leg_stress_cents": 2,
+    "minimum_stressed_surplus_cents": 1,
+    "semantic_identity": "same event, expiry, occurrence time, secondary rules, and primary rule template after exact strike substitution"
+  },
+  "promotion_gate": {
+    "minimum_fully_executable_opportunities": 50,
+    "minimum_independent_events": 30,
+    "minimum_families": 5,
+    "positive_cost_stressed_net": true,
+    "positive_event_clustered_95pct_lower_bound": true,
+    "zero_settlement_rule_mismatches": true,
+    "then": "separate one-contract Demo execution trial"
+  },
+  "automatic_rejection": {
+    "maximum_observed_opportunities": 100,
+    "reject_if_stressed_net_nonpositive_at_maximum": true,
+    "reject_on_any_settlement_rule_mismatch": true
+  },
+  "comparison": {
+    "shared_metrics": ["independent_events", "complete_observations", "cost_stressed_net_cents", "event_clustered_95pct_lower_bound_cents", "capital_days", "maximum_drawdown_cents"],
+    "paired_only_when": "same event and decision-time bucket"
+  }
+}
