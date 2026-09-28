@@ -7,7 +7,26 @@ from pathlib import Path
 import sqlite3
 
 
-def assess(db, decisions):
+def _evidence_window(db, now, freshness_hours):
+    first_sample, latest_sample = db.execute('SELECT min(at),max(at) FROM samples').fetchone()
+    latest_action = db.execute(
+        'SELECT max(s.at) FROM actions a JOIN samples s ON s.id=a.sample_id'
+    ).fetchone()[0]
+    age_hours = None
+    if latest_sample:
+        age_hours = max(0.0, (now - datetime.fromisoformat(latest_sample)).total_seconds() / 3600)
+    return {
+        'first_sample_at': first_sample,
+        'latest_sample_at': latest_sample,
+        'latest_action_at': latest_action,
+        'age_hours': age_hours,
+        'freshness_limit_hours': freshness_hours,
+        'fresh': age_hours is not None and age_hours <= freshness_hours,
+    }
+
+
+def assess(db, decisions, now=None, freshness_hours=24):
+    now = now or datetime.now(timezone.utc)
     reviewed = set(decisions.get('reviewed_checkpoints', []))
     sports = {}
     for slug, config_raw, _, _, state in db.execute('SELECT * FROM games'):
@@ -76,8 +95,11 @@ def assess(db, decisions):
         n = sport['in_play_samples']
         sport['valid_signal_fraction'] = sport['valid_signal_samples'] / n if n else None
         sport['candidate_evaluation_screen_met'] = len(sport['closed_trade_games']) >= 5 and sport['closed_entry_episodes'] >= 20
-    return {'at': datetime.now(timezone.utc).isoformat(), 'sports': sports, 'pending_checkpoints': checkpoints,
-        'note': 'Thresholds are workflow triggers, not statistical proof. Quotes and trades within a game are correlated. Evaluate challengers on future paired games; never combine holding-account P&L into one portfolio.'}
+    window = _evidence_window(db, now, freshness_hours)
+    return {'at': now.isoformat(), 'evidence_window': window, 'sports': sports,
+        'pending_checkpoints': checkpoints,
+        'status': 'current' if window['fresh'] else 'historical_stale',
+        'note': 'Totals are lifetime results for the evidence window shown above, not results since this report was generated. Thresholds are workflow triggers, not statistical proof. Quotes and trades within a game are correlated. Evaluate challengers on future paired games; never combine holding-account P&L into one portfolio.'}
 
 
 def snapshot_ledger(path):
@@ -99,6 +121,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ledger', default='sports_paper/research_20260910/paper.sqlite3')
     parser.add_argument('--output', default='sports_paper/rolling_review_20260910')
+    parser.add_argument('--freshness-hours', type=float, default=24)
     args = parser.parse_args()
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -109,11 +132,18 @@ def main():
     db = snapshot_ledger(args.ledger)
     try:
         db.execute('BEGIN')  # Consistent read snapshot while the worker writes.
-        report = assess(db, decisions)
+        report = assess(db, decisions, freshness_hours=args.freshness_hours)
     finally:
         db.close()
     (output / 'latest.json').write_text(json.dumps(report, indent=2))
-    lines = ['# Rolling sports review', '', 'Updated ' + report['at'] + '.', '',
+    window = report['evidence_window']
+    evidence_line = ('Evidence spans ' + str(window['first_sample_at']) + ' through '
+                     + str(window['latest_sample_at']) + '. Latest trade action: '
+                     + str(window['latest_action_at']) + '.')
+    warning = ('**Historical/stale evidence:** no sample has arrived within '
+               + str(window['freshness_limit_hours']) + ' hours. The totals below are lifetime totals, not current-period performance.'
+               if not window['fresh'] else '**Current evidence:** samples are within the configured freshness window.')
+    lines = ['# Rolling sports review', '', 'Report generated ' + report['at'] + '.', '', evidence_line, '', warning, '',
         'Review each completed game. Open a strategy checkpoint after every three completed games within a sport. Diagnose zero-trade games immediately. Operational faults do not wait for a strategy sample.', '',
         '| Sport | Finished games | Games with entries | Closed entry episodes | Valid in-play signal samples |',
         '|---|---:|---:|---:|---:|']

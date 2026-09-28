@@ -1,0 +1,39 @@
+{
+  "strategy_id": "sports_persistent_passive_v1_shadow",
+  "registered_at": "2026-09-28T00:00:00-05:00",
+  "execution_enabled": false,
+  "hypothesis": "Persistent model disagreement entered with a passive one-contract order and no churn will retain more value after fees and adverse selection than the prior repeated taker-entry design.",
+  "parameters": {
+    "contracts": 1,
+    "post_only": true,
+    "one_signal_per_event": true,
+    "tick_size": 0.01,
+    "improve_by": 0.01,
+    "max_spread": 0.04,
+    "minimum_stressed_edge": 0.08,
+    "adverse_selection_stress": 0.02,
+    "minimum_confirmation_seconds": 15,
+    "minimum_distinct_play_states": 2,
+    "contradictory_states_for_exit": 2,
+    "feed_failure_action": "freeze_and_reconcile",
+    "normal_exit": "settlement_or_post_only_persistent_reversal"
+  },
+  "coverage": {
+    "families": ["ncaaf", "nfl", "mlb", "epl", "mls", "atp", "wta"],
+    "policy": "Discover and observe every eligible event; emit a signal only when every source, mapping, liquidity, persistence, and cost gate passes."
+  },
+  "promotion_gate": {
+    "minimum_independent_events": 30,
+    "minimum_complete_signals": 100,
+    "required_markout_seconds": [5, 30, 300],
+    "positive_cost_stressed_net_at_every_horizon": true,
+    "positive_event_clustered_95pct_lower_bound": true,
+    "then": "separate one-contract Demo execution trial"
+  },
+  "automatic_rejection": {
+    "maximum_cost_stressed_loss_cents": 500,
+    "reject_if_event_clustered_lcb_nonpositive_after_gate_sample": true,
+    "reject_if_source_or_mapping_error_causes_financial_action": true
+  },
+  "benchmark": "frozen sports_live_v35 evidence; no historical result may be erased or relabeled"
+}
