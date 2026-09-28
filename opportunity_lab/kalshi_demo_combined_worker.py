@@ -1,5 +1,7 @@
 """Run the established Demo maker and the isolated sports shadow collector."""
 import argparse
+from datetime import datetime, timezone
+import json
 from pathlib import Path
 import threading
 import time
@@ -12,9 +14,14 @@ def sports_supervisor(root):
     while True:
         try:
             run_sports(root/'sports-challenger')
-        except Exception:
+        except Exception as exc:
             # The shadow collector has no order path and must never take down
             # reconciliation or the established all-market Demo worker.
+            print(json.dumps({
+                'at': datetime.now(timezone.utc).isoformat(),
+                'event': 'sports_challenger_supervisor_restart',
+                'error_type': type(exc).__name__,
+            }), flush=True)
             time.sleep(60)
 
 

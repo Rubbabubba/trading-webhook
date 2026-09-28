@@ -176,14 +176,35 @@ def run(data_root, cycles=None, refresh_seconds=1800):
                     manifest = build(now, 14, client=client)
                     registry = sync_manifest(db, manifest)
                     (root/'events.json').write_text(json.dumps(manifest, indent=2))
+                    print(json.dumps({
+                        'at': now.isoformat(),
+                        'event': 'sports_challenger_registry_refreshed',
+                        'strategy_id': 'sports_persistent_passive_v1_shadow',
+                        'registry_events': registry,
+                        'execution_enabled': False,
+                    }), flush=True)
                     next_refresh = time.monotonic() + refresh_seconds
                 due = [(slug, timestamp(json.loads(raw)['kickoff'])) for slug, raw in
                        db.execute('SELECT slug,config FROM games')]
                 due = [row for row in due if row[1]-timedelta(hours=2) <= now <= row[1]+timedelta(hours=12)]
                 if due:
-                    observe_one(db, client, due[cycle % len(due)][0], now)
+                    slug = due[cycle % len(due)][0]
+                    decision = observe_one(db, client, slug, now)
+                    if decision.get('action') == 'shadow_post_only_signal':
+                        print(json.dumps({
+                            'at': now.isoformat(),
+                            'event': 'sports_challenger_shadow_signal',
+                            'slug': slug,
+                            'execution_enabled': False,
+                            'signal': decision['signal'],
+                        }), flush=True)
             except Exception as exc:
                 error = type(exc).__name__ + ':' + str(exc)[:120]
+                print(json.dumps({
+                    'at': now.isoformat(),
+                    'event': 'sports_challenger_cycle_error',
+                    'error': error,
+                }), flush=True)
             (root/'status.json').write_text(json.dumps(status(db, registry, error), indent=2))
             cycle += 1
             if cycles is None or cycle < cycles:
