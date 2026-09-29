@@ -36,24 +36,43 @@ def public_json(url):
 def open_db(path):
     db = sqlite3.connect(path)
     db.executescript('''
-      CREATE TABLE IF NOT EXISTS games(slug TEXT PRIMARY KEY, config TEXT, anchor TEXT, state TEXT, updated_at TEXT);
+      CREATE TABLE IF NOT EXISTS games(slug TEXT PRIMARY KEY, config TEXT, anchor TEXT, state TEXT, updated_at TEXT,
+        active INTEGER NOT NULL DEFAULT 1);
       CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY, slug TEXT, at TEXT, signature TEXT, detail TEXT,
         UNIQUE(slug,signature));
       CREATE TABLE IF NOT EXISTS decisions(observation_id INTEGER, detail TEXT);
       CREATE TABLE IF NOT EXISTS signals(slug TEXT PRIMARY KEY, at TEXT, detail TEXT);
       CREATE INDEX IF NOT EXISTS observation_slug ON observations(slug,id);
     ''')
+    columns = {row[1] for row in db.execute('PRAGMA table_info(games)')}
+    if 'active' not in columns:
+        with db:
+            db.execute('ALTER TABLE games ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
     return db
 
 
 def sync_manifest(db, manifest):
     with db:
+        # Keep the historical rows and strategy state, but only schedule games that
+        # are present in the latest complete registry.  Without this membership
+        # marker, closed games remain eligible forever and repeatedly fail quotes.
+        db.execute('UPDATE games SET active=0')
         for game in manifest['games']:
             slug = game['league'] + '_' + game['event_id']
-            db.execute('INSERT OR IGNORE INTO games VALUES(?,?,NULL,?,?)',
-                       (slug, json.dumps(game, sort_keys=True), json.dumps(initial()),
-                        manifest['generated_at']))
+            db.execute('''
+              INSERT INTO games(slug,config,anchor,state,updated_at,active)
+              VALUES(?,?,NULL,?,?,1)
+              ON CONFLICT(slug) DO UPDATE SET
+                config=excluded.config,
+                updated_at=excluded.updated_at,
+                active=1
+            ''', (slug, json.dumps(game, sort_keys=True), json.dumps(initial()),
+                  manifest['generated_at']))
     return len(manifest['games'])
+
+
+def active_games(db):
+    return list(db.execute('SELECT slug,config FROM games WHERE active=1 ORDER BY slug'))
 
 
 def market_views(client, config):
@@ -129,7 +148,17 @@ def observe_one(db, client, slug, now, fetch=public_json):
     config = json.loads(raw); anchor = json.loads(anchor_raw) if anchor_raw else None
     state = json.loads(state_raw)
     summary, competition = scoreboard(config, now, fetch)
-    markets = market_views(client, config)
+    try:
+        markets = market_views(client, config)
+    except ValueError as exc:
+        if str(exc) != 'demo_market_not_active_binary':
+            raise
+        # The registry and exchange can change between discovery and observation.
+        # Retire this event until a later manifest refresh explicitly re-admits it.
+        with db:
+            db.execute('UPDATE games SET active=0,updated_at=? WHERE slug=?',
+                       (now.isoformat(), slug))
+        return {'action': 'market_inactive', 'reason': str(exc)}
     anchor = maybe_anchor(config, competition, markets, anchor, now)
     model = model_for(config, summary, competition, anchor, now)
     observation = {'at': now.isoformat(), 'admission_ok': all(m['valid'] for m in markets.values()),
@@ -155,11 +184,13 @@ def observe_one(db, client, slug, now, fetch=public_json):
 
 def status(db, registry_count, error=None):
     games = db.execute('SELECT count(*) FROM games').fetchone()[0]
+    active = db.execute('SELECT count(*) FROM games WHERE active=1').fetchone()[0]
     observations = db.execute('SELECT count(*) FROM observations').fetchone()[0]
     signals = db.execute('SELECT count(*) FROM signals').fetchone()[0]
     return {'at': utcnow().isoformat(), 'strategy_id': 'sports_persistent_passive_v1_shadow',
             'execution_enabled': False, 'registry_events': registry_count,
-            'persisted_games': games, 'observations': observations, 'signals': signals,
+            'persisted_games': games, 'active_games': active,
+            'observations': observations, 'signals': signals,
             'error': error}
 
 
@@ -184,8 +215,7 @@ def run(data_root, cycles=None, refresh_seconds=1800):
                         'execution_enabled': False,
                     }), flush=True)
                     next_refresh = time.monotonic() + refresh_seconds
-                due = [(slug, timestamp(json.loads(raw)['kickoff'])) for slug, raw in
-                       db.execute('SELECT slug,config FROM games')]
+                due = [(slug, timestamp(json.loads(raw)['kickoff'])) for slug, raw in active_games(db)]
                 due = [row for row in due if row[1]-timedelta(hours=2) <= now <= row[1]+timedelta(hours=12)]
                 if due:
                     slug = due[cycle % len(due)][0]
@@ -197,6 +227,14 @@ def run(data_root, cycles=None, refresh_seconds=1800):
                             'slug': slug,
                             'execution_enabled': False,
                             'signal': decision['signal'],
+                        }), flush=True)
+                    elif decision.get('action') == 'market_inactive':
+                        print(json.dumps({
+                            'at': now.isoformat(),
+                            'event': 'sports_challenger_market_retired',
+                            'slug': slug,
+                            'reason': decision['reason'],
+                            'execution_enabled': False,
                         }), flush=True)
             except Exception as exc:
                 error = type(exc).__name__ + ':' + str(exc)[:120]
