@@ -51,7 +51,7 @@ The first live smoke cycle exposed future events with only one or several
 independently resolvable binary contracts listed. The registration was amended
 before any settlement evidence existed: those contracts use binary Brier/proper
 scores, while complete ladders retain normalized multinomial Brier/RPS scoring.
-The six pre-amendment incomplete-ladder observations remain in the database.
+The nine pre-amendment incomplete-ladder observations remain in the database.
 
 ## Evidence gate
 

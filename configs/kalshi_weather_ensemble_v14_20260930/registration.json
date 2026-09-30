@@ -73,7 +73,7 @@
     {
       "at": "2026-09-30T17:35:00-05:00",
       "reason": "The first live shadow smoke cycle showed that Kalshi lists future events with one or more independently resolvable binary thresholds before a complete bucket ladder is available.",
-      "change": "Score every listed threshold or range as a binary proper-probability forecast; retain normalized multinomial scoring for complete ladders. No execution was enabled and the six pre-amendment incomplete-ladder observations remain retained."
+      "change": "Score every listed threshold or range as a binary proper-probability forecast; retain normalized multinomial scoring for complete ladders. No execution was enabled and the nine pre-amendment incomplete-ladder observations remain retained."
     }
   ],
   "comparison": {
