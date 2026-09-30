@@ -85,6 +85,19 @@ def test_weather_resolution_scores_model_against_normalized_market():
     assert result["cost_stressed_net_dollars"] > 0
 
 
+def test_single_listed_threshold_is_scored_as_binary_contract():
+    row = ladder()[-1]
+    observation = weather_event_observation(
+        "KXHIGHTDAL-26OCT01", [row], forecasts(),
+        "2026-09-30T18:00:00+00:00")
+    assert observation["event_structure"] == "binary_contracts"
+    assert observation["classification"] == "signal"
+    result = score_resolution(observation, 80.0)
+    assert result["event_structure"] == "binary_contracts"
+    assert result["brier_delta_vs_market"] < 0
+    assert result["cost_stressed_net_dollars"] > 0
+
+
 class Response:
     status = 200
     def __init__(self, payload): self.payload = payload

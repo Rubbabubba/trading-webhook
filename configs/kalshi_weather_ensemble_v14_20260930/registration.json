@@ -23,7 +23,7 @@
       "KXLOWTSAN", "KXLOWTSATX", "KXLOWTSDF", "KXLOWTSEA", "KXLOWTSFO", "KXLOWTTTN"
     ],
     "exact_station_map_required": true,
-    "complete_nonoverlapping_bucket_ladder_required": true,
+    "contract_structure": "score every individually resolvable binary threshold or range contract; use normalized multinomial scoring only when a complete nonoverlapping ladder is listed",
     "minimum_days_to_target": 1,
     "maximum_days_to_target": 7
   },
@@ -67,8 +67,15 @@
     "reject_if_cost_stressed_net_nonpositive": true,
     "reject_if_brier_or_ranked_probability_score_does_not_beat_market": true,
     "reject_on_unregistered_series_or_unverified_station_mapping": true,
-    "reject_on_incomplete_or_overlapping_bucket_ladder": true
+    "reject_on_unparsed_contract_bounds": true
   },
+  "amendments": [
+    {
+      "at": "2026-09-30T17:35:00-05:00",
+      "reason": "The first live shadow smoke cycle showed that Kalshi lists future events with one or more independently resolvable binary thresholds before a complete bucket ladder is available.",
+      "change": "Score every listed threshold or range as a binary proper-probability forecast; retain normalized multinomial scoring for complete ladders. No execution was enabled and the six pre-amendment incomplete-ladder observations remain retained."
+    }
+  ],
   "comparison": {
     "primary_benchmark": "normalized Kalshi midpoint distribution on the same event and timestamp",
     "portfolio_comparators": [

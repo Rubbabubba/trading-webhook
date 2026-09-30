@@ -32,7 +32,8 @@ model weight. It admits an event only when:
 
 - its Kalshi series has an explicit settlement-station mapping;
 - the rule text still identifies that location;
-- every bucket parses into one complete, non-overlapping temperature ladder;
+- every listed contract has parseable threshold or range bounds; a complete,
+  non-overlapping ladder is required only for multinomial normalization;
 - the target is one to seven days away;
 - at least 20 GFS and 40 ECMWF members are present;
 - the two ensemble centers differ by no more than 3°F;
@@ -45,6 +46,12 @@ model weight. It admits an event only when:
 One best hypothetical candidate is retained per parent event per 30-minute
 decision bucket. A displayed quote is never counted as a fill. Forecast
 availability uses first observed receipt time rather than provider run labels.
+
+The first live smoke cycle exposed future events with only one or several
+independently resolvable binary contracts listed. The registration was amended
+before any settlement evidence existed: those contracts use binary Brier/proper
+scores, while complete ladders retain normalized multinomial Brier/RPS scoring.
+The six pre-amendment incomplete-ladder observations remain in the database.
 
 ## Evidence gate
 

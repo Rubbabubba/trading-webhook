@@ -179,6 +179,24 @@ def weather_event_observation(event_id: str, markets: list[dict], forecasts: dic
     observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
     bucket = int(observed.timestamp()) // 1800 * 1800
     coherent, error = coherent_event(markets)
+    if error in ("incomplete_tails", "bucket_gap_or_overlap"):
+        # Kalshi can list one or several independently resolvable threshold or
+        # range contracts before a full mutually exclusive ladder is present.
+        # Score those as binary contracts; reserve distribution normalization
+        # and multinomial RPS for an actually complete ladder.
+        coherent = []
+        for market in markets:
+            weather_bucket = parse_temperature_bucket(market)
+            if weather_bucket is None:
+                error = "unparsed_bucket"
+                break
+            coherent.append({**market, "weather_bucket": weather_bucket})
+        else:
+            coherent.sort(key=lambda row: (row["weather_bucket"][0],
+                                            row["weather_bucket"][1],
+                                            str(row.get("ticker"))))
+            error = None
+    event_structure = "bucket_ladder" if markets and coherent_event(markets)[1] is None else "binary_contracts"
     spec = weather_market_spec(markets[0]) if markets else None
     target = parse_target_date(event_id)
     result = {
@@ -187,6 +205,7 @@ def weather_event_observation(event_id: str, markets: list[dict], forecasts: dic
         "target_date": target.isoformat() if target else None,
         "station": spec.station if spec else None, "series": spec.series if spec else None,
         "extreme": spec.extreme if spec else None, "signal": None,
+        "event_structure": event_structure,
         "expiration_time": max((str(row.get("expiration_time") or row.get("close_time") or "")
                                 for row in markets), default=""),
         "execution_enabled": False, "fill_assumed": False,
@@ -248,7 +267,7 @@ def weather_event_observation(event_id: str, markets: list[dict], forecasts: dic
         row["eligible_sides"] = choices
         contracts.append(row)
     market_total = sum(row["market_mid_probability"] for row in contracts)
-    if market_total > 0:
+    if event_structure == "bucket_ladder" and market_total > 0:
         for row in contracts:
             row["normalized_market_probability"] = row["market_mid_probability"] / market_total
     candidates = [candidate for row in contracts for candidate in row["eligible_sides"]]
@@ -305,15 +324,20 @@ def score_resolution(observation: dict, expiration_value: float) -> dict:
         raise ValueError("missing_contracts")
     outcomes = [int(float(row["bucket"][0]) <= expiration_value < float(row["bucket"][1]))
                 for row in contracts]
-    if sum(outcomes) != 1:
+    structure = observation.get("event_structure", "bucket_ladder")
+    if structure == "bucket_ladder" and sum(outcomes) != 1:
         raise ValueError("nonunique_winning_bucket")
     model = [float(row["consensus_probability"]) for row in contracts]
-    market = [float(row.get("normalized_market_probability") or 0) for row in contracts]
+    market = [float(row.get("normalized_market_probability")
+                    if structure == "bucket_ladder"
+                    else row["market_mid_probability"]) for row in contracts]
     brier = lambda values: sum((probability - outcome) ** 2
                                for probability, outcome in zip(values, outcomes)) / len(outcomes)
-    def rps(values):
+    def ladder_rps(values):
         return sum((sum(values[:index + 1]) - sum(outcomes[:index + 1])) ** 2
                    for index in range(len(values) - 1)) / max(1, len(values) - 1)
+    def proper_score(values):
+        return ladder_rps(values) if structure == "bucket_ladder" else brier(values)
     signal = observation.get("signal")
     net = None
     if signal:
@@ -323,6 +347,7 @@ def score_resolution(observation: dict, expiration_value: float) -> dict:
         net = (1.0 if won else 0.0) - float(signal["ask"]) - float(observation["fee_and_model_stress"])
     return {"expiration_value": expiration_value, "model_brier": brier(model),
             "market_brier": brier(market), "brier_delta_vs_market": brier(model) - brier(market),
-            "model_rps": rps(model), "market_rps": rps(market),
-            "rps_delta_vs_market": rps(model) - rps(market),
+            "model_rps": proper_score(model), "market_rps": proper_score(market),
+            "rps_delta_vs_market": proper_score(model) - proper_score(market),
+            "event_structure": structure,
             "cost_stressed_net_dollars": net, "hypothetical_only": True}
