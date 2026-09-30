@@ -1,6 +1,7 @@
 """Shadow-only collector for registered structural and calibration sleeves."""
 from collections import defaultdict
 from datetime import datetime, timezone
+import gc
 import json
 from pathlib import Path
 import sqlite3
@@ -95,9 +96,30 @@ def advance_mve_coverage(db, client, now):
 def maker_snapshot(path):
     try:
         db = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=10)
-        rows = db.execute(
-            "SELECT generation,detail FROM research_market_universe ORDER BY ticker"
-        ).fetchall()
+        generation_row = db.execute(
+            "SELECT max(generation) FROM research_market_universe"
+        ).fetchone()
+        generation = generation_row[0] if generation_row else None
+        fields = (
+            "ticker", "event_ticker", "status", "market_type", "exchange_index",
+            "category", "title", "subtitle", "yes_sub_title", "no_sub_title",
+            "yes_bid_dollars", "yes_ask_dollars", "no_bid_dollars", "no_ask_dollars",
+            "yes_bid_size_fp", "no_bid_size_fp", "volume_24h_fp", "strike_type",
+            "floor_strike", "rules_primary", "rules_secondary", "close_time",
+            "expiration_time", "occurrence_datetime",
+        )
+        rows = []
+        if generation is not None:
+            expressions = ",".join(
+                f"json_extract(detail,'$.{field}')" for field in fields)
+            cursor = db.execute(
+                f"SELECT {expressions} FROM research_market_universe "
+                "WHERE generation=? ORDER BY event_id,ticker", (generation,)
+            )
+            # Keep only the fields needed by the three research sleeves. Full
+            # market JSON averages several KB and tens of thousands of decoded
+            # dictionaries can exceed a 512 MB worker during restart.
+            rows = [dict(zip(fields, values)) for values in cursor]
         try:
             setting = db.execute(
                 "SELECT detail FROM settings WHERE name='market_discovery'"
@@ -108,11 +130,9 @@ def maker_snapshot(path):
         db.close()
     except (sqlite3.Error, OSError):
         return None, [], {}
-    if not rows:
+    if generation is None or not rows:
         return None, [], coverage
-    generation = max(row[0] for row in rows)
-    return (generation, [json.loads(detail) for gen, detail in rows if gen == generation],
-            coverage)
+    return generation, rows, coverage
 
 
 def collect_generation(db, client, generation, markets, now):
@@ -370,6 +390,11 @@ def run(data_root, cycles=None, interval_seconds=60):
                                   "source_markets": len(markets),
                                   "execution_enabled": False,
                                   "error": error}), flush=True)
+            # Do not retain or overlap a full decoded research snapshot across
+            # the sleep interval. CPython can otherwise keep hundreds of MB of
+            # market dictionaries alive while the next snapshot is built.
+            markets = []
+            gc.collect()
             cycle += 1
             if cycles is None or cycle < cycles:
                 time.sleep(interval_seconds)

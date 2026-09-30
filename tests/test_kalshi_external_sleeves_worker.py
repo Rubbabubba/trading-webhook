@@ -65,12 +65,17 @@ def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
     rows = [market(10, ".05", ".71"), market(20, ".80", ".05")]
     maker = sqlite3.connect(tmp_path / "worker.sqlite3")
     maker.execute("CREATE TABLE research_market_universe(ticker,event_id,generation,tags,detail)")
+    stale = market(5, ".03", ".98")
+    stale["unused_large_payload"] = "x" * 10000
+    maker.execute("INSERT INTO research_market_universe VALUES(?,?,?,?,?)",
+                  (stale["ticker"], "OLD", 6, "[]", json.dumps(stale)))
     for row in rows:
         maker.execute("INSERT INTO research_market_universe VALUES(?,?,?,?,?)",
                       (row["ticker"], "E", 7, "[]", json.dumps(row)))
     maker.commit(); maker.close()
     generation, snapshot, coverage = maker_snapshot(tmp_path / "worker.sqlite3")
     assert generation == 7 and len(snapshot) == 2
+    assert all("unused_large_payload" not in row for row in snapshot)
     assert coverage == {}
 
     db = open_db(tmp_path / "research_sleeves.sqlite3")
