@@ -104,3 +104,20 @@ def test_relevance_routes_tradeable_favorite_maker_even_without_extreme_ask():
     row = market(10, yes_ask=".99", no_ask=".11")
     row.update(category="Crypto", yes_bid_dollars=".95", yes_bid_size_fp="3")
     assert research_relevance(row) == ["favorite_maker", "nested_threshold"]
+
+
+def test_favorite_maker_classifies_missing_categories_fail_closed():
+    crypto = market(10, yes_ask=".96", no_ask=".06")
+    crypto.update(category=None, event_ticker="KXBTCD-26OCT01",
+                  yes_bid_dollars=".94", yes_bid_size_fp="2")
+    politics = market(10, yes_ask=".96", no_ask=".06")
+    politics.update(category=None, event_ticker="KXMIDTERMVOTETURN-AZ03",
+                    title="Will vote turnout exceed 170000?",
+                    yes_bid_dollars=".94", yes_bid_size_fp="2")
+    unknown = market(10, yes_ask=".96", no_ask=".06")
+    unknown.update(category=None, event_ticker="KXUNKNOWN-1",
+                   title="Will an album stream record be broken?",
+                   yes_bid_dollars=".94", yes_bid_size_fp="2")
+    assert "favorite_maker" in research_relevance(crypto)
+    assert "favorite_maker" in research_relevance(politics)
+    assert "favorite_maker" not in research_relevance(unknown)

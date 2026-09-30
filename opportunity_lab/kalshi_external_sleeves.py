@@ -13,6 +13,11 @@ SPORTS_PREFIXES = (
 )
 PRICE_BINS = ((2, 5), (5, 10), (90, 95), (95, 98))
 FAVORITE_MAKER_FAMILIES = {"crypto", "politics"}
+CRYPTO_PREFIXES = ("KXBTC", "KXETH", "KXSOL", "KXXRP", "KXDOGE", "KXCRYPTO")
+POLITICS_TERMS = (
+    "election", "electoral", "president", "senate", "governor", "midterm",
+    "vote turnout", "approval rating", "republican", "democrat", "congress",
+)
 
 
 def _decimal(value, name):
@@ -37,6 +42,22 @@ def _iso(value, name):
     return value
 
 
+def research_family(market):
+    """Classify registered research families when market rows omit category."""
+    category = str(market.get("category") or "").strip().lower()
+    if category in FAVORITE_MAKER_FAMILIES:
+        return category
+    event_id = str(market.get("event_ticker") or "").upper()
+    if event_id.startswith(CRYPTO_PREFIXES):
+        return "crypto"
+    text = " ".join(str(market.get(key) or "") for key in (
+        "title", "subtitle", "yes_sub_title", "no_sub_title",
+    )).lower()
+    if any(term in text for term in POLITICS_TERMS):
+        return "politics"
+    return None
+
+
 def research_relevance(market):
     """Return storage tags for records relevant to registered sleeves."""
     tags = []
@@ -51,8 +72,8 @@ def research_relevance(market):
                 tags.append("favorite_longshot")
         except ValueError:
             pass
-        family = str(market.get("category") or "").strip().lower()
-        if family in FAVORITE_MAKER_FAMILIES:
+        family = research_family(market)
+        if family:
             for side in ("yes", "no"):
                 try:
                     bid = round(_decimal(market.get(side + "_bid_dollars"),
@@ -247,12 +268,12 @@ def favorite_maker_observations(markets, observed_at, *, bucket_seconds=3600,
     for market in markets:
         event_id = market.get("event_ticker")
         ticker = market.get("ticker")
-        family = str(market.get("category") or "").strip()
+        family = research_family(market)
         if (not event_id or not ticker or market.get("status") != "active"
                 or market.get("market_type") != "binary"
                 or market.get("exchange_index", 0) != 0
                 or event_id.upper().startswith(SPORTS_PREFIXES)
-                or family.lower() not in FAVORITE_MAKER_FAMILIES):
+                or family not in FAVORITE_MAKER_FAMILIES):
             continue
         expiry_text = market.get("expiration_time") or market.get("close_time")
         try:
@@ -291,8 +312,8 @@ def favorite_maker_observations(markets, observed_at, *, bucket_seconds=3600,
                     "spread_cents": spread,
                     "displayed_bid_depth": str(depth),
                     "volume_24h": str(volume),
-                    "family": family,
-                    "stratum": family.lower(),
+                    "family": family.title(),
+                    "stratum": family,
                     "observed_at": observed_at,
                     "expiration_time": expiry_text,
                     "hours_to_expiration": hours,
