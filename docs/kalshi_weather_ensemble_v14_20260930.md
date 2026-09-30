@@ -21,6 +21,10 @@ found that Kalshi moved about 16 minutes before the hobby-scale collector first
 saw a model run. V14 therefore tests a narrower two-model agreement subset and
 must beat the market directly.
 
+The frozen registry covers the 48 current daily-temperature series: high and
+low ladders for 24 settlement cities/stations. Exact series names and live rule
+text must both match; similarly named non-weather contracts fail closed.
+
 ## Frozen hypothesis and parameters
 
 V14 combines NOAA GEFS and ECMWF IFS ensemble member distributions with equal

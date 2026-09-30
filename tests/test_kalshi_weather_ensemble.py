@@ -47,6 +47,11 @@ def test_weather_series_is_exact_and_routes_research_market():
     row = ladder()[0]
     assert weather_market_spec(row).station == "KDFW"
     assert "weather_ensemble" in research_relevance(row)
+    assert len(WEATHER_SERIES) == 48
+    low = dict(row, event_ticker="KXLOWTDAL-26OCT01",
+               title="Minimum temperature in Dallas on October 1?",
+               rules_primary="Dallas (CLIDFW) minimum temperature")
+    assert weather_market_spec(low).extreme == "low"
     wrong = dict(row, title="Lowe's credit card spend", rules_primary="Lowe's credit card spend",
                  rules_secondary="Carbon Arc")
     assert weather_market_spec(wrong) is None

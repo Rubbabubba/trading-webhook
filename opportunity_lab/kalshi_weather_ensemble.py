@@ -37,9 +37,9 @@ class WeatherSeries:
     rule_tokens: tuple[str, ...]
 
 
-# Station mappings are limited to Kalshi series whose rule locations were
-# independently enumerated in the cited public WeatherBot research. New series
-# fail closed until their settlement station is explicitly registered.
+# Station mappings are limited to current Kalshi daily-temperature series whose
+# live rule text names the corresponding NOAA CLI station. New series fail
+# closed until their settlement station is explicitly registered.
 _STATIONS = {
     "KNYC": ("New York Central Park", 40.7794, -73.9692, "America/New_York", ("central park", "new york")),
     "KMDW": ("Chicago Midway", 41.7868, -87.7522, "America/Chicago", ("midway", "chicago")),
@@ -49,7 +49,7 @@ _STATIONS = {
     "KAUS": ("Austin-Bergstrom", 30.1950, -97.6700, "America/Chicago", ("austin",)),
     "KPHL": ("Philadelphia International", 39.8744, -75.2424, "America/New_York", ("philadelphia",)),
     "KDEN": ("Denver International", 39.8466, -104.6564, "America/Denver", ("denver",)),
-    "KHOU": ("Houston Hobby", 29.6454, -95.2789, "America/Chicago", ("houston-hobby", "houston hobby")),
+    "KHOU": ("Houston Hobby", 29.6454, -95.2789, "America/Chicago", ("houston", "houston-hobby", "houston hobby")),
     "KDCA": ("Washington Reagan National", 38.8512, -77.0402, "America/New_York", ("reagan", "washington")),
     "KBOS": ("Boston Logan", 42.3656, -71.0096, "America/New_York", ("boston", "logan")),
     "KPHX": ("Phoenix Sky Harbor", 33.4373, -112.0078, "America/Phoenix", ("phoenix", "sky harbor")),
@@ -61,6 +61,10 @@ _STATIONS = {
     "KMSP": ("Minneapolis-St Paul", 44.8848, -93.2223, "America/Chicago", ("minneapolis", "st. paul", "st paul")),
     "KSAT": ("San Antonio International", 29.5337, -98.4698, "America/Chicago", ("san antonio",)),
     "KOKC": ("Oklahoma City Will Rogers", 35.3931, -97.6007, "America/Chicago", ("oklahoma city", "will rogers")),
+    "KEWR": ("Newark Liberty", 40.6895, -74.1745, "America/New_York", ("newark", "ewr")),
+    "KSAN": ("San Diego International", 32.7338, -117.1933, "America/Los_Angeles", ("san diego", "san")),
+    "KSDF": ("Louisville Muhammad Ali", 38.1744, -85.7360, "America/Kentucky/Louisville", ("louisville", "sdf")),
+    "KTTN": ("Trenton Mercer", 40.2767, -74.8135, "America/New_York", ("trenton", "ttn")),
 }
 
 
@@ -69,20 +73,30 @@ def _series(series, station, extreme):
     return WeatherSeries(series, station, name, lat, lon, tz, extreme, tokens)
 
 
-WEATHER_SERIES = {row.series: row for row in (
-    _series("KXHIGHNY", "KNYC", "high"), _series("KXLOWNY", "KNYC", "low"),
-    _series("KXHIGHCHI", "KMDW", "high"), _series("KXLOWCHI", "KMDW", "low"),
-    _series("KXHIGHMIA", "KMIA", "high"), _series("KXLOWMIA", "KMIA", "low"),
-    _series("KXHIGHLAX", "KLAX", "high"), _series("KXHIGHTATL", "KATL", "high"),
-    _series("KXHIGHAUS", "KAUS", "high"), _series("KXHIGHPHIL", "KPHL", "high"),
-    _series("KXHIGHDEN", "KDEN", "high"), _series("KXHIGHTHOU", "KHOU", "high"),
-    _series("KXLOWTHOU", "KHOU", "low"), _series("KXHIGHTDC", "KDCA", "high"),
-    _series("KXHIGHTBOS", "KBOS", "high"), _series("KXHIGHTPHX", "KPHX", "high"),
-    _series("KXHIGHTDAL", "KDFW", "high"), _series("KXHIGHTSFO", "KSFO", "high"),
-    _series("KXHIGHTSEA", "KSEA", "high"), _series("KXHIGHTLV", "KLAS", "high"),
-    _series("KXHIGHTNOLA", "KMSY", "high"), _series("KXHIGHTMIN", "KMSP", "high"),
-    _series("KXHIGHTSATX", "KSAT", "high"), _series("KXHIGHTOKC", "KOKC", "high"),
-)}
+_HIGH_SERIES = {
+    "KXHIGHNY": "KNYC", "KXHIGHCHI": "KMDW", "KXHIGHMIA": "KMIA",
+    "KXHIGHLAX": "KLAX", "KXHIGHPHIL": "KPHL", "KXHIGHAUS": "KAUS",
+    "KXHIGHDEN": "KDEN", "KXHIGHTATL": "KATL", "KXHIGHTBOS": "KBOS",
+    "KXHIGHTDAL": "KDFW", "KXHIGHTDC": "KDCA", "KXHIGHTEWR": "KEWR",
+    "KXHIGHTHOU": "KHOU", "KXHIGHTLV": "KLAS", "KXHIGHTMIN": "KMSP",
+    "KXHIGHTNOLA": "KMSY", "KXHIGHTOKC": "KOKC", "KXHIGHTPHX": "KPHX",
+    "KXHIGHTSAN": "KSAN", "KXHIGHTSATX": "KSAT", "KXHIGHTSDF": "KSDF",
+    "KXHIGHTSEA": "KSEA", "KXHIGHTSFO": "KSFO", "KXHIGHTTTN": "KTTN",
+}
+_LOW_SERIES = {
+    "KXLOWTATL": "KATL", "KXLOWTAUS": "KAUS", "KXLOWTBOS": "KBOS",
+    "KXLOWTCHI": "KMDW", "KXLOWTDAL": "KDFW", "KXLOWTDC": "KDCA",
+    "KXLOWTDEN": "KDEN", "KXLOWTEWR": "KEWR", "KXLOWTHOU": "KHOU",
+    "KXLOWTLAX": "KLAX", "KXLOWTLV": "KLAS", "KXLOWTMIA": "KMIA",
+    "KXLOWTMIN": "KMSP", "KXLOWTNOLA": "KMSY", "KXLOWTNYC": "KNYC",
+    "KXLOWTOKC": "KOKC", "KXLOWTPHIL": "KPHL", "KXLOWTPHX": "KPHX",
+    "KXLOWTSAN": "KSAN", "KXLOWTSATX": "KSAT", "KXLOWTSDF": "KSDF",
+    "KXLOWTSEA": "KSEA", "KXLOWTSFO": "KSFO", "KXLOWTTTN": "KTTN",
+}
+WEATHER_SERIES = {
+    **{name: _series(name, station, "high") for name, station in _HIGH_SERIES.items()},
+    **{name: _series(name, station, "low") for name, station in _LOW_SERIES.items()},
+}
 
 
 def weather_market_spec(market: dict, *, verify_rules: bool = True) -> WeatherSeries | None:
