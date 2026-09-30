@@ -9,6 +9,7 @@ import time
 from .kalshi_demo_market_data import DemoMarkets
 from .kalshi_external_sleeves import (
     confirm_structural_candidate, favorite_longshot_observations,
+    favorite_maker_observations,
     structural_candidates,
 )
 from .kalshi_strategy_evaluation import cluster_lower_bound
@@ -18,6 +19,7 @@ from .kalshi_demo_v5_maker_worker import eligible_market_candidates, market_fami
 
 STRUCTURAL_ID = "kalshi_structural_arb_v1_shadow"
 FLB_ID = "kalshi_favorite_longshot_v1_shadow"
+FAVORITE_MAKER_ID = "kalshi_favorite_maker_v13_shadow"
 SPORTS_ID = "sports_persistent_passive_v1_shadow"
 
 
@@ -34,6 +36,9 @@ def open_db(path):
       CREATE TABLE IF NOT EXISTS structural_signals(
         signal_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,decision_bucket INTEGER NOT NULL,
         observed_at TEXT NOT NULL,detail TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS favorite_maker_observations(
+        observation_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,decision_bucket INTEGER NOT NULL,
+        observed_at TEXT NOT NULL,detail TEXT NOT NULL,resolution TEXT);
       CREATE TABLE IF NOT EXISTS scans(
         generation INTEGER PRIMARY KEY,observed_at TEXT NOT NULL,market_count INTEGER NOT NULL,
         calibration_observations INTEGER NOT NULL,indicative_candidates INTEGER NOT NULL,
@@ -121,6 +126,13 @@ def collect_generation(db, client, generation, markets, now):
                  json.dumps(observation, sort_keys=True)),
             )
             inserted += cursor.rowcount
+    for observation in favorite_maker_observations(markets, now.isoformat()):
+        db.execute(
+            "INSERT OR IGNORE INTO favorite_maker_observations VALUES(?,?,?,?,?,NULL)",
+            (observation["observation_id"], observation["event_id"],
+             observation["decision_bucket"], observation["observed_at"],
+             json.dumps(observation, sort_keys=True)),
+        )
     candidates = structural_candidates(markets)
     confirmed = 0
     # Confirm only the two best indicative candidates in a generation. The
@@ -151,9 +163,9 @@ def collect_generation(db, client, generation, markets, now):
     )
 
 
-def resolve_one(db, client, now):
+def _resolve_one_table(db, client, now, table, price_key):
     for observation_id, detail in db.execute(
-            "SELECT observation_id,detail FROM calibration_observations "
+            f"SELECT observation_id,detail FROM {table} "
             "WHERE resolution IS NULL ORDER BY observed_at LIMIT 20"):
         row = json.loads(detail)
         expiry = row.get("expiration_time")
@@ -178,13 +190,19 @@ def resolve_one(db, client, now):
             row["observed_at"].replace("Z", "+00:00"))).total_seconds() / 86400)
         resolution = {
             "resolved_at": now.isoformat(), "result": result, "payout_cents": payout,
-            "fee_stress_cents": 2, "capital_days": row["price_cents"] * elapsed_days / 100,
-            "cost_stressed_net_cents": payout - row["price_cents"] - 2,
+            "fee_stress_cents": 2, "capital_days": row[price_key] * elapsed_days / 100,
+            "cost_stressed_net_cents": payout - row[price_key] - 2,
             "hypothetical_only": True,
         }
-        db.execute("UPDATE calibration_observations SET resolution=? WHERE observation_id=?",
+        db.execute(f"UPDATE {table} SET resolution=? WHERE observation_id=?",
                    (json.dumps(resolution, sort_keys=True), observation_id))
         return
+
+
+def resolve_one(db, client, now):
+    _resolve_one_table(db, client, now, "calibration_observations", "price_cents")
+    _resolve_one_table(db, client, now, "favorite_maker_observations",
+                       "passive_price_cents")
 
 
 def _flb_summary(db):
@@ -199,6 +217,37 @@ def _flb_summary(db):
             "independent_events": len(groups), "complete_observations": complete,
             "cost_stressed_net_cents": net if complete else None,
             "event_clustered_95pct_lower_bound_cents": cluster_lower_bound(groups) if groups else None,
+            "capital_days": capital_days if complete else None,
+            "maximum_drawdown_cents": drawdown if complete else None}
+
+
+def _favorite_maker_summary(db):
+    groups = defaultdict(list); families = defaultdict(list)
+    net = capital_days = 0.0; complete = 0; equity = peak = drawdown = 0.0
+    for event_id, detail, resolution in db.execute(
+            "SELECT event_id,detail,resolution FROM favorite_maker_observations "
+            "WHERE resolution IS NOT NULL"):
+        row = json.loads(detail); outcome = json.loads(resolution)
+        value = float(outcome["cost_stressed_net_cents"])
+        groups[event_id].append(value); families[row["stratum"]].append(value)
+        net += value; capital_days += float(outcome["capital_days"]); complete += 1
+        equity += value; peak = max(peak, equity); drawdown = max(drawdown, peak - equity)
+    candidates = db.execute("SELECT count(*) FROM favorite_maker_observations").fetchone()[0]
+    family_events = {}
+    for family in ("crypto", "politics"):
+        family_events[family] = db.execute(
+            "SELECT count(DISTINCT event_id) FROM favorite_maker_observations "
+            "WHERE json_extract(detail,'$.stratum')=? AND resolution IS NOT NULL",
+            (family,),
+        ).fetchone()[0]
+    return {"strategy_id": FAVORITE_MAKER_ID, "execution_enabled": False,
+            "candidate_observations": candidates,
+            "independent_events": len(groups), "complete_observations": complete,
+            "cost_stressed_net_cents": net if complete else None,
+            "event_clustered_95pct_lower_bound_cents": cluster_lower_bound(groups) if groups else None,
+            "family_resolved_events": family_events,
+            "family_cost_stressed_net_cents": {
+                family: sum(values) if values else None for family, values in families.items()},
             "capital_days": capital_days if complete else None,
             "maximum_drawdown_cents": drawdown if complete else None}
 
@@ -246,10 +295,14 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
                   "event_clustered_95pct_lower_bound_cents": None,
                   "capital_days": None, "maximum_drawdown_cents": None}
     flb = _flb_summary(db)
+    favorite_maker = _favorite_maker_summary(db)
     sports, sports_records = _sports(root)
-    packet = comparison_packet([sports, structural, flb], {
+    favorite_maker_records = _records(db, "favorite_maker_observations")
+    packet = comparison_packet([sports, structural, flb, favorite_maker], {
         SPORTS_ID: sports_records, STRUCTURAL_ID: structural_records, FLB_ID: flb_records,
+        FAVORITE_MAKER_ID: favorite_maker_records,
     })
+    packet["favorite_maker_gate"] = favorite_maker
     coverage = coverage or {}
     mve_coverage = mve_coverage or {}
     packet.update({"generated_at": utcnow().isoformat(), "execution_enabled": False,
@@ -263,6 +316,7 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
                        "research_relevant_markets": coverage.get("research_relevant_markets"),
                        "research_relevant_events": coverage.get("research_relevant_events"),
                        "favorite_longshot_markets": coverage.get("favorite_longshot_markets"),
+                       "favorite_maker_markets": coverage.get("favorite_maker_markets"),
                        "nested_threshold_markets": coverage.get("nested_threshold_markets"),
                        "market_families": coverage.get("market_families"),
                        "eligible_families": coverage.get("eligible_families"),

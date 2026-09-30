@@ -1,0 +1,43 @@
+{
+  "strategy_id": "kalshi_favorite_maker_v13_shadow",
+  "registered_at": "2026-09-30T13:41:15-05:00",
+  "execution_enabled": false,
+  "hypothesis": "Passive bids on high-probability Crypto and Politics contracts retain positive settlement value after fee, queue, and capital-lock stress because the favorite-longshot bias is present in those families and passive placement avoids crossing the spread.",
+  "research_basis": [
+    "Burgi, Deng, and Whelan (2026), Makers and Takers: The Economics of the Kalshi Prediction Market",
+    "Cardozo and Rivero-Wildemauwe (2026), The Favorite-Longshot Bias in Prediction Markets: Evidence from Polymarket"
+  ],
+  "parameters": {
+    "market_families": ["Crypto", "Politics"],
+    "sports_excluded": true,
+    "side": "favorite_only",
+    "passive_price_cents": [90, 98],
+    "maximum_spread_cents": 5,
+    "minimum_displayed_bid_depth_contracts": 1,
+    "minimum_hours_to_expiration": 1,
+    "maximum_days_to_expiration": 14,
+    "one_candidate_per_parent_event_per_hour": true,
+    "candidate_priority": ["nearest_expiration", "highest_24h_volume", "largest_displayed_bid_depth", "ticker"],
+    "fill_assumed": false,
+    "fee_and_execution_stress_cents": 2,
+    "group_by_parent_event": true
+  },
+  "prospective_gate": {
+    "minimum_resolved_parent_events": 100,
+    "required_families": ["Crypto", "Politics"],
+    "positive_cost_stressed_net_overall": true,
+    "positive_cost_stressed_net_each_family": true,
+    "positive_event_clustered_95pct_lower_bound": true,
+    "then": "separate one-contract Demo execution trial"
+  },
+  "automatic_rejection": {
+    "reject_if_event_clustered_95pct_lower_bound_nonpositive_after_resolved_parent_events": 150,
+    "reject_if_any_family_cost_stressed_net_nonpositive_after_family_events": 75,
+    "reject_on_sports_or_unregistered_family_admission": true
+  },
+  "comparison": {
+    "benchmark": "kalshi_favorite_longshot_v1_shadow",
+    "shared_metrics": ["independent_events", "complete_observations", "cost_stressed_net_cents", "event_clustered_95pct_lower_bound_cents", "capital_days", "maximum_drawdown_cents"],
+    "paired_only_when": "same event and decision-time bucket"
+  }
+}

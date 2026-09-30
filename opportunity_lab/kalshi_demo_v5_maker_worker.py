@@ -223,6 +223,7 @@ def advance_market_discovery(state, markets, *, now, limit=None):
             "eligible_markets": 0,
             "research_relevant_markets": 0,
             "favorite_longshot_markets": 0,
+            "favorite_maker_markets": 0,
             "nested_threshold_markets": 0,
             "coverage_accounting_complete": True,
             "market_families": {}, "eligible_families": {},
@@ -234,9 +235,11 @@ def advance_market_discovery(state, markets, *, now, limit=None):
         # additive counters instead of failing mid-scan.
         missing_coverage = any(key not in scan for key in (
             "research_relevant_markets", "favorite_longshot_markets",
+            "favorite_maker_markets",
             "nested_threshold_markets", "market_families", "eligible_families",
             "admission_rejections"))
         for key in ("research_relevant_markets", "favorite_longshot_markets",
+                    "favorite_maker_markets",
                     "nested_threshold_markets"):
             scan.setdefault(key, 0)
         if missing_coverage:
@@ -262,6 +265,7 @@ def advance_market_discovery(state, markets, *, now, limit=None):
         if tags:
             scan["research_relevant_markets"] += 1
             scan["favorite_longshot_markets"] += int("favorite_longshot" in tags)
+            scan["favorite_maker_markets"] += int("favorite_maker" in tags)
             scan["nested_threshold_markets"] += int("nested_threshold" in tags)
             state.db.execute(
                 "INSERT OR REPLACE INTO research_market_universe VALUES(?,?,?,?,?)",
@@ -313,6 +317,7 @@ def advance_market_discovery(state, markets, *, now, limit=None):
             "generation", "pages", "markets_scanned", "eligible_markets",
             "eligible_events", "selected_markets", "research_relevant_markets",
             "research_relevant_events", "favorite_longshot_markets",
+            "favorite_maker_markets",
             "nested_threshold_markets",
         )
     }})

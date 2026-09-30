@@ -22,7 +22,10 @@
       "microprice_value_maker_v12_shadow"
     ],
     "nested_threshold_relationships": ["kalshi_structural_arb_v1_shadow"],
-    "extreme_price_bins": ["kalshi_favorite_longshot_v1_shadow"],
+    "extreme_price_bins": [
+      "kalshi_favorite_longshot_v1_shadow",
+      "kalshi_favorite_maker_v13_shadow"
+    ],
     "supported_live_sports_with_exact_feed_mapping": ["sports_persistent_passive_v1_shadow"],
     "multivariate_combo_markets": ["inventory_only_pending_registered_mve_challenger"]
   },

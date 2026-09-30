@@ -12,6 +12,7 @@ SPORTS_PREFIXES = (
     "KXATP", "KXWTA", "KXNHL", "KXNCAAB", "KXWNBA",
 )
 PRICE_BINS = ((2, 5), (5, 10), (90, 95), (95, 98))
+FAVORITE_MAKER_FAMILIES = {"crypto", "politics"}
 
 
 def _decimal(value, name):
@@ -50,6 +51,21 @@ def research_relevance(market):
                 tags.append("favorite_longshot")
         except ValueError:
             pass
+        family = str(market.get("category") or "").strip().lower()
+        if family in FAVORITE_MAKER_FAMILIES:
+            for side in ("yes", "no"):
+                try:
+                    bid = round(_decimal(market.get(side + "_bid_dollars"),
+                                         side + "_bid") * 100)
+                    ask = round(_decimal(market.get(side + "_ask_dollars"),
+                                         side + "_ask") * 100)
+                    depth = _decimal(market.get(side + "_bid_size_fp"),
+                                     side + "_bid_size")
+                except ValueError:
+                    continue
+                if 90 <= bid <= 98 and 1 <= ask - bid <= 5 and depth >= 1:
+                    tags.append("favorite_maker")
+                    break
         if (market.get("strike_type") == "greater" and market.get("rules_primary")
                 and market.get("rules_secondary") and market.get("event_ticker")):
             tags.append("nested_threshold")
@@ -214,3 +230,76 @@ def favorite_longshot_observations(market, observed_at, *, bucket_seconds=3600):
             "fill_assumed": False,
         })
     return result
+
+
+def favorite_maker_observations(markets, observed_at, *, bucket_seconds=3600,
+                                minimum_hours=1, maximum_days=14):
+    """Select one preregistered passive-favorite candidate per parent event.
+
+    These are counterfactual observations. A displayed bid never proves that an
+    order would fill, so the result explicitly preserves ``fill_assumed=False``.
+    """
+    _iso(observed_at, "observed_at")
+    observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    timestamp = int(observed.timestamp())
+    bucket = timestamp - timestamp % bucket_seconds
+    by_event = defaultdict(list)
+    for market in markets:
+        event_id = market.get("event_ticker")
+        ticker = market.get("ticker")
+        family = str(market.get("category") or "").strip()
+        if (not event_id or not ticker or market.get("status") != "active"
+                or market.get("market_type") != "binary"
+                or market.get("exchange_index", 0) != 0
+                or event_id.upper().startswith(SPORTS_PREFIXES)
+                or family.lower() not in FAVORITE_MAKER_FAMILIES):
+            continue
+        expiry_text = market.get("expiration_time") or market.get("close_time")
+        try:
+            expiry = datetime.fromisoformat(_iso(expiry_text, "expiration_time").replace(
+                "Z", "+00:00"))
+        except ValueError:
+            continue
+        hours = (expiry - observed).total_seconds() / 3600
+        if not minimum_hours <= hours <= maximum_days * 24:
+            continue
+        try:
+            volume = _decimal(market.get("volume_24h_fp", 0), "volume_24h")
+        except ValueError:
+            volume = Decimal(0)
+        for side in ("yes", "no"):
+            try:
+                bid = int(round(_decimal(market.get(side + "_bid_dollars"),
+                                         side + "_bid") * 100))
+                ask = int(round(_decimal(market.get(side + "_ask_dollars"),
+                                         side + "_ask") * 100))
+                depth = _decimal(market.get(side + "_bid_size_fp"),
+                                 side + "_bid_size")
+            except ValueError:
+                continue
+            spread = ask - bid
+            if not (90 <= bid <= 98 and 1 <= spread <= 5 and depth >= 1):
+                continue
+            by_event[event_id].append((
+                hours, -volume, -depth, ticker, {
+                    "observation_id": f"{event_id}:{side}:{bucket}",
+                    "event_id": event_id,
+                    "ticker": ticker,
+                    "side": side,
+                    "passive_price_cents": bid,
+                    "displayed_ask_cents": ask,
+                    "spread_cents": spread,
+                    "displayed_bid_depth": str(depth),
+                    "volume_24h": str(volume),
+                    "family": family,
+                    "stratum": family.lower(),
+                    "observed_at": observed_at,
+                    "expiration_time": expiry_text,
+                    "hours_to_expiration": hours,
+                    "decision_bucket": bucket,
+                    "fee_and_execution_stress_cents": 2,
+                    "execution_enabled": False,
+                    "fill_assumed": False,
+                }))
+    return [sorted(rows, key=lambda item: item[:4])[0][4]
+            for _event_id, rows in sorted(by_event.items())]

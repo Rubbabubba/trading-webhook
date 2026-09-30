@@ -2,6 +2,7 @@ from copy import deepcopy
 
 from opportunity_lab.kalshi_external_sleeves import (
     confirm_structural_candidate, favorite_longshot_observations,
+    favorite_maker_observations,
     research_relevance, structural_candidates,
 )
 
@@ -73,3 +74,33 @@ def test_relevance_keeps_only_registered_inputs():
     ordinary = deepcopy(row); ordinary.update(yes_ask_dollars=".50", no_ask_dollars=".51",
                                                strike_type="custom")
     assert research_relevance(ordinary) == []
+
+
+def test_favorite_maker_is_family_time_liquidity_and_event_guarded():
+    rows = []
+    for ticker, event, family, expiry, bid, ask, volume in (
+        ("CRYPTO-A", "CRYPTO-E", "Crypto", "2026-10-01T12:00:00Z", ".92", ".94", "10"),
+        ("CRYPTO-B", "CRYPTO-E", "Crypto", "2026-10-01T10:00:00Z", ".91", ".93", "1"),
+        ("POL-A", "POL-E", "Politics", "2026-10-02T00:00:00Z", ".95", ".97", "2"),
+        ("SPORT-A", "KXNFLGAME-30", "Sports", "2026-10-01T00:00:00Z", ".95", ".97", "2"),
+        ("ECON-A", "ECON-E", "Economics", "2026-10-01T00:00:00Z", ".95", ".97", "2"),
+        ("WIDE-A", "WIDE-E", "Politics", "2026-10-01T00:00:00Z", ".91", ".98", "2"),
+    ):
+        row = market(10, yes_ask=ask, no_ask=str(1 - float(bid)))
+        row.update(ticker=ticker, event_ticker=event, category=family,
+                   expiration_time=expiry, close_time=expiry,
+                   yes_bid_dollars=bid, yes_bid_size_fp="2", volume_24h_fp=volume)
+        rows.append(row)
+    observations = favorite_maker_observations(
+        rows, "2026-09-30T12:00:00+00:00")
+    assert [(row["event_id"], row["ticker"]) for row in observations] == [
+        ("CRYPTO-E", "CRYPTO-B"), ("POL-E", "POL-A")]
+    assert all(not row["fill_assumed"] and not row["execution_enabled"]
+               for row in observations)
+    assert all(row["passive_price_cents"] >= 90 for row in observations)
+
+
+def test_relevance_routes_tradeable_favorite_maker_even_without_extreme_ask():
+    row = market(10, yes_ask=".99", no_ask=".11")
+    row.update(category="Crypto", yes_bid_dollars=".95", yes_bid_size_fp="3")
+    assert research_relevance(row) == ["favorite_maker", "nested_threshold"]

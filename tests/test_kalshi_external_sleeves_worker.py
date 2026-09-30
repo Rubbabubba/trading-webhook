@@ -3,7 +3,7 @@ import json
 import sqlite3
 
 from opportunity_lab.kalshi_external_sleeves_worker import (
-    FLB_ID, STRUCTURAL_ID, advance_mve_coverage, collect_generation,
+    FAVORITE_MAKER_ID, FLB_ID, STRUCTURAL_ID, advance_mve_coverage, collect_generation,
     maker_snapshot, open_db, write_status,
 )
 
@@ -83,6 +83,8 @@ def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
     indexed = {row["strategy_id"]: row for row in packet["sleeves"]}
     assert indexed[STRUCTURAL_ID]["complete_observations"] == 1
     assert indexed[FLB_ID]["complete_observations"] == 0
+    assert indexed[FAVORITE_MAKER_ID]["complete_observations"] == 0
+    assert packet["favorite_maker_gate"]["candidate_observations"] == 0
     assert packet["execution_enabled"] is False
     assert packet["coverage"]["coverage_complete"] is False
     db.close()
