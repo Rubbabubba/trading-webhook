@@ -39,3 +39,11 @@ The promotion gate requires 100 resolved parent events, both registered families
 ## Next specialized sleeves
 
 Weather and macroeconomic contracts can support independent fair-value models using official forecast distributions and nowcasts. They require exact settlement-source mapping, vintage-data retention, and a prospective scoring period. Cross-exchange arbitrage requires exact contract-resolution equivalence and synchronized executable depth on both venues. These are separate research projects and must not be mixed into the V13 result.
+
+Weather Ensemble V14 was subsequently registered as a shadow-only test. It
+uses independent GFS and ECMWF IFS ensemble families, a verified station map,
+complete temperature ladders, and a fixed high-edge/model-agreement screen.
+Its primary benchmark is the Kalshi midpoint distribution on the same event and
+timestamp. The preregistration incorporates the public 19-station negative
+ensemble result and requires fresh market-relative Brier and ranked-probability
+improvement before any separate Demo execution trial.

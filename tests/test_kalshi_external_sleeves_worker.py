@@ -93,3 +93,23 @@ def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
     assert packet["execution_enabled"] is False
     assert packet["coverage"]["coverage_complete"] is False
     db.close()
+
+
+def test_snapshot_preserves_last_complete_generation_during_scan(tmp_path):
+    maker = sqlite3.connect(tmp_path / "worker.sqlite3")
+    maker.execute("CREATE TABLE research_market_universe(ticker,event_id,generation,tags,detail)")
+    maker.execute("CREATE TABLE settings(name PRIMARY KEY,detail)")
+    complete = market(10, ".20", ".81")
+    partial = market(20, ".30", ".71")
+    maker.execute("INSERT INTO research_market_universe VALUES(?,?,?,?,?)",
+                  (complete["ticker"], "COMPLETE", 7, "[]", json.dumps(complete)))
+    maker.execute("INSERT INTO research_market_universe VALUES(?,?,?,?,?)",
+                  (partial["ticker"], "PARTIAL", 8, "[]", json.dumps(partial)))
+    maker.execute("INSERT INTO settings VALUES(?,?)", (
+        "market_discovery", json.dumps({"generation": 8, "in_progress": True})))
+    maker.commit(); maker.close()
+
+    generation, snapshot, coverage = maker_snapshot(tmp_path / "worker.sqlite3")
+    assert generation == 7
+    assert [row["ticker"] for row in snapshot] == [complete["ticker"]]
+    assert coverage == {"generation": 8, "in_progress": True}

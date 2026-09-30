@@ -27,6 +27,7 @@
       "kalshi_favorite_maker_v13_shadow"
     ],
     "supported_live_sports_with_exact_feed_mapping": ["sports_persistent_passive_v1_shadow"],
+    "registered_daily_temperature_ladders_with_exact_station_mapping": ["kalshi_weather_ensemble_v14_shadow"],
     "multivariate_combo_markets": ["inventory_only_pending_registered_mve_challenger"]
   },
   "accounting": {

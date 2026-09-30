@@ -1,6 +1,6 @@
 """Shadow-only collector for registered structural and calibration sleeves."""
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import gc
 import json
 from pathlib import Path
@@ -16,11 +16,16 @@ from .kalshi_external_sleeves import (
 from .kalshi_strategy_evaluation import cluster_lower_bound
 from .kalshi_sleeve_comparison import comparison_packet
 from .kalshi_demo_v5_maker_worker import eligible_market_candidates, market_family
+from .kalshi_weather_ensemble import (
+    fetch_ensemble, parse_target_date, score_resolution,
+    weather_event_observation, weather_market_spec,
+)
 
 
 STRUCTURAL_ID = "kalshi_structural_arb_v1_shadow"
 FLB_ID = "kalshi_favorite_longshot_v1_shadow"
 FAVORITE_MAKER_ID = "kalshi_favorite_maker_v13_shadow"
+WEATHER_ENSEMBLE_ID = "kalshi_weather_ensemble_v14_shadow"
 SPORTS_ID = "sports_persistent_passive_v1_shadow"
 
 
@@ -38,6 +43,12 @@ def open_db(path):
         signal_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,decision_bucket INTEGER NOT NULL,
         observed_at TEXT NOT NULL,detail TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS favorite_maker_observations(
+        observation_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,decision_bucket INTEGER NOT NULL,
+        observed_at TEXT NOT NULL,detail TEXT NOT NULL,resolution TEXT);
+      CREATE TABLE IF NOT EXISTS weather_forecasts(
+        snapshot_id TEXT PRIMARY KEY,observed_at TEXT NOT NULL,station TEXT NOT NULL,
+        target_date TEXT NOT NULL,extreme TEXT NOT NULL,model TEXT NOT NULL,detail TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS weather_observations(
         observation_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,decision_bucket INTEGER NOT NULL,
         observed_at TEXT NOT NULL,detail TEXT NOT NULL,resolution TEXT);
       CREATE TABLE IF NOT EXISTS scans(
@@ -96,16 +107,34 @@ def advance_mve_coverage(db, client, now):
 def maker_snapshot(path):
     try:
         db = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=10)
+        try:
+            setting = db.execute(
+                "SELECT detail FROM settings WHERE name='market_discovery'"
+            ).fetchone()
+            coverage = json.loads(setting[0]) if setting else {}
+        except sqlite3.Error:
+            coverage = {}
         generation_row = db.execute(
             "SELECT max(generation) FROM research_market_universe"
         ).fetchone()
         generation = generation_row[0] if generation_row else None
+        # Keep the last complete catalog stable while the maker scans a new
+        # generation page by page. Otherwise a sleeve temporarily sees only
+        # the first few pages and can miss weather events later in the scan.
+        if coverage.get("in_progress") and coverage.get("generation") == generation:
+            complete_row = db.execute(
+                "SELECT max(generation) FROM research_market_universe "
+                "WHERE generation<?", (generation,)
+            ).fetchone()
+            if complete_row and complete_row[0] is not None:
+                generation = complete_row[0]
         fields = (
             "ticker", "event_ticker", "status", "market_type", "exchange_index",
             "category", "title", "subtitle", "yes_sub_title", "no_sub_title",
             "yes_bid_dollars", "yes_ask_dollars", "no_bid_dollars", "no_ask_dollars",
-            "yes_bid_size_fp", "no_bid_size_fp", "volume_24h_fp", "strike_type",
-            "floor_strike", "rules_primary", "rules_secondary", "close_time",
+            "yes_bid_size_fp", "yes_ask_size_fp", "no_bid_size_fp", "no_ask_size_fp",
+            "volume_24h_fp", "strike_type", "floor_strike", "cap_strike",
+            "rules_primary", "rules_secondary", "close_time",
             "expiration_time", "occurrence_datetime",
         )
         rows = []
@@ -120,13 +149,6 @@ def maker_snapshot(path):
             # market JSON averages several KB and tens of thousands of decoded
             # dictionaries can exceed a 512 MB worker during restart.
             rows = [dict(zip(fields, values)) for values in cursor]
-        try:
-            setting = db.execute(
-                "SELECT detail FROM settings WHERE name='market_discovery'"
-            ).fetchone()
-            coverage = json.loads(setting[0]) if setting else {}
-        except sqlite3.Error:
-            coverage = {}
         db.close()
     except (sqlite3.Error, OSError):
         return None, [], {}
@@ -181,6 +203,124 @@ def collect_generation(db, client, generation, markets, now):
         "INSERT OR REPLACE INTO scans VALUES(?,?,?,?,?,?)",
         (generation, now.isoformat(), len(markets), inserted, len(candidates), confirmed),
     )
+
+
+def _weather_groups(markets, now):
+    groups = defaultdict(list)
+    tomorrow = now.date() + timedelta(days=1)
+    horizon = now.date() + timedelta(days=7)
+    for market in markets:
+        spec = weather_market_spec(market)
+        target = parse_target_date(market.get("event_ticker"))
+        if (spec is not None and target is not None and tomorrow <= target <= horizon
+                and market.get("status") == "active"
+                and market.get("market_type") == "binary"):
+            groups[(spec.station, market["event_ticker"])].append(market)
+    return groups
+
+
+def collect_weather_one_station(db, markets, now, *, fetcher=fetch_ensemble):
+    """Refresh the oldest due station and retain every forecast vintage.
+
+    One station per minute keeps the worker and free public API bounded. With
+    the registered 20-station universe, each active station is revisited in at
+    most about 30 minutes without a second crawler.
+    """
+    groups = _weather_groups(markets, now)
+    by_station = defaultdict(list)
+    for (station, _event), rows in groups.items():
+        by_station[station].extend(rows)
+    fetched = _coverage_load(db, "weather_station_fetches", {})
+    candidates = []
+    for station in by_station:
+        try:
+            last = datetime.fromisoformat(str(fetched.get(station)).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            last = datetime.min.replace(tzinfo=timezone.utc)
+        age = (now - last).total_seconds()
+        if age >= 1800:
+            candidates.append((last, station))
+    if not candidates:
+        return {"active_events": len(groups), "active_stations": len(by_station),
+                "station_fetched": None, "error": None}
+    _last, station = min(candidates)
+    station_rows = by_station[station]
+    spec = weather_market_spec(station_rows[0])
+    targets = sorted({parse_target_date(row.get("event_ticker")) for row in station_rows})
+    targets = [target for target in targets if target is not None]
+    if not spec or not targets:
+        return {"active_events": len(groups), "active_stations": len(by_station),
+                "station_fetched": None, "error": "invalid_station_group"}
+    forecasts, transport = fetcher(spec, targets[0], targets[-1])
+    fetched[station] = now.isoformat()
+    _coverage_save(db, "weather_station_fetches", fetched)
+    _coverage_save(db, "weather_last_transport", transport)
+    if transport.get("error"):
+        return {"active_events": len(groups), "active_stations": len(by_station),
+                "station_fetched": station, "error": transport["error"]}
+    new_vintages = observations = signals = 0
+    for target_text, models in forecasts.items():
+        for model, row in models.items():
+            for extreme in ("high", "low"):
+                snapshot_id = ":".join((station, target_text, extreme, model,
+                                        str(row.get("forecast_hash"))))
+                cursor = db.execute(
+                    "INSERT OR IGNORE INTO weather_forecasts VALUES(?,?,?,?,?,?,?)",
+                    (snapshot_id, now.isoformat(), station, target_text, extreme, model,
+                     json.dumps({"members": row.get(extreme) or [],
+                                 "forecast_hash": row.get("forecast_hash"),
+                                 "transport": transport}, sort_keys=True)),
+                )
+                new_vintages += cursor.rowcount
+    for (event_station, event_id), event_markets in sorted(groups.items()):
+        if event_station != station:
+            continue
+        target = parse_target_date(event_id)
+        observation = weather_event_observation(
+            event_id, event_markets, forecasts.get(target.isoformat(), {}) if target else {},
+            now.isoformat())
+        cursor = db.execute(
+            "INSERT OR IGNORE INTO weather_observations VALUES(?,?,?,?,?,NULL)",
+            (observation["observation_id"], event_id, observation["decision_bucket"],
+             observation["observed_at"], json.dumps(observation, sort_keys=True)),
+        )
+        observations += cursor.rowcount
+        signals += cursor.rowcount * int(observation.get("signal") is not None)
+    return {"active_events": len(groups), "active_stations": len(by_station),
+            "station_fetched": station, "new_forecast_vintages": new_vintages,
+            "new_observations": observations, "new_signals": signals, "error": None}
+
+
+def resolve_one_weather(db, client, now):
+    for observation_id, detail in db.execute(
+            "SELECT observation_id,detail FROM weather_observations "
+            "WHERE resolution IS NULL ORDER BY observed_at LIMIT 20"):
+        row = json.loads(detail)
+        expiry = row.get("expiration_time")
+        try:
+            expires = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if expires > now:
+            continue
+        contracts = row.get("contracts") or []
+        if not contracts:
+            db.execute("UPDATE weather_observations SET resolution=? WHERE observation_id=?",
+                       (json.dumps({"resolved_at": now.isoformat(),
+                                    "unscored_reason": row.get("classification")}, sort_keys=True),
+                        observation_id))
+            return
+        try:
+            payload, _, _ = client.get(contracts[0]["ticker"])
+            market = payload["market"]
+            expiration_value = float(market["expiration_value"])
+        except (KeyError, TypeError, ValueError):
+            return
+        resolution = score_resolution(row, expiration_value)
+        resolution["resolved_at"] = now.isoformat()
+        db.execute("UPDATE weather_observations SET resolution=? WHERE observation_id=?",
+                   (json.dumps(resolution, sort_keys=True), observation_id))
+        return
 
 
 def _resolve_one_table(db, client, now, table, price_key):
@@ -272,6 +412,77 @@ def _favorite_maker_summary(db):
             "maximum_drawdown_cents": drawdown if complete else None}
 
 
+def _weather_summary(db):
+    groups = defaultdict(list); stations = defaultdict(set)
+    resolved_city_days = set(); seasons = set()
+    net = capital_days = 0.0; complete = signals_complete = 0
+    equity = peak = drawdown = 0.0; brier_deltas = []; rps_deltas = []
+    for event_id, detail, resolution in db.execute(
+            "SELECT event_id,detail,resolution FROM weather_observations "
+            "WHERE resolution IS NOT NULL"):
+        row = json.loads(detail); outcome = json.loads(resolution)
+        if "brier_delta_vs_market" not in outcome:
+            continue
+        complete += 1
+        cluster = f"{row.get('station')}:{row.get('target_date')}"
+        resolved_city_days.add(cluster)
+        try:
+            month = datetime.fromisoformat(row["target_date"] + "T00:00:00").month
+            seasons.add("winter" if month in (12, 1, 2) else
+                        "spring" if month in (3, 4, 5) else
+                        "summer" if month in (6, 7, 8) else "fall")
+        except (TypeError, ValueError):
+            pass
+        brier_deltas.append(float(outcome["brier_delta_vs_market"]))
+        rps_deltas.append(float(outcome["rps_delta_vs_market"]))
+        stations[str(row.get("station"))].add(str(row.get("target_date")))
+        value = outcome.get("cost_stressed_net_dollars")
+        if value is not None:
+            cents = float(value) * 100
+            groups[cluster].append(cents); net += cents; signals_complete += 1
+            signal = row.get("signal") or {}
+            try:
+                observed = datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
+                target = datetime.fromisoformat(row["target_date"] + "T23:59:59+00:00")
+                capital_days += float(signal.get("ask") or 0) * max(
+                    0, (target - observed).total_seconds() / 86400)
+            except (TypeError, ValueError):
+                pass
+            equity += cents; peak = max(peak, equity); drawdown = max(drawdown, peak - equity)
+    candidates = db.execute(
+        "SELECT count(*) FROM weather_observations "
+        "WHERE json_extract(detail,'$.signal') IS NOT NULL").fetchone()[0]
+    observations = db.execute("SELECT count(*) FROM weather_observations").fetchone()[0]
+    vintages = db.execute("SELECT count(*) FROM weather_forecasts").fetchone()[0]
+    station_days = {station: len(days) for station, days in stations.items()}
+    independent = len(resolved_city_days)
+    lcb = cluster_lower_bound(groups) if groups else None
+    average_brier = sum(brier_deltas) / len(brier_deltas) if brier_deltas else None
+    average_rps = sum(rps_deltas) / len(rps_deltas) if rps_deltas else None
+    gate = {
+        "minimum_city_days": independent >= 300,
+        "minimum_six_cities_with_50_days_each": sum(
+            days >= 50 for days in station_days.values()) >= 6,
+        "two_seasons": len(seasons) >= 2,
+        "positive_cost_stressed_net": signals_complete > 0 and net > 0,
+        "improved_brier_over_market": average_brier is not None and average_brier < 0,
+        "improved_rps_over_market": average_rps is not None and average_rps < 0,
+        "positive_city_day_clustered_95pct_lower_bound": lcb is not None and lcb > 0,
+    }
+    return {"strategy_id": WEATHER_ENSEMBLE_ID, "execution_enabled": False,
+            "forecast_vintages": vintages, "observations": observations,
+            "candidate_observations": candidates, "independent_events": independent,
+            "complete_observations": complete, "complete_signal_observations": signals_complete,
+            "cost_stressed_net_cents": net if signals_complete else None,
+            "event_clustered_95pct_lower_bound_cents": lcb,
+            "average_brier_delta_vs_market": average_brier,
+            "average_rps_delta_vs_market": average_rps,
+            "station_resolved_days": station_days, "gate": gate,
+            "state": "eligible_for_separate_demo_trial" if gate and all(gate.values()) else "collecting",
+            "capital_days": capital_days if signals_complete else None,
+            "maximum_drawdown_cents": drawdown if signals_complete else None}
+
+
 def _records(db, table):
     return [{"event_id": event_id, "decision_bucket": bucket}
             for event_id, bucket in db.execute(f"SELECT event_id,decision_bucket FROM {table}")]
@@ -305,7 +516,7 @@ def _sports(root):
 
 
 def write_status(root, db, generation, market_count, coverage=None, mve_coverage=None,
-                 error=None):
+                 error=None, weather_cycle=None):
     structural_records = _records(db, "structural_signals")
     flb_records = _records(db, "calibration_observations")
     structural = {"strategy_id": STRUCTURAL_ID, "execution_enabled": False,
@@ -316,13 +527,18 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
                   "capital_days": None, "maximum_drawdown_cents": None}
     flb = _flb_summary(db)
     favorite_maker = _favorite_maker_summary(db)
+    weather = _weather_summary(db)
     sports, sports_records = _sports(root)
     favorite_maker_records = _records(db, "favorite_maker_observations")
-    packet = comparison_packet([sports, structural, flb, favorite_maker], {
+    weather_records = _records(db, "weather_observations")
+    packet = comparison_packet([sports, structural, flb, favorite_maker, weather], {
         SPORTS_ID: sports_records, STRUCTURAL_ID: structural_records, FLB_ID: flb_records,
         FAVORITE_MAKER_ID: favorite_maker_records,
+        WEATHER_ENSEMBLE_ID: weather_records,
     })
     packet["favorite_maker_gate"] = favorite_maker
+    packet["weather_ensemble_gate"] = weather
+    packet["weather_cycle"] = weather_cycle or {}
     coverage = coverage or {}
     mve_coverage = mve_coverage or {}
     packet.update({"generated_at": utcnow().isoformat(), "execution_enabled": False,
@@ -337,6 +553,8 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
                        "research_relevant_events": coverage.get("research_relevant_events"),
                        "favorite_longshot_markets": coverage.get("favorite_longshot_markets"),
                        "favorite_maker_markets": coverage.get("favorite_maker_markets"),
+                       "weather_ensemble_markets": coverage.get(
+                           "weather_ensemble_markets"),
                        "nested_threshold_markets": coverage.get("nested_threshold_markets"),
                        "market_families": coverage.get("market_families"),
                        "eligible_families": coverage.get("eligible_families"),
@@ -372,17 +590,20 @@ def run(data_root, cycles=None, interval_seconds=60):
     try:
         while cycles is None or cycle < cycles:
             generation = None; markets = []; coverage = {}; error = None
+            weather_cycle = {}
             mve_coverage = _coverage_load(db, "mve_discovery", {})
             try:
                 generation, markets, coverage = maker_snapshot(root / "worker.sqlite3")
                 if generation is not None:
                     collect_generation(db, client, generation, markets, utcnow())
                     resolve_one(db, client, utcnow())
+                    weather_cycle = collect_weather_one_station(db, markets, utcnow())
+                    resolve_one_weather(db, client, utcnow())
                 mve_coverage = advance_mve_coverage(db, client, utcnow())
             except Exception as exc:
                 error = type(exc).__name__
             packet = write_status(root, db, generation, len(markets), coverage,
-                                  mve_coverage, error)
+                                  mve_coverage, error, weather_cycle)
             if cycle == 0 or error or any(row["paired"] for row in packet["paired_comparisons"]):
                 print(json.dumps({"at": packet["generated_at"],
                                   "event": "research_sleeves_status",

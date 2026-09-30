@@ -1,0 +1,83 @@
+{
+  "strategy_id": "kalshi_weather_ensemble_v14_shadow",
+  "registered_at": "2026-09-30T17:30:00-05:00",
+  "execution_enabled": false,
+  "hypothesis": "When independent GFS and ECMWF IFS ensemble distributions agree on the direction and magnitude of a daily-temperature bucket mispricing, a fixed high-edge subset may retain positive settlement value after fees and model stress even though raw single-model ensemble forecasts generally do not beat the Kalshi market.",
+  "honest_prior": "negative",
+  "research_basis": [
+    "Open-Meteo Ensemble API: NOAA GEFS 31-member and ECMWF IFS 51-member global ensembles",
+    "AwpDemon/kalshi-weather-bot: self-reported +$3.89 on 20 settled paper trades, too small and not independently auditable",
+    "wallyworley/weatherbot EXP-2026-013: all twelve ensemble variants lost to the Kalshi market on Brier and ranked probability score over 578 station-days and 19 stations",
+    "wallyworley/weatherbot EXP-2026-011: hobby-scale model-run latency was negative at full preregistered power"
+  ],
+  "universe": {
+    "contract_type": "registered Kalshi daily high and low temperature ladders",
+    "registered_series": [
+      "KXHIGHNY", "KXLOWNY", "KXHIGHCHI", "KXLOWCHI", "KXHIGHMIA", "KXLOWMIA",
+      "KXHIGHLAX", "KXHIGHTATL", "KXHIGHAUS", "KXHIGHPHIL", "KXHIGHDEN",
+      "KXHIGHTHOU", "KXLOWTHOU", "KXHIGHTDC", "KXHIGHTBOS", "KXHIGHTPHX",
+      "KXHIGHTDAL", "KXHIGHTSFO", "KXHIGHTSEA", "KXHIGHTLV", "KXHIGHTNOLA",
+      "KXHIGHTMIN", "KXHIGHTSATX", "KXHIGHTOKC"
+    ],
+    "exact_station_map_required": true,
+    "complete_nonoverlapping_bucket_ladder_required": true,
+    "minimum_days_to_target": 1,
+    "maximum_days_to_target": 7
+  },
+  "forecast": {
+    "provider": "Open-Meteo Ensemble API",
+    "models": {
+      "gfs": "gfs_seamless / ncep_gefs_seamless, minimum 20 members",
+      "ecmwf_ifs": "ecmwf_ifs025 / ecmwf_ifs025_ensemble, minimum 40 members"
+    },
+    "equal_model_weight": true,
+    "maximum_model_center_difference_f": 3.0,
+    "maximum_contract_probability_difference": 0.15,
+    "forecast_vintage_rule": "first observed receipt time; provider run labels are not used as availability timestamps",
+    "station_refresh_seconds": 1800,
+    "bias_correction": "none until strictly prior station-season outcomes exist; raw ensemble is measured honestly"
+  },
+  "signal": {
+    "minimum_raw_edge": 0.12,
+    "fee_and_model_stress": 0.02,
+    "minimum_stressed_edge": 0.10,
+    "entry_price_range": [0.10, 0.90],
+    "minimum_displayed_ask_depth_contracts": 1,
+    "both_model_families_must_prefer_same_side": true,
+    "one_best_candidate_per_parent_event_per_30_minutes": true,
+    "fill_assumed": false,
+    "hypothetical_settlement_only": true
+  },
+  "prospective_gate": {
+    "minimum_city_days": 300,
+    "minimum_cities": 6,
+    "minimum_days_per_included_city": 50,
+    "minimum_seasons": 2,
+    "positive_cost_stressed_net": true,
+    "negative_average_brier_delta_vs_market": true,
+    "negative_average_ranked_probability_score_delta_vs_market": true,
+    "positive_city_day_clustered_95pct_lower_bound": true,
+    "then": "separate one-contract Demo execution trial"
+  },
+  "automatic_rejection": {
+    "evaluate_after_city_days": 500,
+    "reject_if_cost_stressed_net_nonpositive": true,
+    "reject_if_brier_or_ranked_probability_score_does_not_beat_market": true,
+    "reject_on_unregistered_series_or_unverified_station_mapping": true,
+    "reject_on_incomplete_or_overlapping_bucket_ladder": true
+  },
+  "comparison": {
+    "primary_benchmark": "normalized Kalshi midpoint distribution on the same event and timestamp",
+    "portfolio_comparators": [
+      "queue_toxicity_maker_v10_shadow",
+      "microprice_value_maker_v12_shadow",
+      "kalshi_favorite_maker_v13_shadow",
+      "sports_persistent_passive_v1_shadow"
+    ],
+    "shared_metrics": [
+      "independent_events", "complete_observations", "cost_stressed_net_cents",
+      "event_clustered_95pct_lower_bound_cents", "capital_days", "maximum_drawdown_cents"
+    ],
+    "paired_only_when": "same event and decision-time bucket"
+  }
+}

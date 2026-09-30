@@ -6,6 +6,8 @@ import hashlib
 import json
 import re
 
+from .kalshi_weather_ensemble import weather_market_spec
+
 
 SPORTS_PREFIXES = (
     "KXNCAAF", "KXNFL", "KXMLB", "KXNBA", "KXEPL", "KXMLS",
@@ -90,6 +92,8 @@ def research_relevance(market):
         if (market.get("strike_type") == "greater" and market.get("rules_primary")
                 and market.get("rules_secondary") and market.get("event_ticker")):
             tags.append("nested_threshold")
+        if weather_market_spec(market) is not None:
+            tags.append("weather_ensemble")
     return tags
 
 
