@@ -22,6 +22,7 @@ EXPECTED_STRATEGY = "stable_balanced_maker_v9"
 EXPECTED_EXECUTION_POLICY = "v9_retired_after_8_losses_20260924"
 EXPECTED_V10 = "queue_toxicity_maker_v10_shadow"
 EXPECTED_V11 = "strong_imbalance_maker_v11_shadow"
+EXPECTED_V12 = "microprice_value_maker_v12_shadow"
 MAX_PACKET_BYTES = 12_000
 
 
@@ -54,11 +55,14 @@ def _number(value, default=0):
         return default
 
 
-def gate_state(status, registration):
-    """Evaluate the frozen V10 gate without inference or missing-data passes."""
+def gate_state(status, registration, evidence_key="v10_shadow"):
+    """Evaluate a registered shadow gate without inference or missing-data passes."""
     gate = registration.get("shadow_gate", {})
-    shadow = status.get("evidence", {}).get("v10_shadow", {})
-    horizons = [str(value) for value in gate.get("required_markout_seconds", [])]
+    shadow = status.get("evidence", {}).get(evidence_key, {})
+    horizons = [str(value) for value in gate.get(
+        "required_markout_seconds",
+        registration.get("fixed_parameters", {}).get("required_markout_seconds", []),
+    )]
     marks = shadow.get("markout_records", {})
     pnl = shadow.get("stressed_markout_pnl_cents", {})
     lcbs = shadow.get("event_cluster_lcb_cents", {})
@@ -123,6 +127,11 @@ def faults(status, *, now):
         result.append("v11_strategy_changed")
     if challenger.get("execution_enabled") is not False:
         result.append("v11_execution_enabled")
+    v12 = evidence.get("v12_shadow", {})
+    if v12.get("strategy_id") != EXPECTED_V12:
+        result.append("v12_strategy_changed")
+    if v12.get("execution_enabled") is not False:
+        result.append("v12_execution_enabled")
     if int(evidence.get("ending_position_contracts") or 0) > 1:
         result.append("inventory_limit_breached")
     # A working post-only order is represented as unresolved.  More than one
@@ -136,6 +145,7 @@ def _evidence_snapshot(status):
     evidence = status.get("evidence", {})
     shadow = evidence.get("v10_shadow", {})
     challenger = evidence.get("v11_shadow", {})
+    v12 = evidence.get("v12_shadow", {})
     return {
         "post_only_attempts": int(evidence.get("post_only_attempts") or 0),
         "maker_fills": int(evidence.get("maker_fills") or 0),
@@ -163,6 +173,16 @@ def _evidence_snapshot(status):
         "v11_automatic_rejection_triggered": bool(
             challenger.get("automatic_rejection_triggered")
         ),
+        "v12_signals": int(v12.get("signals") or 0),
+        "v12_evaluations": int(v12.get("evaluations") or 0),
+        "v12_last_evaluation_at": v12.get("last_evaluation_at"),
+        "v12_rejection_reasons": v12.get("rejection_reasons", {}),
+        "v12_complete_signals": int(v12.get("complete_signals") or 0),
+        "v12_independent_events": int(v12.get("independent_events") or 0),
+        "v12_markout_records": v12.get("markout_records", {}),
+        "v12_stressed_markout_pnl_cents": v12.get("stressed_markout_pnl_cents", {}),
+        "v12_event_cluster_lcb_cents": v12.get("event_cluster_lcb_cents", {}),
+        "v12_automatic_rejection_triggered": bool(v12.get("automatic_rejection_triggered")),
     }
 
 
@@ -177,7 +197,7 @@ def _delta(current, previous):
     return result
 
 
-def check(status, checkpoint, registration, *, now):
+def check(status, checkpoint, registration, *, now, v12_registration=None):
     active = faults(status, now=now)
     previous_faults = checkpoint.get("active_faults", [])
     current_evidence = _evidence_snapshot(status)
@@ -193,11 +213,20 @@ def check(status, checkpoint, registration, *, now):
     repeats = (int(checkpoint.get("fault_repeats") or 0) + 1
                if active == previous_faults and active else (1 if active else 0))
     gate = gate_state(status, registration)
+    v12_gate = gate_state(
+        status, v12_registration or registration, evidence_key="v12_shadow"
+    )
     prior_gate = checkpoint.get("gate_state")
+    prior_v12_gate = checkpoint.get("v12_gate_state")
+    v12_rejected = current_evidence["v12_automatic_rejection_triggered"]
+    prior_v12_rejected = bool(checkpoint.get("v12_automatic_rejection_triggered"))
     new_faults = sorted(set(active) - set(previous_faults))
     recovered = sorted(set(previous_faults) - set(active))
     persistent = active if repeats == PERSISTENT_FAULT_CHECKS else []
     gate_transition = prior_gate is not None and gate["state"] != prior_gate
+    v12_gate_transition = (
+        prior_v12_gate is not None and v12_gate["state"] != prior_v12_gate
+    )
     daily_due = now - float(checkpoint.get("last_daily_review_at") or 0) >= DAILY_REVIEW_SECONDS
     triggers = []
     if new_faults:
@@ -208,6 +237,10 @@ def check(status, checkpoint, registration, *, now):
         triggers.append("recovery")
     if gate_transition:
         triggers.append("evidence_gate_transition")
+    if v12_gate_transition:
+        triggers.append("v12_evidence_gate_transition")
+    if v12_rejected and not prior_v12_rejected:
+        triggers.append("v12_automatic_rejection")
     if daily_due:
         triggers.append("daily_review")
     packet = {
@@ -230,6 +263,7 @@ def check(status, checkpoint, registration, *, now):
         "evidence": current_evidence,
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),
         "v10_gate": gate,
+        "v12_gate": v12_gate,
         "investigation_needed": bool(triggers),
         "trigger_categories": triggers,
         "references": {
@@ -238,13 +272,16 @@ def check(status, checkpoint, registration, *, now):
             "order_journal": "journal.sqlite3",
             "registration": "configs/kalshi_maker_v10_20260921/registration.json",
             "challenger_registration": "configs/kalshi_maker_v11_20260927/registration.json",
+            "frequency_challenger_registration": "configs/kalshi_maker_v12_20260930/registration.json",
         },
     }
     state_fingerprint = hashlib.sha256(json.dumps({
-        "faults": active, "gate": gate["state"],
+        "faults": active, "gate": gate["state"], "v12_gate": v12_gate["state"],
+        "v12_rejected": v12_rejected,
     }, sort_keys=True).encode()).hexdigest()[:16]
     fingerprint = hashlib.sha256(json.dumps({
-        "faults": active, "gate": gate["state"], "triggers": triggers,
+        "faults": active, "gate": gate["state"], "v12_gate": v12_gate["state"],
+        "v12_rejected": v12_rejected, "triggers": triggers,
     }, sort_keys=True).encode()).hexdigest()[:16]
     duplicate = bool(
         (triggers and fingerprint == checkpoint.get("last_escalation_fingerprint"))
@@ -260,6 +297,8 @@ def check(status, checkpoint, registration, *, now):
         "active_faults": active,
         "fault_repeats": repeats,
         "gate_state": gate["state"],
+        "v12_gate_state": v12_gate["state"],
+        "v12_automatic_rejection_triggered": v12_rejected,
         "evidence": current_evidence,
         "last_daily_review_at": now if daily_due else checkpoint.get("last_daily_review_at", now),
         "last_escalation_fingerprint": (
@@ -289,7 +328,13 @@ def run_check(data_root, status=None, *, now=None, force=False):
         Path(__file__).resolve().parent.parent / "configs" /
         "kalshi_maker_v10_20260921" / "registration.json", {}
     )
-    packet, next_checkpoint, duplicate = check(status, checkpoint, registration, now=now)
+    v12_registration = _read(
+        Path(__file__).resolve().parent.parent / "configs" /
+        "kalshi_maker_v12_20260930" / "registration.json", {}
+    )
+    packet, next_checkpoint, duplicate = check(
+        status, checkpoint, registration, now=now, v12_registration=v12_registration
+    )
     metrics = _read(metrics_path, {
         "schema": "kalshi_monitor_metrics_v1", "checks": 0,
         "checks_without_ai": 0, "investigations_requested": 0,

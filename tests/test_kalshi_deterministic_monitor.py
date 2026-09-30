@@ -13,6 +13,16 @@ REGISTRATION = {
     }
 }
 
+V12_REGISTRATION = {
+    "fixed_parameters": {"required_markout_seconds": [5, 30, 300]},
+    "shadow_gate": {
+        "minimum_independent_events": 30,
+        "minimum_complete_signals": 100,
+        "positive_stressed_net_at_every_horizon": True,
+        "positive_event_cluster_95_percent_lower_bound": True,
+    },
+}
+
 
 def healthy(at="2026-09-21T18:00:00+00:00"):
     return {
@@ -44,6 +54,17 @@ def healthy(at="2026-09-21T18:00:00+00:00"):
                 "event_cluster_lcb_cents": {"5": None, "30": None, "300": None},
                 "automatic_rejection_triggered": False,
             },
+            "v12_shadow": {
+                "strategy_id": "microprice_value_maker_v12_shadow",
+                "execution_enabled": False, "signals": 0, "evaluations": 10,
+                "last_evaluation_at": 1790013600,
+                "rejection_reasons": {"balanced_book": 1},
+                "complete_signals": 0, "independent_events": 0,
+                "markout_records": {"5": 0, "30": 0, "300": 0},
+                "stressed_markout_pnl_cents": {"5": 0, "30": 0, "300": 0},
+                "event_cluster_lcb_cents": {"5": None, "30": None, "300": None},
+                "automatic_rejection_triggered": False,
+            },
         },
     }
 
@@ -65,6 +86,36 @@ def test_complete_positive_gate_passes():
         "event_cluster_lcb_cents": {"5": .1, "30": .01, "300": .001},
     })
     assert gate_state(status, REGISTRATION)["state"] == "passed"
+
+
+def test_v12_gate_uses_registered_fixed_horizons():
+    status = healthy()
+    shadow = status["evidence"]["v12_shadow"]
+    shadow.update({
+        "signals": 100, "complete_signals": 100, "independent_events": 30,
+        "markout_records": {"5": 100, "30": 100, "300": 100},
+        "stressed_markout_pnl_cents": {"5": 10, "30": 4, "300": 1},
+        "event_cluster_lcb_cents": {"5": .1, "30": .01, "300": .001},
+    })
+    assert gate_state(status, V12_REGISTRATION, "v12_shadow")["state"] == "passed"
+
+
+def test_v12_automatic_rejection_triggers_review_once():
+    status = healthy()
+    _, checkpoint, _ = check(
+        status, {}, REGISTRATION, now=1790013601, v12_registration=V12_REGISTRATION
+    )
+    status["evidence"]["v12_shadow"]["automatic_rejection_triggered"] = True
+    packet, checkpoint, _ = check(
+        status, checkpoint, REGISTRATION, now=1790013661,
+        v12_registration=V12_REGISTRATION,
+    )
+    assert packet["trigger_categories"] == ["v12_automatic_rejection"]
+    packet, _, _ = check(
+        status, checkpoint, REGISTRATION, now=1790013721,
+        v12_registration=V12_REGISTRATION,
+    )
+    assert packet["investigation_needed"] is False
 
 
 def test_healthy_unchanged_check_requests_no_investigation():
@@ -128,6 +179,15 @@ def test_challenger_cannot_be_replaced_or_enabled_silently():
     status["evidence"]["v11_shadow"]["strategy_id"] = "changed"
     packet, _, _ = check(status, {}, REGISTRATION, now=1790013601)
     assert "v11_strategy_changed" in packet["health"]["faults"]
+
+    status = healthy()
+    status["evidence"]["v12_shadow"]["execution_enabled"] = True
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601)
+    assert "v12_execution_enabled" in packet["health"]["faults"]
+    status["evidence"]["v12_shadow"]["execution_enabled"] = False
+    status["evidence"]["v12_shadow"]["strategy_id"] = "changed"
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601)
+    assert "v12_strategy_changed" in packet["health"]["faults"]
 
 
 def test_stopped_or_stale_worker_is_detected_without_ai():

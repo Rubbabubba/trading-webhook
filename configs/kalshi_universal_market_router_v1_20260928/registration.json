@@ -18,7 +18,8 @@
   "routing": {
     "all_standard_active_binary_markets": [
       "queue_toxicity_maker_v10_shadow",
-      "strong_imbalance_maker_v11_shadow"
+      "strong_imbalance_maker_v11_shadow",
+      "microprice_value_maker_v12_shadow"
     ],
     "nested_threshold_relationships": ["kalshi_structural_arb_v1_shadow"],
     "extreme_price_bins": ["kalshi_favorite_longshot_v1_shadow"],

@@ -16,6 +16,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     next_sampling_market,
     observe_v10_shadow,
     observe_v11_shadow,
+    observe_v12_shadow,
     observe_working_quote,
     preferred_outcome,
     quarantine_stale_unresolved,
@@ -199,6 +200,33 @@ def test_v11_shadow_is_event_deduplicated_and_never_executes(tmp_path):
         assert result["complete_signals"] == 1
         assert result["independent_events"] == 1
         assert result["markout_records"] == {"5": 1, "30": 1, "300": 1}
+        assert result["automatic_rejection_triggered"] is False
+    finally:
+        journal.close(); state.close()
+
+
+def test_v12_shadow_collects_frequent_event_deduplicated_evidence(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        first = observe_v12_shadow(
+            state, "FIRST", [], working_frame(".40", ".46", 12, 8, at=400), "EVENT",
+        )
+        assert first["strategy_id"] == "microprice_value_maker_v12_shadow"
+        assert observe_v12_shadow(
+            state, "SECOND", [], working_frame(".40", ".46", 12, 8, at=500), "EVENT",
+        ) is None
+        observe_v12_shadow(
+            state, "FIRST", [], working_frame(".43", ".49", 12, 8, at=705), "EVENT",
+        )
+        result = evidence(state, journal)["v12_shadow"]
+        assert result["execution_enabled"] is False
+        assert result["signals"] == 1
+        assert result["complete_signals"] == 1
+        assert result["independent_events"] == 1
+        assert result["markout_records"] == {"5": 1, "30": 1, "300": 1}
+        assert result["productivity_stop_triggered"] is False
         assert result["automatic_rejection_triggered"] is False
     finally:
         journal.close(); state.close()
