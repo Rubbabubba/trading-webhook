@@ -1,0 +1,44 @@
+{
+  "version": "microprice_value_maker_v12_shadow_1.0",
+  "registered_at": "2026-09-30T15:00:00Z",
+  "environment": "demo",
+  "execution_enabled": false,
+  "production_execution_enabled": false,
+  "hypothesis": "Across open binary Kalshi events, a passive quote at the selected outcome's best bid will have positive five, 30 and 300 second markouts after a two-cent round-trip cost stress when contemporaneous top-of-book imbalance is at least 10 percent in that outcome's direction and microprice implies at least three cents of gross edge.",
+  "rationale": {
+    "prospective_only": true,
+    "problem": "Frozen V10 requires midpoint trend and queue imbalance to agree, and V11 adds a 25 percent imbalance filter. Their current signal yield is too low for timely evaluation.",
+    "change": "V12 removes the historical-trend requirement, retains bounded liquidity and price screens, and uses only decision-time top-of-book imbalance and microprice.",
+    "comparison": "V10, V11 and V12 receive the same market frames. V10 and V11 remain frozen and their evidence is preserved."
+  },
+  "fixed_parameters": {
+    "midpoint_minimum_cents": 20,
+    "midpoint_maximum_cents": 80,
+    "spread_minimum_cents": 4,
+    "spread_maximum_cents": 12,
+    "minimum_top_depth_contracts": 3,
+    "maximum_depth_ratio": 4,
+    "minimum_absolute_imbalance": "0.10",
+    "minimum_microprice_gross_edge_cents": 3,
+    "quote_location": "selected_outcome_best_bid",
+    "event_signal_cooldown_seconds": 1800,
+    "round_trip_cost_stress_cents": 2,
+    "required_markout_seconds": [5, 30, 300]
+  },
+  "shadow_gate": {
+    "minimum_independent_events": 30,
+    "minimum_complete_signals": 100,
+    "positive_stressed_net_at_every_horizon": true,
+    "positive_event_cluster_95_percent_lower_bound": true
+  },
+  "automatic_rejection": {
+    "profitability_early_stop": "Reject after 15 independent events if the event-cluster mean is at or below minus one cent at any required horizon.",
+    "productivity_stop": "Reject for insufficient yield if fewer than 10 independent events have signaled after 25000 eligible evaluations.",
+    "gate_failure": "Reject if any required horizon is nonpositive after 100 complete signals and 30 independent events."
+  },
+  "next_stage_if_gate_passes": "A separately authorized one-contract Demo execution trial with actual fills, fees, queue evidence, and unchanged risk limits.",
+  "frozen_benchmarks_unchanged": [
+    "queue_toxicity_maker_v10_shadow",
+    "strong_imbalance_maker_v11_shadow"
+  ]
+}
