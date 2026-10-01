@@ -229,7 +229,7 @@ def collect_generation(db, client, generation, markets, now):
     except Exception:
         db.execute("ROLLBACK")
         raise
-    candidates = structural_candidates(markets)
+    candidates = structural_candidates(markets, limit=2)
     confirmed = 0
     # Confirm only the two best indicative candidates in a generation. The
     # public Demo client enforces slow reads, and no order or fill is attempted.

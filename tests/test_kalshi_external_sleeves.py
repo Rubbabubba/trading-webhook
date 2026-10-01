@@ -42,6 +42,13 @@ def test_nonprofitable_threshold_pair_is_not_signal():
                                   market(20, no_ask=".39")]) == []
 
 
+def test_structural_candidate_limit_matches_best_full_scan():
+    rows = [market(10, yes_ask=".10"), market(20, yes_ask=".20", no_ask=".50"),
+            market(30, yes_ask=".30", no_ask=".40"),
+            market(40, no_ask=".30")]
+    assert structural_candidates(rows, limit=2) == structural_candidates(rows)[:2]
+
+
 def test_fresh_structural_confirmation_requires_depth_and_time_alignment():
     low = market(10, yes_ask=".30", no_ask=".71")
     high = market(20, yes_ask=".80", no_ask=".19")

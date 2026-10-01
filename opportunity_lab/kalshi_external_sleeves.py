@@ -129,7 +129,8 @@ def threshold_identity(market):
     return hashlib.sha256(encoded.encode()).hexdigest(), strike
 
 
-def structural_candidates(markets, *, fee_cents_per_leg=2, unfinished_leg_stress_cents=2):
+def structural_candidates(markets, *, fee_cents_per_leg=2,
+                          unfinished_leg_stress_cents=2, limit=None):
     """Find indicative nested-threshold violations; fresh books remain mandatory."""
     groups = defaultdict(list)
     for market in markets:
@@ -143,6 +144,46 @@ def structural_candidates(markets, *, fee_cents_per_leg=2, unfinished_leg_stress
     result = []
     for identity, rows in groups.items():
         rows.sort(key=lambda item: item[0])
+        if limit is not None:
+            # The collector confirms only a fixed number of best candidates.
+            # Avoid materializing every O(n^2) strike pair in large ladders:
+            # the pair score is separable, so each high strike only needs the
+            # best preceding YES asks that could enter the global top K.
+            best_lows = []
+            for high_strike, high in rows:
+                try:
+                    no_high = round(_decimal(high["no_ask_dollars"], "no_ask") * 100)
+                except (KeyError, ValueError):
+                    no_high = None
+                if no_high is not None:
+                    for yes_low, _ticker, low_strike, low in best_lows:
+                        raw = 100 - int(yes_low) - int(no_high)
+                        stressed = raw - 2 * fee_cents_per_leg - unfinished_leg_stress_cents
+                        if stressed >= 1:
+                            result.append({
+                                "relationship_id": identity,
+                                "event_id": low["event_ticker"],
+                                "low_ticker": low["ticker"],
+                                "high_ticker": high["ticker"],
+                                "low_strike": str(low_strike),
+                                "high_strike": str(high_strike),
+                                "indicative_surplus_cents": raw,
+                                "indicative_stressed_surplus_cents": stressed,
+                                "execution_enabled": False,
+                                "fresh_book_required": True,
+                            })
+                    result.sort(key=lambda row: (
+                        -row["indicative_stressed_surplus_cents"],
+                        row["low_ticker"], row["high_ticker"]))
+                    del result[limit:]
+                try:
+                    yes_low = round(_decimal(high["yes_ask_dollars"], "yes_ask") * 100)
+                    best_lows.append((yes_low, high["ticker"], high_strike, high))
+                    best_lows.sort(key=lambda row: (row[0], row[1]))
+                    del best_lows[limit:]
+                except (KeyError, ValueError):
+                    pass
+            continue
         for index, (low_strike, low) in enumerate(rows):
             for high_strike, high in rows[index + 1:]:
                 try:
