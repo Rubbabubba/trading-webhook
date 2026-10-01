@@ -514,7 +514,12 @@ def _weather_summary(db):
     for event_id, detail, resolution in db.execute(
             "SELECT event_id,detail,resolution FROM weather_observations "
             "WHERE resolution IS NOT NULL"):
-        row = json.loads(detail); outcome = json.loads(resolution)
+        try:
+            row = json.loads(detail); outcome = json.loads(resolution)
+        except (json.JSONDecodeError, TypeError):
+            # Preserve malformed historical rows for audit, but never let one
+            # record stop current collection or enter a profitability gate.
+            continue
         if "brier_delta_vs_market" not in outcome:
             continue
         complete += 1
@@ -543,9 +548,12 @@ def _weather_summary(db):
             except (TypeError, ValueError):
                 pass
             equity += cents; peak = max(peak, equity); drawdown = max(drawdown, peak - equity)
-    candidates = db.execute(
-        "SELECT count(*) FROM weather_observations "
-        "WHERE json_extract(detail,'$.signal') IS NOT NULL").fetchone()[0]
+    candidates = malformed = 0
+    for (detail,) in db.execute("SELECT detail FROM weather_observations"):
+        try:
+            candidates += int(json.loads(detail).get("signal") is not None)
+        except (json.JSONDecodeError, TypeError):
+            malformed += 1
     observations = db.execute("SELECT count(*) FROM weather_observations").fetchone()[0]
     vintages = db.execute("SELECT count(*) FROM weather_forecasts").fetchone()[0]
     station_days = {station: len(days) for station, days in stations.items()}
@@ -566,6 +574,7 @@ def _weather_summary(db):
     return {"strategy_id": WEATHER_ENSEMBLE_ID, "execution_enabled": False,
             "forecast_vintages": vintages, "observations": observations,
             "candidate_observations": candidates, "independent_events": independent,
+            "malformed_observations_excluded": malformed,
             "complete_observations": complete, "complete_signal_observations": signals_complete,
             "cost_stressed_net_cents": net if signals_complete else None,
             "event_clustered_95pct_lower_bound_cents": lcb,

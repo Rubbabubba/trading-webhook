@@ -88,6 +88,10 @@ def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
     detail = json.loads(db.execute(
         "SELECT detail FROM calibration_parent_observations").fetchone()[0])
     assert detail["observation_id"] == "E:longshot:2-5"
+    db.execute(
+        "INSERT INTO weather_observations VALUES(?,?,?,?,?,NULL)",
+        ("bad-weather", "WX", 1, "2026-09-30T00:00:00+00:00", "{bad-json"),
+    )
     packet = write_status(tmp_path, db, generation, len(snapshot))
     indexed = {row["strategy_id"]: row for row in packet["sleeves"]}
     assert indexed[STRUCTURAL_ID]["complete_observations"] == 1
@@ -96,6 +100,9 @@ def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
         "evidence_scope"] == "parent_event_canonical_only"
     assert indexed[FAVORITE_MAKER_ID]["complete_observations"] == 0
     assert packet["favorite_maker_gate"]["candidate_observations"] == 0
+    assert packet["weather_ensemble_gate"]["observations"] == 1
+    assert packet["weather_ensemble_gate"]["candidate_observations"] == 0
+    assert packet["weather_ensemble_gate"]["malformed_observations_excluded"] == 1
     assert packet["execution_enabled"] is False
     assert packet["coverage"]["coverage_complete"] is False
     db.close()
