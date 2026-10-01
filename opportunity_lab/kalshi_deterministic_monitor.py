@@ -23,6 +23,8 @@ EXPECTED_EXECUTION_POLICY = "v9_retired_after_8_losses_20260924"
 EXPECTED_V10 = "queue_toxicity_maker_v10_shadow"
 EXPECTED_V11 = "strong_imbalance_maker_v11_shadow"
 EXPECTED_V12 = "microprice_value_maker_v12_shadow"
+EXPECTED_V12_TRIAL = "microprice_value_maker_v12_demo_trial"
+EXPECTED_V12_TRIAL_POLICY = "v12_one_contract_demo_trial_20261001"
 MAX_PACKET_BYTES = 12_000
 
 
@@ -132,6 +134,19 @@ def faults(status, *, now):
         result.append("v12_strategy_changed")
     if v12.get("execution_enabled") is not False:
         result.append("v12_execution_enabled")
+    trial = status.get("v12_demo_trial", {})
+    if status.get("v12_demo_trial_enabled") is not True:
+        result.append("v12_demo_trial_not_enabled")
+    if status.get("v12_demo_trial_policy_id") != EXPECTED_V12_TRIAL_POLICY:
+        result.append("v12_demo_trial_policy_changed")
+    if trial.get("strategy_id") != EXPECTED_V12_TRIAL:
+        result.append("v12_demo_trial_strategy_changed")
+    if trial.get("max_order_attempts") != 50 or trial.get("max_fills") != 10:
+        result.append("v12_demo_trial_limits_changed")
+    if trial.get("loss_stop_cents") != 25:
+        result.append("v12_demo_trial_loss_stop_changed")
+    if trial.get("shadow_gate_passed") is not True:
+        result.append("v12_demo_trial_shadow_gate_lost")
     if int(evidence.get("ending_position_contracts") or 0) > 1:
         result.append("inventory_limit_breached")
     # A working post-only order is represented as unresolved.  More than one
@@ -146,6 +161,7 @@ def _evidence_snapshot(status):
     shadow = evidence.get("v10_shadow", {})
     challenger = evidence.get("v11_shadow", {})
     v12 = evidence.get("v12_shadow", {})
+    trial = status.get("v12_demo_trial", {})
     return {
         "post_only_attempts": int(evidence.get("post_only_attempts") or 0),
         "maker_fills": int(evidence.get("maker_fills") or 0),
@@ -183,6 +199,10 @@ def _evidence_snapshot(status):
         "v12_stressed_markout_pnl_cents": v12.get("stressed_markout_pnl_cents", {}),
         "v12_event_cluster_lcb_cents": v12.get("event_cluster_lcb_cents", {}),
         "v12_automatic_rejection_triggered": bool(v12.get("automatic_rejection_triggered")),
+        "v12_trial_attempts": int(trial.get("attempts") or 0),
+        "v12_trial_fills": int(trial.get("fills") or 0),
+        "v12_trial_shadow_gate_passed": bool(trial.get("shadow_gate_passed")),
+        "v12_trial_stop_reason": trial.get("reason"),
     }
 
 
@@ -253,6 +273,8 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
             "production_execution_enabled": status.get("production_execution_enabled"),
             "strategy_execution_enabled": status.get("strategy_execution_enabled"),
             "execution_policy_id": status.get("execution_policy_id"),
+            "v12_demo_trial_enabled": status.get("v12_demo_trial_enabled"),
+            "v12_demo_trial_policy_id": status.get("v12_demo_trial_policy_id"),
             "status_at": status.get("at"),
             "status_age_seconds": max(0, round(now - datetime.fromisoformat(
                 status.get("at", "1970-01-01T00:00:00+00:00").replace("Z", "+00:00")
@@ -273,6 +295,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
             "registration": "configs/kalshi_maker_v10_20260921/registration.json",
             "challenger_registration": "configs/kalshi_maker_v11_20260927/registration.json",
             "frequency_challenger_registration": "configs/kalshi_maker_v12_20260930/registration.json",
+            "v12_demo_trial_registration": "configs/kalshi_maker_v12_demo_trial_20261001/registration.json",
         },
     }
     state_fingerprint = hashlib.sha256(json.dumps({

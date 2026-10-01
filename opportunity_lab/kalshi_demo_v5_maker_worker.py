@@ -44,6 +44,15 @@ from .kalshi_maker_v12 import (
     shadow_decision as v12_shadow_decision,
     stressed_markout as v12_stressed_markout,
 )
+from .kalshi_v12_demo_trial import (
+    CLIENT_ID_PREFIX as V12_TRIAL_CLIENT_ID_PREFIX,
+    EXECUTION_ENABLED as V12_TRIAL_ENABLED,
+    MAX_FILLS as V12_TRIAL_MAX_FILLS,
+    MAX_FLAT_BALANCE_LOSS_CENTS as V12_TRIAL_LOSS_STOP_CENTS,
+    MAX_ORDER_ATTEMPTS as V12_TRIAL_MAX_ORDER_ATTEMPTS,
+    STRATEGY_ID as V12_TRIAL_STRATEGY_ID,
+    trial_decision as v12_trial_decision,
+)
 from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 from .kalshi_external_sleeves import research_relevance
@@ -59,6 +68,9 @@ CLIENT_ID_PREFIX = "v9-maker-"
 EXECUTION_ENABLED = False
 EXECUTION_POLICY_ID = "v9_retired_after_8_losses_20260924"
 EXECUTION_DISABLED_REASON = "retired_negative_demo_evidence"
+V12_TRIAL_POLICY_ID = "v12_one_contract_demo_trial_20261001"
+V12_TRIAL_START_BALANCE_KEY = "v12_trial_start_balance_cents"
+V12_TRIAL_LAST_FLAT_BALANCE_KEY = "v12_trial_last_flat_balance_cents"
 CAPITAL_LIMIT_CENTS = 160
 ORDER_LIMIT_CENTS = 110
 DAILY_LOSS_CENTS = 100
@@ -598,6 +610,23 @@ class MakerState:
         if saved_v12 is not None and saved_v12 != v12_protocol:
             raise ValueError("v12_shadow_protocol_changed")
         self.save("v12_shadow_protocol", v12_protocol)
+        v12_trial_protocol = {
+            "strategy_id": V12_TRIAL_STRATEGY_ID,
+            "policy_id": V12_TRIAL_POLICY_ID,
+            "environment": "demo",
+            "execution_enabled": V12_TRIAL_ENABLED,
+            "production_execution_enabled": False,
+            "contracts_per_order": 1,
+            "maximum_working_orders": 1,
+            "maximum_open_positions": 1,
+            "maximum_order_attempts": V12_TRIAL_MAX_ORDER_ATTEMPTS,
+            "maximum_fills": V12_TRIAL_MAX_FILLS,
+            "maximum_flat_balance_loss_cents": V12_TRIAL_LOSS_STOP_CENTS,
+        }
+        saved_v12_trial = self.load("v12_trial_protocol")
+        if saved_v12_trial is not None and saved_v12_trial != v12_trial_protocol:
+            raise ValueError("v12_trial_protocol_changed")
+        self.save("v12_trial_protocol", v12_trial_protocol)
 
     def save(self, name, value):
         self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)",
@@ -795,8 +824,9 @@ def release_legacy_uncertainty_stop(state, journal):
     return True
 
 
-def submit(state, journal, broker, markets, market, outcome, action, price_cents, *, maker=False, context=None):
-    client_id = CLIENT_ID_PREFIX + uuid.uuid4().hex
+def submit(state, journal, broker, markets, market, outcome, action, price_cents, *,
+           maker=False, context=None, client_id_prefix=CLIENT_ID_PREFIX):
+    client_id = client_id_prefix + uuid.uuid4().hex
     kind = "maker_entry" if maker else "exit"
     at = time.time()
     state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
@@ -871,6 +901,39 @@ def preferred_outcome(state, journal, ticker):
 def v9_submission_allowed(signal, *, event_locked):
     """Fail closed after V9's negative live-Demo evidence review."""
     return EXECUTION_ENABLED and signal is not None and not event_locked
+
+
+def v12_trial_counts(journal):
+    records = [
+        row for row in journal.records()
+        if row["payload"]["client_order_id"].startswith(V12_TRIAL_CLIENT_ID_PREFIX)
+        and row["intent"].get("order_mode") == "post_only_gtc"
+    ]
+    return len(records), sum(bool(row["filled"]) for row in records)
+
+
+def v12_trial_event_recent(state, independent_event, *, now=None):
+    """Apply V12's frozen 30-minute event cooldown to real Demo attempts."""
+    now = time.time() if now is None else now
+    row = state.db.execute(
+        "SELECT max(created_at) FROM intent_meta WHERE event_id=? AND client_id LIKE ?",
+        (independent_event, V12_TRIAL_CLIENT_ID_PREFIX + "%"),
+    ).fetchone()
+    return row is not None and row[0] is not None and (
+        now - row[0] < V12_SIGNAL_EVENT_COOLDOWN_SECONDS
+    )
+
+
+def v12_trial_status(state, journal, shadow, *, event_locked=False):
+    attempts, fills = v12_trial_counts(journal)
+    return v12_trial_decision(
+        shadow=shadow,
+        attempts=attempts,
+        fills=fills,
+        start_balance_cents=state.load(V12_TRIAL_START_BALANCE_KEY),
+        current_flat_balance_cents=state.load(V12_TRIAL_LAST_FLAT_BALANCE_KEY),
+        event_locked=event_locked,
+    )
 
 
 def observe_working_quote(state, record, frame):
@@ -1129,6 +1192,9 @@ def scan_market_candidate(state, journal, markets, market):
         rows = observe_frame(state, market["ticker"], frame, event_id(market))
         preferred = preferred_outcome(state, journal, market["ticker"])
         signal = maker_quote(rows, frame, preferred)
+        v12_signal, _reason = v12_shadow_decision(rows, frame)
+        frame = dict(frame)
+        frame["v12_trial_signal"] = v12_signal
         return frame, signal
     except ValueError as error:
         reason = str(error)
@@ -1373,12 +1439,17 @@ def evidence(state, journal):
 
 
 def write_status(path, state, journal, **values):
+    current_evidence = evidence(state, journal)
+    trial = v12_trial_status(state, journal, current_evidence["v12_shadow"])
     payload = {"at": now_iso(), "environment": "demo", "production_execution_enabled": False,
                "strategy_id": STRATEGY_ID,
                "strategy_execution_enabled": EXECUTION_ENABLED,
                "execution_policy_id": EXECUTION_POLICY_ID,
                "execution_disabled_reason": EXECUTION_DISABLED_REASON,
-               "evidence": evidence(state, journal), **values}
+               "v12_demo_trial_enabled": V12_TRIAL_ENABLED,
+               "v12_demo_trial_policy_id": V12_TRIAL_POLICY_ID,
+               "v12_demo_trial": trial,
+               "evidence": current_evidence, **values}
     temp = path.with_suffix(".tmp"); temp.write_text(json.dumps(payload, indent=2) + "\n")
     temp.replace(path)
     # Monitoring is deterministic and isolated from execution.  It is bounded
@@ -1446,6 +1517,17 @@ def run(data_root, *, cycles=None):
                         continue
                 position, accounting = current_position(journal, state)
                 active = working_order(journal)
+                if not position and not active and state.load(V12_TRIAL_START_BALANCE_KEY) is None:
+                    activation = broker.snapshot()["balance"]["balance"]
+                    state.save(V12_TRIAL_START_BALANCE_KEY, activation)
+                    state.save(V12_TRIAL_LAST_FLAT_BALANCE_KEY, activation)
+                    state.record(None, {
+                        "action": "v12_demo_trial_activated",
+                        "strategy_id": V12_TRIAL_STRATEGY_ID,
+                        "policy_id": V12_TRIAL_POLICY_ID,
+                        "start_balance_cents": activation,
+                        "production_execution_enabled": False,
+                    })
                 cohort, cohort_at = refresh_cohort(
                     state, markets, cohort, cohort_at, now=time.time()
                 )
@@ -1514,16 +1596,57 @@ def run(data_root, *, cycles=None):
                             state, journal, markets, market
                         )
                         if frame is not None:
-                            locked = state.db.execute("SELECT 1 FROM entered_events WHERE event_id=?", (event_id(market),)).fetchone()
+                            v12_signal = frame.get("v12_trial_signal")
+                            independent_event = event_id(market)
+                            locked = state.db.execute(
+                                "SELECT 1 FROM entered_events WHERE event_id=?",
+                                (independent_event,),
+                            ).fetchone()
                             if v9_submission_allowed(signal, event_locked=bool(locked)):
                                 result = submit(state, journal, broker, markets, market, signal["side"], "buy",
                                                 signal["price_cents"], maker=True, context=signal)
                                 if result["filled"]:
                                     register_fill(state, result, frame)
+                            elif v12_signal is not None:
+                                current_evidence = evidence(state, journal)
+                                trial = v12_trial_status(
+                                    state, journal, current_evidence["v12_shadow"],
+                                    event_locked=(
+                                        bool(locked)
+                                        or v12_trial_event_recent(state, independent_event)
+                                    ),
+                                )
+                                if trial["allowed"]:
+                                    context = {
+                                        **v12_signal,
+                                        "execution_strategy_id": V12_TRIAL_STRATEGY_ID,
+                                        "execution_policy_id": V12_TRIAL_POLICY_ID,
+                                    }
+                                    result = submit(
+                                        state, journal, broker, markets, market,
+                                        v12_signal["outcome"], "buy",
+                                        v12_signal["price_cents"], maker=True,
+                                        context=context,
+                                        client_id_prefix=V12_TRIAL_CLIENT_ID_PREFIX,
+                                    )
+                                    state.record(market["ticker"], {
+                                        "action": "v12_demo_trial_entry",
+                                        "state": result["state"],
+                                        "filled": result["filled"],
+                                        "policy_id": V12_TRIAL_POLICY_ID,
+                                    })
+                                    if result["filled"]:
+                                        register_fill(state, result, frame)
                 snapshot = broker.snapshot() if not working_order(journal) else None
+                end_accounting = journal.accounting()
+                if snapshot is not None and not end_accounting["positions"]:
+                    state.save(
+                        V12_TRIAL_LAST_FLAT_BALANCE_KEY,
+                        snapshot["balance"]["balance"],
+                    )
                 write_status(root / "status.json", state, journal, phase="running", errors=[],
                              demo_balance_cents=(snapshot or {}).get("balance", {}).get("balance"),
-                             open_positions=len(accounting["positions"]), cohort_size=len(cohort))
+                             open_positions=len(end_accounting["positions"]), cohort_size=len(cohort))
                 if cycle % 30 == 0: log_event("worker_heartbeat", **evidence(state, journal))
             except Exception as exc:
                 code = safe_cycle_error(exc)

@@ -30,6 +30,14 @@ def healthy(at="2026-09-21T18:00:00+00:00"):
         "production_execution_enabled": False, "strategy_id": "stable_balanced_maker_v9",
         "strategy_execution_enabled": False,
         "execution_policy_id": "v9_retired_after_8_losses_20260924",
+        "v12_demo_trial_enabled": True,
+        "v12_demo_trial_policy_id": "v12_one_contract_demo_trial_20261001",
+        "v12_demo_trial": {
+            "strategy_id": "microprice_value_maker_v12_demo_trial",
+            "attempts": 0, "fills": 0, "max_order_attempts": 50,
+            "max_fills": 10, "loss_stop_cents": 25,
+            "shadow_gate_passed": True, "reason": "authorized",
+        },
         "evidence": {
             "post_only_attempts": 194, "maker_fills": 1, "terminal_orders": 194,
             "unresolved_orders": 0, "ending_position_contracts": 0,

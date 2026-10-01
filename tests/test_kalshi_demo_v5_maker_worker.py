@@ -31,6 +31,7 @@ from opportunity_lab.kalshi_demo_v5_maker_worker import (
     QUOTE_TTL_SECONDS,
     TERMINAL_FLAT_STOP_RECOVERY,
     v9_submission_allowed,
+    v12_trial_event_recent,
 )
 
 
@@ -56,6 +57,20 @@ def test_v9_is_retired_from_new_demo_submissions(tmp_path):
         assert v9_submission_allowed({"side": "yes"}, event_locked=False) is False
         assert v9_submission_allowed(None, event_locked=False) is False
         assert v9_submission_allowed({"side": "yes"}, event_locked=True) is False
+    finally:
+        state.close()
+
+
+def test_v12_trial_event_attempts_have_frozen_cooldown(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    try:
+        state.db.execute(
+            "INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
+            ("v12-trial-test", "maker_entry", "EVENT", "TICKER", "yes", 1000),
+        )
+        assert v12_trial_event_recent(state, "EVENT", now=1001)
+        assert not v12_trial_event_recent(state, "EVENT", now=2800)
+        assert not v12_trial_event_recent(state, "OTHER", now=1001)
     finally:
         state.close()
 
