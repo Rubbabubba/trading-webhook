@@ -61,6 +61,9 @@ def open_db(path):
       CREATE TABLE IF NOT EXISTS calibration_observations(
         observation_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,decision_bucket INTEGER NOT NULL,
         observed_at TEXT NOT NULL,detail TEXT NOT NULL,resolution TEXT);
+      CREATE TABLE IF NOT EXISTS calibration_parent_observations(
+        observation_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,decision_bucket INTEGER NOT NULL,
+        observed_at TEXT NOT NULL,detail TEXT NOT NULL,resolution TEXT);
       CREATE TABLE IF NOT EXISTS structural_signals(
         signal_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,decision_bucket INTEGER NOT NULL,
         observed_at TEXT NOT NULL,detail TEXT NOT NULL);
@@ -80,6 +83,33 @@ def open_db(path):
       CREATE TABLE IF NOT EXISTS coverage_settings(
         name TEXT PRIMARY KEY,detail TEXT NOT NULL);
     """)
+    migrated = db.execute(
+        "SELECT 1 FROM coverage_settings WHERE name='parent_event_calibration_v1'"
+    ).fetchone()
+    if not migrated:
+        db.execute("BEGIN")
+        try:
+            # Preserve the original contract-hour table as audit evidence, but
+            # seed the corrected parent-event table only with canonical rows
+            # produced by the bounded collector if a prior deploy wrote any.
+            db.execute(
+                "INSERT OR IGNORE INTO calibration_parent_observations "
+                "SELECT * FROM calibration_observations "
+                "WHERE observation_id=event_id||':'||"
+                "json_extract(detail,'$.classification')||':'||"
+                "json_extract(detail,'$.price_bin')"
+            )
+            db.execute(
+                "INSERT INTO coverage_settings VALUES(?,?)",
+                ("parent_event_calibration_v1", json.dumps({
+                    "legacy_table_preserved": True,
+                    "gate_table": "calibration_parent_observations",
+                }, sort_keys=True)),
+            )
+            db.execute("COMMIT")
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
     return db
 
 
@@ -213,7 +243,8 @@ def collect_generation(db, client, generation, markets, now):
     db.execute("BEGIN")
     try:
         db.executemany(
-            "INSERT OR IGNORE INTO calibration_observations VALUES(?,?,?,?,?,NULL)",
+            "INSERT OR IGNORE INTO calibration_parent_observations "
+            "VALUES(?,?,?,?,?,NULL)",
             ((row["observation_id"], row["event_id"], row["decision_bucket"],
               row["observed_at"], json.dumps(row, sort_keys=True))
              for row in calibration),
@@ -419,8 +450,8 @@ def _resolve_one_table(db, client, now, table, price_key, *, parent_event_only=F
 
 
 def resolve_one(db, client, now):
-    _resolve_one_table(db, client, now, "calibration_observations", "price_cents",
-                       parent_event_only=True)
+    _resolve_one_table(db, client, now, "calibration_parent_observations",
+                       "price_cents", parent_event_only=True)
     _resolve_one_table(db, client, now, "favorite_maker_observations",
                        "passive_price_cents")
 
@@ -428,12 +459,15 @@ def resolve_one(db, client, now):
 def _flb_summary(db):
     groups = defaultdict(list); net = capital_days = 0.0; complete = 0; equity = peak = drawdown = 0.0
     for event_id, resolution in db.execute(
-            "SELECT event_id,resolution FROM calibration_observations WHERE resolution IS NOT NULL"):
+            "SELECT event_id,resolution FROM calibration_parent_observations "
+            "WHERE resolution IS NOT NULL"):
         outcome = json.loads(resolution); value = float(outcome["cost_stressed_net_cents"])
         groups[event_id].append(value); net += value
         capital_days += float(outcome["capital_days"]); complete += 1
         equity += value; peak = max(peak, equity); drawdown = max(drawdown, peak - equity)
     return {"strategy_id": FLB_ID, "execution_enabled": False,
+            "evidence_scope": "parent_event_canonical_only",
+            "legacy_contract_hour_table_preserved": True,
             "independent_events": len(groups), "complete_observations": complete,
             "cost_stressed_net_cents": net if complete else None,
             "event_clustered_95pct_lower_bound_cents": cluster_lower_bound(groups) if groups else None,
@@ -578,7 +612,7 @@ def _sports(root):
 def write_status(root, db, generation, market_count, coverage=None, mve_coverage=None,
                  error=None, weather_cycle=None):
     structural_records = _records(db, "structural_signals")
-    flb_records = _records(db, "calibration_observations")
+    flb_records = _records(db, "calibration_parent_observations")
     structural = {"strategy_id": STRUCTURAL_ID, "execution_enabled": False,
                   "independent_events": len({row["event_id"] for row in structural_records}),
                   "complete_observations": len(structural_records),
@@ -596,6 +630,7 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
         FAVORITE_MAKER_ID: favorite_maker_records,
         WEATHER_ENSEMBLE_ID: weather_records,
     })
+    packet["favorite_longshot_gate"] = flb
     packet["favorite_maker_gate"] = favorite_maker
     packet["weather_ensemble_gate"] = weather
     packet["weather_cycle"] = weather_cycle or {}

@@ -83,14 +83,17 @@ def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
     collect_generation(db, Client(rows), generation, snapshot,
                        datetime.fromtimestamp(105, timezone.utc))
     assert db.execute("SELECT count(*) FROM structural_signals").fetchone()[0] == 1
-    assert db.execute("SELECT count(*) FROM calibration_observations").fetchone()[0] == 1
+    assert db.execute(
+        "SELECT count(*) FROM calibration_parent_observations").fetchone()[0] == 1
     detail = json.loads(db.execute(
-        "SELECT detail FROM calibration_observations").fetchone()[0])
+        "SELECT detail FROM calibration_parent_observations").fetchone()[0])
     assert detail["observation_id"] == "E:longshot:2-5"
     packet = write_status(tmp_path, db, generation, len(snapshot))
     indexed = {row["strategy_id"]: row for row in packet["sleeves"]}
     assert indexed[STRUCTURAL_ID]["complete_observations"] == 1
     assert indexed[FLB_ID]["complete_observations"] == 0
+    assert packet["favorite_longshot_gate"][
+        "evidence_scope"] == "parent_event_canonical_only"
     assert indexed[FAVORITE_MAKER_ID]["complete_observations"] == 0
     assert packet["favorite_maker_gate"]["candidate_observations"] == 0
     assert packet["execution_enabled"] is False
@@ -107,6 +110,30 @@ def test_calibration_groups_correlated_contracts_by_parent_event_and_bin():
     assert len(observations) == 1
     assert observations[0]["ticker"] == "E-20"
     assert observations[0]["observation_id"] == "E:longshot:2-5"
+
+
+def test_parent_event_migration_preserves_legacy_rows_and_seeds_canonical(tmp_path):
+    path = tmp_path / "research.sqlite3"
+    legacy = sqlite3.connect(path)
+    legacy.execute("""CREATE TABLE calibration_observations(
+        observation_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,
+        decision_bucket INTEGER NOT NULL,observed_at TEXT NOT NULL,
+        detail TEXT NOT NULL,resolution TEXT)""")
+    detail = json.dumps({"classification": "favorite", "price_bin": "90-95"})
+    legacy.executemany(
+        "INSERT INTO calibration_observations VALUES(?,?,?,?,?,NULL)",
+        [("E:favorite:90-95", "E", 1, "2026-09-30T00:00:00+00:00", detail),
+         ("E-1:yes:1", "E", 1, "2026-09-30T00:00:00+00:00", detail)],
+    )
+    legacy.commit(); legacy.close()
+    db = open_db(path)
+    assert db.execute("SELECT count(*) FROM calibration_observations").fetchone()[0] == 2
+    assert db.execute(
+        "SELECT count(*) FROM calibration_parent_observations").fetchone()[0] == 1
+    assert db.execute(
+        "SELECT 1 FROM coverage_settings WHERE name='parent_event_calibration_v1'"
+    ).fetchone() == (1,)
+    db.close()
 
 
 def test_snapshot_preserves_last_complete_generation_during_scan(tmp_path):
