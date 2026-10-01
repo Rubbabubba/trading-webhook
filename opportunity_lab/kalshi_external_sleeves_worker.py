@@ -1,5 +1,6 @@
 """Shadow-only collector for registered structural and calibration sleeves."""
 from collections import defaultdict
+import ctypes
 from datetime import datetime, timedelta, timezone
 import gc
 import json
@@ -31,6 +32,27 @@ SPORTS_ID = "sports_persistent_passive_v1_shadow"
 
 def utcnow():
     return datetime.now(timezone.utc)
+
+
+def release_snapshot_memory():
+    """Return freed decoded-market arenas to the Linux worker cgroup.
+
+    A complete research snapshot currently contains tens of thousands of
+    dictionaries.  Dropping the list makes those objects unreachable, but
+    CPython's allocator can retain the empty arenas indefinitely.  On the
+    512 MB Render instance that retained high-water allocation is enough to
+    trigger a restart during a later discovery pass.  Collect cycles first,
+    then ask glibc to return fully free heap pages.  Other platforms simply
+    keep the normal garbage-collection behavior.
+    """
+    gc.collect()
+    try:
+        trim = ctypes.CDLL(None).malloc_trim
+        trim.argtypes = [ctypes.c_size_t]
+        trim.restype = ctypes.c_int
+        trim(0)
+    except (AttributeError, OSError):
+        pass
 
 
 def open_db(path):
@@ -615,7 +637,7 @@ def run(data_root, cycles=None, interval_seconds=60):
             # the sleep interval. CPython can otherwise keep hundreds of MB of
             # market dictionaries alive while the next snapshot is built.
             markets = []
-            gc.collect()
+            release_snapshot_memory()
             cycle += 1
             if cycles is None or cycle < cycles:
                 time.sleep(interval_seconds)
