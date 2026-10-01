@@ -143,7 +143,7 @@ def test_parent_event_migration_preserves_legacy_rows_and_seeds_canonical(tmp_pa
     db.close()
 
 
-def test_snapshot_preserves_last_complete_generation_during_scan(tmp_path):
+def test_snapshot_merges_new_partial_generation_into_last_complete(tmp_path):
     maker = sqlite3.connect(tmp_path / "worker.sqlite3")
     maker.execute("CREATE TABLE research_market_universe(ticker,event_id,generation,tags,detail)")
     maker.execute("CREATE TABLE settings(name PRIMARY KEY,detail)")
@@ -158,6 +158,6 @@ def test_snapshot_preserves_last_complete_generation_during_scan(tmp_path):
     maker.commit(); maker.close()
 
     generation, snapshot, coverage = maker_snapshot(tmp_path / "worker.sqlite3")
-    assert generation == 7
-    assert [row["ticker"] for row in snapshot] == [complete["ticker"]]
+    assert generation == 8
+    assert [row["ticker"] for row in snapshot] == [complete["ticker"], partial["ticker"]]
     assert coverage == {"generation": 8, "in_progress": True}

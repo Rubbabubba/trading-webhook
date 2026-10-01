@@ -170,6 +170,7 @@ def maker_snapshot(path):
             "SELECT max(generation) FROM research_market_universe"
         ).fetchone()
         generation = generation_row[0] if generation_row else None
+        source_generations = [generation] if generation is not None else []
         # Keep the last complete catalog stable while the maker scans a new
         # generation page by page. Otherwise a sleeve temporarily sees only
         # the first few pages and can miss weather events later in the scan.
@@ -179,7 +180,11 @@ def maker_snapshot(path):
                 "WHERE generation<?", (generation,)
             ).fetchone()
             if complete_row and complete_row[0] is not None:
-                generation = complete_row[0]
+                # Keep the stable complete catalog while adding every market
+                # already discovered in the new pass.  Current rows override
+                # matching older tickers.  This prevents newly listed weather
+                # city-days from waiting hours for the full 150k-market walk.
+                source_generations = [complete_row[0], generation]
         fields = (
             "ticker", "event_ticker", "status", "market_type", "exchange_index",
             "category", "title", "subtitle", "yes_sub_title", "no_sub_title",
@@ -193,14 +198,21 @@ def maker_snapshot(path):
         if generation is not None:
             expressions = ",".join(
                 f"json_extract(detail,'$.{field}')" for field in fields)
+            placeholders = ",".join("?" for _ in source_generations)
             cursor = db.execute(
                 f"SELECT {expressions} FROM research_market_universe "
-                "WHERE generation=? ORDER BY event_id,ticker", (generation,)
+                f"WHERE generation IN ({placeholders}) "
+                "ORDER BY generation,event_id,ticker", source_generations,
             )
             # Keep only the fields needed by the three research sleeves. Full
             # market JSON averages several KB and tens of thousands of decoded
             # dictionaries can exceed a 512 MB worker during restart.
-            rows = [dict(zip(fields, values)) for values in cursor]
+            merged = {}
+            for values in cursor:
+                row = dict(zip(fields, values))
+                merged[row["ticker"]] = row
+            rows = sorted(merged.values(), key=lambda row: (
+                str(row.get("event_ticker") or ""), str(row.get("ticker") or "")))
         db.close()
     except (sqlite3.Error, OSError):
         return None, [], {}
