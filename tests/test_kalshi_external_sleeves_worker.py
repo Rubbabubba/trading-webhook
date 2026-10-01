@@ -4,7 +4,7 @@ import sqlite3
 
 from opportunity_lab.kalshi_external_sleeves_worker import (
     FAVORITE_MAKER_ID, FLB_ID, STRUCTURAL_ID, advance_mve_coverage, collect_generation,
-    maker_snapshot, open_db, write_status,
+    maker_snapshot, open_db, parent_event_calibration_observations, write_status,
 )
 
 
@@ -83,7 +83,10 @@ def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
     collect_generation(db, Client(rows), generation, snapshot,
                        datetime.fromtimestamp(105, timezone.utc))
     assert db.execute("SELECT count(*) FROM structural_signals").fetchone()[0] == 1
-    assert db.execute("SELECT count(*) FROM calibration_observations").fetchone()[0] == 2
+    assert db.execute("SELECT count(*) FROM calibration_observations").fetchone()[0] == 1
+    detail = json.loads(db.execute(
+        "SELECT detail FROM calibration_observations").fetchone()[0])
+    assert detail["observation_id"] == "E:longshot:2-5"
     packet = write_status(tmp_path, db, generation, len(snapshot))
     indexed = {row["strategy_id"]: row for row in packet["sleeves"]}
     assert indexed[STRUCTURAL_ID]["complete_observations"] == 1
@@ -93,6 +96,17 @@ def test_snapshot_collection_and_comparison_packet(tmp_path, monkeypatch):
     assert packet["execution_enabled"] is False
     assert packet["coverage"]["coverage_complete"] is False
     db.close()
+
+
+def test_calibration_groups_correlated_contracts_by_parent_event_and_bin():
+    rows = [market(10, ".05", ".71"), market(20, ".80", ".05")]
+    rows[0]["volume_24h_fp"] = "5"
+    rows[1]["volume_24h_fp"] = "10"
+    observations = parent_event_calibration_observations(
+        rows, "2026-09-30T12:15:00+00:00")
+    assert len(observations) == 1
+    assert observations[0]["ticker"] == "E-20"
+    assert observations[0]["observation_id"] == "E:longshot:2-5"
 
 
 def test_snapshot_preserves_last_complete_generation_during_scan(tmp_path):

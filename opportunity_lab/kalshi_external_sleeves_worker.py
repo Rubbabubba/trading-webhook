@@ -179,24 +179,56 @@ def maker_snapshot(path):
     return generation, rows, coverage
 
 
-def collect_generation(db, client, generation, markets, now):
-    inserted = 0
+def parent_event_calibration_observations(markets, observed_at):
+    """Keep one lifetime observation per parent event, class, and price bin.
+
+    The sleeve is preregistered with parent-event grouping.  The original
+    collector instead keyed rows by contract and hour, which wrote thousands
+    of correlated variants from the same event on every pass.  Prefer the
+    highest-volume representative deterministically and give it a stable
+    parent-event identity.  Existing rows remain untouched audit evidence.
+    """
+    selected = {}
     for market in markets:
-        for observation in favorite_longshot_observations(market, now.isoformat()):
-            cursor = db.execute(
-                "INSERT OR IGNORE INTO calibration_observations VALUES(?,?,?,?,?,NULL)",
-                (observation["observation_id"], observation["event_id"],
-                 observation["decision_bucket"], observation["observed_at"],
-                 json.dumps(observation, sort_keys=True)),
-            )
-            inserted += cursor.rowcount
-    for observation in favorite_maker_observations(markets, now.isoformat()):
-        db.execute(
-            "INSERT OR IGNORE INTO favorite_maker_observations VALUES(?,?,?,?,?,NULL)",
-            (observation["observation_id"], observation["event_id"],
-             observation["decision_bucket"], observation["observed_at"],
-             json.dumps(observation, sort_keys=True)),
+        try:
+            volume = float(market.get("volume_24h_fp") or 0)
+        except (TypeError, ValueError):
+            volume = 0.0
+        ticker = str(market.get("ticker") or "")
+        for observation in favorite_longshot_observations(market, observed_at):
+            key = (observation["event_id"], observation["classification"],
+                   observation["price_bin"])
+            rank = (volume, ticker)
+            previous = selected.get(key)
+            if previous is None or rank > previous[0]:
+                observation["observation_id"] = ":".join(key)
+                selected[key] = (rank, observation)
+    return [selected[key][1] for key in sorted(selected)]
+
+
+def collect_generation(db, client, generation, markets, now):
+    calibration = parent_event_calibration_observations(markets, now.isoformat())
+    favorite_maker = favorite_maker_observations(markets, now.isoformat())
+    before = db.total_changes
+    db.execute("BEGIN")
+    try:
+        db.executemany(
+            "INSERT OR IGNORE INTO calibration_observations VALUES(?,?,?,?,?,NULL)",
+            ((row["observation_id"], row["event_id"], row["decision_bucket"],
+              row["observed_at"], json.dumps(row, sort_keys=True))
+             for row in calibration),
         )
+        inserted = db.total_changes - before
+        db.executemany(
+            "INSERT OR IGNORE INTO favorite_maker_observations VALUES(?,?,?,?,?,NULL)",
+            ((row["observation_id"], row["event_id"], row["decision_bucket"],
+              row["observed_at"], json.dumps(row, sort_keys=True))
+             for row in favorite_maker),
+        )
+        db.execute("COMMIT")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
     candidates = structural_candidates(markets)
     confirmed = 0
     # Confirm only the two best indicative candidates in a generation. The
@@ -345,10 +377,15 @@ def resolve_one_weather(db, client, now):
         return
 
 
-def _resolve_one_table(db, client, now, table, price_key):
+def _resolve_one_table(db, client, now, table, price_key, *, parent_event_only=False):
+    canonical = (" AND observation_id=event_id||':'||"
+                 "json_extract(detail,'$.classification')||':'||"
+                 "json_extract(detail,'$.price_bin')" if parent_event_only else "")
     for observation_id, detail in db.execute(
             f"SELECT observation_id,detail FROM {table} "
-            "WHERE resolution IS NULL ORDER BY observed_at LIMIT 20"):
+            "WHERE resolution IS NULL "
+            "AND julianday(json_extract(detail,'$.expiration_time'))<=julianday(?)"
+            f"{canonical} ORDER BY observed_at LIMIT 20", (now.isoformat(),)):
         row = json.loads(detail)
         expiry = row.get("expiration_time")
         if not expiry:
@@ -382,7 +419,8 @@ def _resolve_one_table(db, client, now, table, price_key):
 
 
 def resolve_one(db, client, now):
-    _resolve_one_table(db, client, now, "calibration_observations", "price_cents")
+    _resolve_one_table(db, client, now, "calibration_observations", "price_cents",
+                       parent_event_only=True)
     _resolve_one_table(db, client, now, "favorite_maker_observations",
                        "passive_price_cents")
 
