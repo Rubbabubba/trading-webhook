@@ -20,6 +20,7 @@ from .kalshi_demo_broker import DemoClient, check_exchange
 from .kalshi_demo_market_data import DemoMarkets
 from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame
 from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
+from .life_os_reporter import schedule as schedule_life_os_report
 from .kalshi_maker_v5 import maker_quote
 from .kalshi_maker_v10 import (
     MARKOUT_HORIZONS as V10_MARKOUT_HORIZONS,
@@ -1557,6 +1558,9 @@ def write_status(path, state, journal, **values):
     # write fails.
     try:
         decision = run_deterministic_monitor(path.parent, payload)
+        if decision.get("checked"):
+            schedule_life_os_report(path.parent / "monitor" / "review_packet.json",
+                                    urgent=bool(decision.get("investigation_needed")))
         if decision.get("investigation_needed"):
             log_event("deterministic_monitor_escalation",
                       triggers=decision.get("triggers", []))
