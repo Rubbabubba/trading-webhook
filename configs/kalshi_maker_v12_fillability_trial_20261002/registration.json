@@ -1,0 +1,73 @@
+{
+  "version": "microprice_value_maker_v12_fillability_trial_1.0",
+  "authorized_at": "2026-10-02T08:40:00-05:00",
+  "environment": "demo",
+  "strategy_id": "microprice_value_maker_v12_fillability_trial",
+  "execution_enabled": true,
+  "production_execution_enabled": false,
+  "authorization": "User authorized implementing and deploying the V12 fillability challenger after the original bounded trial completed with fifty terminal orders and zero fills.",
+  "hypothesis": "Improving a qualifying V12 passive quote by exactly one cent inside the spread will produce measurable Demo fills while retaining at least one cent of modeled edge after the same two-cent cost stress.",
+  "baseline": {
+    "strategy_id": "microprice_value_maker_v12_demo_trial",
+    "terminal_order_attempts": 50,
+    "fills": 0,
+    "quote_location": "selected_outcome_best_bid"
+  },
+  "entry": {
+    "source_strategy": "microprice_value_maker_v12_shadow",
+    "minimum_source_gross_edge_cents": 4,
+    "price_improvement_cents": 1,
+    "quote_location": "selected_outcome_best_bid_plus_one",
+    "cost_stress_cents": 2,
+    "minimum_remaining_stressed_edge_cents": 1,
+    "post_only": true,
+    "contracts_per_order": 1,
+    "maximum_working_orders": 1,
+    "maximum_open_positions": 1,
+    "maximum_order_attempts": 200,
+    "maximum_fills": 20,
+    "event_cooldown_seconds": 1800
+  },
+  "risk": {
+    "maximum_flat_balance_loss_cents": 100,
+    "quote_ttl_seconds": 180,
+    "maximum_hold_seconds": 300,
+    "take_profit_cents": 2,
+    "position_stop_cents": 12,
+    "halt_on_submission_uncertainty": true,
+    "halt_on_reconciliation_failure": true
+  },
+  "activation_gate": {
+    "minimum_independent_events": 30,
+    "minimum_complete_signals": 100,
+    "required_markout_seconds": [5, 30, 300],
+    "positive_stressed_net_at_every_horizon": true,
+    "positive_event_cluster_95_percent_lower_bound": true,
+    "automatic_rejection_must_be_false": true
+  },
+  "success_gate": {
+    "minimum_actual_fills": 20,
+    "minimum_filled_independent_events": 10,
+    "minimum_filled_market_families": 3,
+    "positive_actual_fee_adjusted_flat_pnl": true,
+    "positive_actual_fill_markouts_at_seconds": [5, 30, 300],
+    "zero_unresolved_orders": true,
+    "then": "manual review before any separately authorized controlled production trial"
+  },
+  "automatic_rejection": {
+    "evaluate_fill_rate_after_attempts": 100,
+    "minimum_fills_at_checkpoint": 5,
+    "reject_on_flat_balance_loss_cents": 100,
+    "reject_on_submission_uncertainty": true,
+    "reject_on_reconciliation_failure": true
+  },
+  "evidence_required": [
+    "actual fills and fees",
+    "terminal order evidence",
+    "queue position records",
+    "5, 30 and 300 second actual-fill markouts",
+    "realized Demo PnL",
+    "entry side, independent event and market family"
+  ],
+  "completion": "Stop automatically at any risk or productivity limit, or after twenty fills, then review execution quality before further Demo or production authorization."
+}

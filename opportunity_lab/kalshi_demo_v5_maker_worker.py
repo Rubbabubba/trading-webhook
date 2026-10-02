@@ -53,6 +53,16 @@ from .kalshi_v12_demo_trial import (
     STRATEGY_ID as V12_TRIAL_STRATEGY_ID,
     trial_decision as v12_trial_decision,
 )
+from .kalshi_v12_fillability_trial import (
+    CLIENT_ID_PREFIX as V12_FILLABILITY_CLIENT_ID_PREFIX,
+    EXECUTION_ENABLED as V12_FILLABILITY_ENABLED,
+    MAX_FILLS as V12_FILLABILITY_MAX_FILLS,
+    MAX_FLAT_BALANCE_LOSS_CENTS as V12_FILLABILITY_LOSS_STOP_CENTS,
+    MAX_ORDER_ATTEMPTS as V12_FILLABILITY_MAX_ORDER_ATTEMPTS,
+    STRATEGY_ID as V12_FILLABILITY_STRATEGY_ID,
+    improved_quote as v12_fillability_quote,
+    trial_decision as v12_fillability_decision,
+)
 from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 from .kalshi_external_sleeves import research_relevance
@@ -71,6 +81,9 @@ EXECUTION_DISABLED_REASON = "retired_negative_demo_evidence"
 V12_TRIAL_POLICY_ID = "v12_one_contract_demo_trial_20261001"
 V12_TRIAL_START_BALANCE_KEY = "v12_trial_start_balance_cents"
 V12_TRIAL_LAST_FLAT_BALANCE_KEY = "v12_trial_last_flat_balance_cents"
+V12_FILLABILITY_POLICY_ID = "v12_one_tick_fillability_trial_20261002"
+V12_FILLABILITY_START_BALANCE_KEY = "v12_fillability_start_balance_cents"
+V12_FILLABILITY_LAST_FLAT_BALANCE_KEY = "v12_fillability_last_flat_balance_cents"
 CAPITAL_LIMIT_CENTS = 160
 ORDER_LIMIT_CENTS = 110
 DAILY_LOSS_CENTS = 100
@@ -627,6 +640,27 @@ class MakerState:
         if saved_v12_trial is not None and saved_v12_trial != v12_trial_protocol:
             raise ValueError("v12_trial_protocol_changed")
         self.save("v12_trial_protocol", v12_trial_protocol)
+        v12_fillability_protocol = {
+            "strategy_id": V12_FILLABILITY_STRATEGY_ID,
+            "policy_id": V12_FILLABILITY_POLICY_ID,
+            "environment": "demo",
+            "execution_enabled": V12_FILLABILITY_ENABLED,
+            "production_execution_enabled": False,
+            "quote_location": "selected_outcome_best_bid_plus_one",
+            "price_improvement_cents": 1,
+            "minimum_gross_edge_cents": 4,
+            "minimum_remaining_stressed_edge_cents": 1,
+            "contracts_per_order": 1,
+            "maximum_working_orders": 1,
+            "maximum_open_positions": 1,
+            "maximum_order_attempts": V12_FILLABILITY_MAX_ORDER_ATTEMPTS,
+            "maximum_fills": V12_FILLABILITY_MAX_FILLS,
+            "maximum_flat_balance_loss_cents": V12_FILLABILITY_LOSS_STOP_CENTS,
+        }
+        saved_fillability = self.load("v12_fillability_trial_protocol")
+        if saved_fillability is not None and saved_fillability != v12_fillability_protocol:
+            raise ValueError("v12_fillability_trial_protocol_changed")
+        self.save("v12_fillability_trial_protocol", v12_fillability_protocol)
 
     def save(self, name, value):
         self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)",
@@ -934,6 +968,66 @@ def v12_trial_status(state, journal, shadow, *, event_locked=False):
         current_flat_balance_cents=state.load(V12_TRIAL_LAST_FLAT_BALANCE_KEY),
         event_locked=event_locked,
     )
+
+
+def v12_fillability_trial_counts(journal):
+    records = [
+        row for row in journal.records()
+        if row["payload"]["client_order_id"].startswith(V12_FILLABILITY_CLIENT_ID_PREFIX)
+        and row["intent"].get("order_mode") == "post_only_gtc"
+    ]
+    return records, len(records), sum(bool(row["filled"]) for row in records)
+
+
+def v12_fillability_event_recent(state, independent_event, *, now=None):
+    """Prevent repeated live-Demo attempts on the same event for 30 minutes."""
+    now = time.time() if now is None else now
+    row = state.db.execute(
+        "SELECT max(created_at) FROM intent_meta WHERE event_id=? "
+        "AND (client_id LIKE ? OR client_id LIKE ?)",
+        (independent_event, V12_FILLABILITY_CLIENT_ID_PREFIX + "%",
+         V12_TRIAL_CLIENT_ID_PREFIX + "%"),
+    ).fetchone()
+    return row is not None and row[0] is not None and (
+        now - row[0] < V12_SIGNAL_EVENT_COOLDOWN_SECONDS
+    )
+
+
+def v12_fillability_status(state, journal, shadow, *, event_locked=False):
+    records, attempts, fills = v12_fillability_trial_counts(journal)
+    result = v12_fillability_decision(
+        shadow=shadow,
+        attempts=attempts,
+        fills=fills,
+        start_balance_cents=state.load(V12_FILLABILITY_START_BALANCE_KEY),
+        current_flat_balance_cents=state.load(V12_FILLABILITY_LAST_FLAT_BALANCE_KEY),
+        event_locked=event_locked,
+    )
+    record_ids = {row["payload"]["client_order_id"] for row in records}
+    filled_ids = {
+        row["payload"]["client_order_id"] for row in records if row["filled"]
+    }
+    metadata = [row for row in state.db.execute(
+        "SELECT client_id,event_id,ticker FROM intent_meta WHERE kind='maker_entry'"
+    ) if row[0] in record_ids]
+    fee_cents = Decimal("0")
+    for client_id in filled_ids:
+        evidence_row = journal.db.execute(
+            "SELECT detail FROM broker_evidence WHERE client_id=?", (client_id,)
+        ).fetchone()
+        if evidence_row is not None:
+            fee_cents += Decimal(str(json.loads(evidence_row[0]).get("fees_dollars") or "0")) * 100
+    filled_metadata = [row for row in metadata if row[0] in filled_ids]
+    result.update({
+        "terminal_orders": sum(row["state"] == "terminal" for row in records),
+        "unresolved_orders": sum(row["state"] in ("working", "uncertain") for row in records),
+        "attempted_independent_events": len({row[1] for row in metadata}),
+        "attempted_market_families": len({row[2].split("-")[0] for row in metadata}),
+        "filled_independent_events": len({row[1] for row in filled_metadata}),
+        "filled_market_families": len({row[2].split("-")[0] for row in filled_metadata}),
+        "actual_fee_cents": float(fee_cents),
+    })
+    return result
 
 
 def observe_working_quote(state, record, frame):
@@ -1441,6 +1535,9 @@ def evidence(state, journal):
 def write_status(path, state, journal, **values):
     current_evidence = evidence(state, journal)
     trial = v12_trial_status(state, journal, current_evidence["v12_shadow"])
+    fillability = v12_fillability_status(
+        state, journal, current_evidence["v12_shadow"]
+    )
     payload = {"at": now_iso(), "environment": "demo", "production_execution_enabled": False,
                "strategy_id": STRATEGY_ID,
                "strategy_execution_enabled": EXECUTION_ENABLED,
@@ -1449,6 +1546,9 @@ def write_status(path, state, journal, **values):
                "v12_demo_trial_enabled": V12_TRIAL_ENABLED,
                "v12_demo_trial_policy_id": V12_TRIAL_POLICY_ID,
                "v12_demo_trial": trial,
+               "v12_fillability_trial_enabled": V12_FILLABILITY_ENABLED,
+               "v12_fillability_trial_policy_id": V12_FILLABILITY_POLICY_ID,
+               "v12_fillability_trial": fillability,
                "evidence": current_evidence, **values}
     temp = path.with_suffix(".tmp"); temp.write_text(json.dumps(payload, indent=2) + "\n")
     temp.replace(path)
@@ -1525,6 +1625,18 @@ def run(data_root, *, cycles=None):
                         "action": "v12_demo_trial_activated",
                         "strategy_id": V12_TRIAL_STRATEGY_ID,
                         "policy_id": V12_TRIAL_POLICY_ID,
+                        "start_balance_cents": activation,
+                        "production_execution_enabled": False,
+                    })
+                if (not position and not active
+                        and state.load(V12_FILLABILITY_START_BALANCE_KEY) is None):
+                    activation = broker.snapshot()["balance"]["balance"]
+                    state.save(V12_FILLABILITY_START_BALANCE_KEY, activation)
+                    state.save(V12_FILLABILITY_LAST_FLAT_BALANCE_KEY, activation)
+                    state.record(None, {
+                        "action": "v12_fillability_trial_activated",
+                        "strategy_id": V12_FILLABILITY_STRATEGY_ID,
+                        "policy_id": V12_FILLABILITY_POLICY_ID,
                         "start_balance_cents": activation,
                         "production_execution_enabled": False,
                     })
@@ -1608,32 +1720,45 @@ def run(data_root, *, cycles=None):
                                 if result["filled"]:
                                     register_fill(state, result, frame)
                             elif v12_signal is not None:
-                                current_evidence = evidence(state, journal)
-                                trial = v12_trial_status(
-                                    state, journal, current_evidence["v12_shadow"],
-                                    event_locked=(
-                                        bool(locked)
-                                        or v12_trial_event_recent(state, independent_event)
-                                    ),
-                                )
-                                if trial["allowed"]:
+                                improved, improvement_reason = v12_fillability_quote(v12_signal)
+                                if improved is None:
+                                    state.record(market["ticker"], {
+                                        "action": "v12_fillability_skip",
+                                        "reason": improvement_reason,
+                                        "source_strategy_id": V12_STRATEGY_ID,
+                                    })
+                                else:
+                                    current_evidence = evidence(state, journal)
+                                    trial = v12_fillability_status(
+                                        state, journal, current_evidence["v12_shadow"],
+                                        event_locked=(
+                                            bool(locked)
+                                            or v12_fillability_event_recent(
+                                                state, independent_event
+                                            )
+                                        ),
+                                    )
+                                if improved is not None and trial["allowed"]:
                                     context = {
-                                        **v12_signal,
-                                        "execution_strategy_id": V12_TRIAL_STRATEGY_ID,
-                                        "execution_policy_id": V12_TRIAL_POLICY_ID,
+                                        **improved,
+                                        "execution_policy_id": V12_FILLABILITY_POLICY_ID,
                                     }
                                     result = submit(
                                         state, journal, broker, markets, market,
-                                        v12_signal["outcome"], "buy",
-                                        v12_signal["price_cents"], maker=True,
+                                        improved["outcome"], "buy",
+                                        improved["price_cents"], maker=True,
                                         context=context,
-                                        client_id_prefix=V12_TRIAL_CLIENT_ID_PREFIX,
+                                        client_id_prefix=V12_FILLABILITY_CLIENT_ID_PREFIX,
                                     )
                                     state.record(market["ticker"], {
-                                        "action": "v12_demo_trial_entry",
+                                        "action": "v12_fillability_trial_entry",
                                         "state": result["state"],
                                         "filled": result["filled"],
-                                        "policy_id": V12_TRIAL_POLICY_ID,
+                                        "policy_id": V12_FILLABILITY_POLICY_ID,
+                                        "source_price_cents": improved[
+                                            "source_signal_price_cents"
+                                        ],
+                                        "submitted_price_cents": improved["price_cents"],
                                     })
                                     if result["filled"]:
                                         register_fill(state, result, frame)
@@ -1641,7 +1766,7 @@ def run(data_root, *, cycles=None):
                 end_accounting = journal.accounting()
                 if snapshot is not None and not end_accounting["positions"]:
                     state.save(
-                        V12_TRIAL_LAST_FLAT_BALANCE_KEY,
+                        V12_FILLABILITY_LAST_FLAT_BALANCE_KEY,
                         snapshot["balance"]["balance"],
                     )
                 write_status(root / "status.json", state, journal, phase="running", errors=[],

@@ -25,6 +25,8 @@ EXPECTED_V11 = "strong_imbalance_maker_v11_shadow"
 EXPECTED_V12 = "microprice_value_maker_v12_shadow"
 EXPECTED_V12_TRIAL = "microprice_value_maker_v12_demo_trial"
 EXPECTED_V12_TRIAL_POLICY = "v12_one_contract_demo_trial_20261001"
+EXPECTED_V12_FILLABILITY = "microprice_value_maker_v12_fillability_trial"
+EXPECTED_V12_FILLABILITY_POLICY = "v12_one_tick_fillability_trial_20261002"
 MAX_PACKET_BYTES = 12_000
 
 
@@ -147,6 +149,22 @@ def faults(status, *, now):
         result.append("v12_demo_trial_loss_stop_changed")
     if trial.get("shadow_gate_passed") is not True:
         result.append("v12_demo_trial_shadow_gate_lost")
+    fillability = status.get("v12_fillability_trial", {})
+    if status.get("v12_fillability_trial_enabled") is not True:
+        result.append("v12_fillability_trial_not_enabled")
+    if status.get("v12_fillability_trial_policy_id") != EXPECTED_V12_FILLABILITY_POLICY:
+        result.append("v12_fillability_trial_policy_changed")
+    if fillability.get("strategy_id") != EXPECTED_V12_FILLABILITY:
+        result.append("v12_fillability_trial_strategy_changed")
+    if (fillability.get("max_order_attempts") != 200
+            or fillability.get("max_fills") != 20):
+        result.append("v12_fillability_trial_limits_changed")
+    if fillability.get("loss_stop_cents") != 100:
+        result.append("v12_fillability_trial_loss_stop_changed")
+    if fillability.get("price_improvement_cents") != 1:
+        result.append("v12_fillability_trial_quote_changed")
+    if fillability.get("shadow_gate_passed") is not True:
+        result.append("v12_fillability_trial_shadow_gate_lost")
     if int(evidence.get("ending_position_contracts") or 0) > 1:
         result.append("inventory_limit_breached")
     # A working post-only order is represented as unresolved.  More than one
@@ -162,6 +180,7 @@ def _evidence_snapshot(status):
     challenger = evidence.get("v11_shadow", {})
     v12 = evidence.get("v12_shadow", {})
     trial = status.get("v12_demo_trial", {})
+    fillability = status.get("v12_fillability_trial", {})
     return {
         "post_only_attempts": int(evidence.get("post_only_attempts") or 0),
         "maker_fills": int(evidence.get("maker_fills") or 0),
@@ -203,6 +222,19 @@ def _evidence_snapshot(status):
         "v12_trial_fills": int(trial.get("fills") or 0),
         "v12_trial_shadow_gate_passed": bool(trial.get("shadow_gate_passed")),
         "v12_trial_stop_reason": trial.get("reason"),
+        "v12_fillability_attempts": int(fillability.get("attempts") or 0),
+        "v12_fillability_fills": int(fillability.get("fills") or 0),
+        "v12_fillability_terminal_orders": int(
+            fillability.get("terminal_orders") or 0
+        ),
+        "v12_fillability_independent_events": int(
+            fillability.get("attempted_independent_events") or 0
+        ),
+        "v12_fillability_market_families": int(
+            fillability.get("attempted_market_families") or 0
+        ),
+        "v12_fillability_flat_pnl_cents": fillability.get("flat_pnl_cents"),
+        "v12_fillability_stop_reason": fillability.get("reason"),
     }
 
 
@@ -275,6 +307,12 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
             "execution_policy_id": status.get("execution_policy_id"),
             "v12_demo_trial_enabled": status.get("v12_demo_trial_enabled"),
             "v12_demo_trial_policy_id": status.get("v12_demo_trial_policy_id"),
+            "v12_fillability_trial_enabled": status.get(
+                "v12_fillability_trial_enabled"
+            ),
+            "v12_fillability_trial_policy_id": status.get(
+                "v12_fillability_trial_policy_id"
+            ),
             "status_at": status.get("at"),
             "status_age_seconds": max(0, round(now - datetime.fromisoformat(
                 status.get("at", "1970-01-01T00:00:00+00:00").replace("Z", "+00:00")
@@ -296,6 +334,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
             "challenger_registration": "configs/kalshi_maker_v11_20260927/registration.json",
             "frequency_challenger_registration": "configs/kalshi_maker_v12_20260930/registration.json",
             "v12_demo_trial_registration": "configs/kalshi_maker_v12_demo_trial_20261001/registration.json",
+            "v12_fillability_trial_registration": "configs/kalshi_maker_v12_fillability_trial_20261002/registration.json",
         },
     }
     state_fingerprint = hashlib.sha256(json.dumps({

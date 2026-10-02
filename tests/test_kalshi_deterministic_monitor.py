@@ -38,6 +38,17 @@ def healthy(at="2026-09-21T18:00:00+00:00"):
             "max_fills": 10, "loss_stop_cents": 25,
             "shadow_gate_passed": True, "reason": "authorized",
         },
+        "v12_fillability_trial_enabled": True,
+        "v12_fillability_trial_policy_id": "v12_one_tick_fillability_trial_20261002",
+        "v12_fillability_trial": {
+            "strategy_id": "microprice_value_maker_v12_fillability_trial",
+            "attempts": 0, "fills": 0, "terminal_orders": 0,
+            "attempted_independent_events": 0, "attempted_market_families": 0,
+            "max_order_attempts": 200, "max_fills": 20,
+            "loss_stop_cents": 100, "price_improvement_cents": 1,
+            "shadow_gate_passed": True, "reason": "authorized",
+            "flat_pnl_cents": 0,
+        },
         "evidence": {
             "post_only_attempts": 194, "maker_fills": 1, "terminal_orders": 194,
             "unresolved_orders": 0, "ending_position_contracts": 0,
