@@ -154,6 +154,18 @@ def test_v12_gate_uses_registered_fixed_horizons():
     assert gate_state(status, V12_REGISTRATION, "v12_shadow")["state"] == "passed"
 
 
+def test_v12_gate_uses_complete_sample_while_new_signals_mature():
+    status = healthy()
+    shadow = status["evidence"]["v12_shadow"]
+    shadow.update({
+        "signals": 105, "complete_signals": 100, "independent_events": 30,
+        "markout_records": {"5": 105, "30": 104, "300": 100},
+        "stressed_markout_pnl_cents": {"5": 10, "30": 4, "300": 1},
+        "event_cluster_lcb_cents": {"5": .1, "30": .01, "300": .001},
+    })
+    assert gate_state(status, V12_REGISTRATION, "v12_shadow")["state"] == "passed"
+
+
 def test_v12_automatic_rejection_triggers_review_once():
     status = healthy()
     _, checkpoint, _ = check(
