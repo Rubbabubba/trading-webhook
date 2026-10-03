@@ -341,6 +341,13 @@ def advance_market_discovery(state, markets, *, now, limit=None):
     state.db.execute("DELETE FROM market_universe WHERE generation!=?", (generation,))
     state.db.execute("DELETE FROM research_market_universe WHERE generation!=?", (generation,))
     state.save("market_discovery", scan)
+    state.save("last_completed_market_discovery", {
+        key: scan.get(key) for key in (
+            "generation", "completed_at", "coverage_accounting_complete",
+            "markets_scanned", "eligible_markets", "research_relevant_markets",
+            "eligible_events", "research_relevant_events",
+        )
+    } | {"market_families": len(scan["market_families"])})
     state.save("cohort_rotation", rotation + 1)
     state.record(None, {"action": "all_market_discovery_complete", **{
         key: scan[key] for key in (
@@ -1437,6 +1444,7 @@ def evidence(state, journal):
     )
     v12_productivity_stop = v12_evaluations >= 25_000 and v12_independent_events < 10
     discovery = state.load("market_discovery", {})
+    last_completed_discovery = state.load("last_completed_market_discovery", {})
     sample = state.load("sampling_window", {})
     return {
         "environment": "demo", "post_only": True,
@@ -1451,7 +1459,7 @@ def evidence(state, journal):
                 "market_families", "eligible_families", "admission_rejections",
                 "started_at", "completed_at",
             )
-        },
+        } | {"last_completed": last_completed_discovery},
         "sampling_window": {
             key: sample.get(key) for key in (
                 "started_at", "offset", "next_offset", "size", "cohort_size",

@@ -99,6 +99,7 @@ def test_compact_packet_reports_completed_market_discovery():
     status = healthy()
     status["evidence"]["market_discovery"] = {
         "in_progress": False, "coverage_accounting_complete": True,
+        "completed_at": 1790013600,
         "markets_scanned": 1200, "eligible_markets": 80,
         "market_families": {"sports": 900, "economics": 300},
     }
@@ -107,6 +108,25 @@ def test_compact_packet_reports_completed_market_discovery():
     assert packet["evidence"]["market_discovery_complete"] is True
     assert packet["evidence"]["market_discovery_scanned"] == 1200
     assert packet["evidence"]["market_discovery_eligible"] == 80
+    assert packet["evidence"]["market_discovery_families"] == 2
+
+
+def test_completed_sweep_remains_verifiable_during_next_scan():
+    status = healthy()
+    status["evidence"]["market_discovery"] = {
+        "in_progress": True, "coverage_accounting_complete": True,
+        "markets_scanned": 300, "eligible_markets": 20,
+        "market_families": {"sports": 300},
+        "last_completed": {
+            "completed_at": 1790010000, "coverage_accounting_complete": True,
+            "markets_scanned": 1200, "eligible_markets": 80,
+            "market_families": 2,
+        },
+    }
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601,
+                         v12_registration=V12_REGISTRATION)
+    assert packet["evidence"]["market_discovery_complete"] is True
+    assert packet["evidence"]["market_discovery_scanned"] == 1200
     assert packet["evidence"]["market_discovery_families"] == 2
 
 
@@ -186,6 +206,38 @@ def test_restart_preserves_checkpoint_and_metrics(tmp_path):
     assert second["investigation_needed"] is False
     assert metrics["checks"] == 2
     assert metrics["checks_without_ai"] == 2
+
+
+def test_compact_monitor_includes_independent_research_sleeves(tmp_path):
+    now = 1790013601
+    (tmp_path / "sleeve_comparison.json").write_text(json.dumps({
+        "schema": "kalshi_sleeve_comparison_v1",
+        "generated_at": "2026-09-21T18:00:01+00:00", "execution_enabled": False,
+        "coverage": {"coverage_complete": True,
+                     "multivariate_coverage": {"markets_scanned": 340}},
+        "sleeves": [{"strategy_id": "kalshi_favorite_maker_v13_shadow",
+                     "execution_enabled": False, "independent_events": 12,
+                     "complete_observations": 12, "cost_stressed_net_cents": -4.0,
+                     "event_clustered_95pct_lower_bound_cents": -1.5,
+                     "maximum_drawdown_cents": 10.0}],
+    }))
+    run_check(tmp_path, healthy("2026-09-21T18:00:01+00:00"), now=now, force=True)
+    packet = json.loads((tmp_path / "monitor" / "review_packet.json").read_text())
+    assert packet["research_sleeves"]["execution_enabled"] is False
+    assert packet["research_sleeves"]["catalog_complete"] is True
+    assert packet["research_sleeves"]["multivariate_scanned"] == 340
+    assert packet["research_sleeves"]["sleeves"][0]["cost_stressed_net_cents"] == -4.0
+
+
+def test_stale_research_sleeves_are_not_reported_as_current(tmp_path):
+    (tmp_path / "sleeve_comparison.json").write_text(json.dumps({
+        "schema": "kalshi_sleeve_comparison_v1",
+        "generated_at": "2026-09-21T17:00:00+00:00", "execution_enabled": False,
+        "sleeves": [],
+    }))
+    run_check(tmp_path, healthy("2026-09-21T18:00:01+00:00"), now=1790013601, force=True)
+    packet = json.loads((tmp_path / "monitor" / "review_packet.json").read_text())
+    assert packet["research_sleeves"] is None
 
 
 def test_safeguard_change_triggers_once():

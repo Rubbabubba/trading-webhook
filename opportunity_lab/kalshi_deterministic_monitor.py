@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import time
 
@@ -27,7 +28,7 @@ EXPECTED_V12_TRIAL = "microprice_value_maker_v12_demo_trial"
 EXPECTED_V12_TRIAL_POLICY = "v12_one_contract_demo_trial_20261001"
 EXPECTED_V12_FILLABILITY = "microprice_value_maker_v12_fillability_trial"
 EXPECTED_V12_FILLABILITY_POLICY = "v12_one_tick_fillability_trial_20261002"
-MAX_PACKET_BYTES = 12_000
+MAX_PACKET_BYTES = 16_000
 
 
 def _iso(epoch):
@@ -39,6 +40,62 @@ def _read(path, default):
         return json.loads(Path(path).read_text())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return default
+
+
+def _research_snapshot(path, *, now):
+    """Bound the independent research sleeves' read-only status for Life OS."""
+    source = _read(path, {})
+    if not isinstance(source, dict):
+        return None
+    if source.get("schema") != "kalshi_sleeve_comparison_v1" or source.get("execution_enabled") is not False:
+        return None
+    try:
+        generated = datetime.fromisoformat(source["generated_at"].replace("Z", "+00:00"))
+        age = now - generated.timestamp()
+    except (KeyError, TypeError, ValueError):
+        return None
+    if generated.tzinfo is None or age < -300 or age > 900:
+        return None
+    rows = source.get("sleeves")
+    if not isinstance(rows, list) or len(rows) > 12:
+        return None
+    sleeves = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("strategy_id"), str):
+            return None
+        if row.get("execution_enabled") is not False or len(row["strategy_id"]) > 120:
+            return None
+        counts = {}
+        for key in ("independent_events", "complete_observations"):
+            value = row.get(key)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 1_000_000):
+                return None
+            counts[key] = value
+        metrics = {}
+        for key in ("cost_stressed_net_cents", "event_clustered_95pct_lower_bound_cents", "maximum_drawdown_cents"):
+            value = row.get(key)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not math.isfinite(value) or abs(value) > 1_000_000_000):
+                return None
+            metrics[key] = value
+        sleeves.append({"strategy_id": row["strategy_id"], **counts, **metrics})
+    coverage = source.get("coverage") or {}
+    if not isinstance(coverage, dict):
+        return None
+    mve = coverage.get("multivariate_coverage") or {}
+    if not isinstance(mve, dict):
+        return None
+    multivariate_scanned = mve.get("markets_scanned")
+    if multivariate_scanned is not None and (isinstance(multivariate_scanned, bool)
+            or not isinstance(multivariate_scanned, int) or not 0 <= multivariate_scanned <= 1_000_000_000):
+        return None
+    return {
+        "generated_at": generated.isoformat(),
+        "execution_enabled": False,
+        "catalog_complete": coverage.get("coverage_complete") is True,
+        "multivariate_scanned": multivariate_scanned,
+        "sleeves": sleeves,
+    }
 
 
 def _atomic(path, payload):
@@ -177,16 +234,30 @@ def faults(status, *, now):
 def _evidence_snapshot(status):
     evidence = status.get("evidence", {})
     discovery = evidence.get("market_discovery", {})
+    last_complete = discovery.get("last_completed") or {}
+    complete = (
+        discovery if discovery.get("in_progress") is False
+        and discovery.get("coverage_accounting_complete") is True
+        else (last_complete or discovery)
+    )
+    complete_at = complete.get("completed_at")
+    try:
+        complete_at = _iso(float(complete_at)) if complete_at is not None else None
+    except (TypeError, ValueError, OverflowError):
+        complete_at = None
+    families = complete.get("market_families")
+    family_count = len(families) if isinstance(families, dict) else int(families or 0)
     shadow = evidence.get("v10_shadow", {})
     challenger = evidence.get("v11_shadow", {})
     v12 = evidence.get("v12_shadow", {})
     trial = status.get("v12_demo_trial", {})
     fillability = status.get("v12_fillability_trial", {})
     return {
-        "market_discovery_complete": discovery.get("in_progress") is False and discovery.get("coverage_accounting_complete") is True,
-        "market_discovery_scanned": int(discovery.get("markets_scanned") or 0),
-        "market_discovery_eligible": int(discovery.get("eligible_markets") or 0),
-        "market_discovery_families": len(discovery.get("market_families") or {}),
+        "market_discovery_complete": bool(complete_at and complete.get("coverage_accounting_complete") is True),
+        "market_discovery_last_complete_at": complete_at,
+        "market_discovery_scanned": int(complete.get("markets_scanned") or discovery.get("markets_scanned") or 0),
+        "market_discovery_eligible": int(complete.get("eligible_markets") or discovery.get("eligible_markets") or 0),
+        "market_discovery_families": family_count,
         "post_only_attempts": int(evidence.get("post_only_attempts") or 0),
         "maker_fills": int(evidence.get("maker_fills") or 0),
         "terminal_orders": int(evidence.get("terminal_orders") or 0),
@@ -402,6 +473,7 @@ def run_check(data_root, status=None, *, now=None, force=False):
     packet, next_checkpoint, duplicate = check(
         status, checkpoint, registration, now=now, v12_registration=v12_registration
     )
+    packet["research_sleeves"] = _research_snapshot(root / "sleeve_comparison.json", now=now)
     metrics = _read(metrics_path, {
         "schema": "kalshi_monitor_metrics_v1", "checks": 0,
         "checks_without_ai": 0, "investigations_requested": 0,
