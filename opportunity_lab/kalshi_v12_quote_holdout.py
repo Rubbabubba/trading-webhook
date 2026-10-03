@@ -53,13 +53,19 @@ def evaluate(db, *, now=None, registration_path=REGISTRATION, strategy_path=STRA
     )}
     signals = {}
     excluded_event_signals = 0
-    for signal_id, event_id, observed_at, horizon, stressed in db.execute(
-        "SELECT s.id,s.event_id,s.observed_at,m.horizon_seconds,CAST(m.stressed_cents AS REAL) "
+    for signal_id, event_id, observed_at, horizon, markout_at, stressed in db.execute(
+        "SELECT s.id,s.event_id,s.observed_at,m.horizon_seconds,m.observed_at,CAST(m.stressed_cents AS REAL) "
         "FROM v12_shadow_signals s JOIN v12_shadow_markouts m ON m.signal_id=s.id "
         "WHERE s.observed_at>=? ORDER BY s.id,m.horizon_seconds", (start.timestamp(),)
     ):
         if event_id in earlier:
             excluded_event_signals += int(horizon == horizons[0])
+            continue
+        if (not isinstance(markout_at, (int, float))
+                or not isinstance(stressed, (int, float))
+                or observed_at > moment.timestamp() or markout_at > moment.timestamp()
+                or markout_at < observed_at + horizon
+                or not math.isfinite(stressed)):
             continue
         record = signals.setdefault(signal_id, {"event_id": event_id, "observed_at": observed_at, "markouts": {}})
         record["markouts"][horizon] = stressed

@@ -29,7 +29,7 @@ def test_future_holdout_excludes_prior_events_and_requires_frozen_code(tmp_path)
     db = sqlite3.connect(":memory:")
     db.executescript("""
         CREATE TABLE v12_shadow_signals(id INTEGER PRIMARY KEY,event_id TEXT,observed_at REAL);
-        CREATE TABLE v12_shadow_markouts(signal_id INTEGER,horizon_seconds INTEGER,stressed_cents TEXT);
+        CREATE TABLE v12_shadow_markouts(signal_id INTEGER,horizon_seconds INTEGER,observed_at REAL,stressed_cents TEXT);
     """)
     db.execute("INSERT INTO v12_shadow_signals VALUES(1,'prior',?)", (start.timestamp() - 1,))
     for signal_id in range(2, 123):
@@ -37,7 +37,10 @@ def test_future_holdout_excludes_prior_events_and_requires_frozen_code(tmp_path)
         observed_at = (start + timedelta(days=(signal_id - 2) % 10)).timestamp()
         db.execute("INSERT INTO v12_shadow_signals VALUES(?,?,?)", (signal_id, event_id, observed_at))
         for horizon in (5, 30, 300):
-            db.execute("INSERT INTO v12_shadow_markouts VALUES(?,?,?)", (signal_id, horizon, "2.0"))
+            db.execute("INSERT INTO v12_shadow_markouts VALUES(?,?,?,?)", (signal_id, horizon, observed_at + horizon, "2.0"))
+    db.execute("INSERT INTO v12_shadow_signals VALUES(123,'invalid-future-markout',?)", (start.timestamp(),))
+    for horizon in (5, 30, 300):
+        db.execute("INSERT INTO v12_shadow_markouts VALUES(?,?,?,?)", (123, horizon, start.timestamp() + 1, "1000"))
     result = evaluate(db, now=start + timedelta(days=15),
                       registration_path=registration_path, strategy_path=strategy)
     assert result["prior_event_signals_excluded"] == 1
