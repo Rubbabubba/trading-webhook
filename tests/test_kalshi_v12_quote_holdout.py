@@ -10,6 +10,8 @@ def test_future_holdout_excludes_prior_events_and_requires_frozen_code(tmp_path)
     start = datetime(2026, 10, 4, tzinfo=timezone.utc)
     strategy = tmp_path / "strategy.py"
     strategy.write_bytes(b"frozen strategy\n")
+    evaluator = tmp_path / "evaluator.py"
+    evaluator.write_bytes(b"frozen evaluator\n")
     registration = {
         "schema": "kalshi_v12_quote_holdout_v1",
         "version": "test", "strategy_id": "microprice_value_maker_v12_shadow",
@@ -18,6 +20,7 @@ def test_future_holdout_excludes_prior_events_and_requires_frozen_code(tmp_path)
         "environment": "demo", "execution_enabled": False,
         "production_execution_enabled": False,
         "strategy_module_sha256": hashlib.sha256(strategy.read_bytes()).hexdigest(),
+        "evaluator_module_sha256": hashlib.sha256(evaluator.read_bytes()).hexdigest(),
         "required_markout_seconds": [5, 30, 300],
         "minimum_completed_signals": 100,
         "minimum_independent_events": 30,
@@ -42,13 +45,22 @@ def test_future_holdout_excludes_prior_events_and_requires_frozen_code(tmp_path)
     for horizon in (5, 30, 300):
         db.execute("INSERT INTO v12_shadow_markouts VALUES(?,?,?,?)", (123, horizon, start.timestamp() + 1, "1000"))
     result = evaluate(db, now=start + timedelta(days=15),
-                      registration_path=registration_path, strategy_path=strategy)
+                      registration_path=registration_path, strategy_path=strategy,
+                      evaluator_path=evaluator)
     assert result["prior_event_signals_excluded"] == 1
     assert result["complete_signals"] == 120
     assert result["independent_events"] == 30
     assert result["passed"] is True
     strategy.write_text("changed\n")
     changed = evaluate(db, now=start + timedelta(days=15),
-                       registration_path=registration_path, strategy_path=strategy)
+                       registration_path=registration_path, strategy_path=strategy,
+                       evaluator_path=evaluator)
     assert changed["gates"]["strategy_code_frozen"] is False
+    assert changed["passed"] is False
+    strategy.write_bytes(b"frozen strategy\n")
+    evaluator.write_text("changed\n")
+    changed = evaluate(db, now=start + timedelta(days=15),
+                       registration_path=registration_path, strategy_path=strategy,
+                       evaluator_path=evaluator)
+    assert changed["gates"]["evaluator_code_frozen"] is False
     assert changed["passed"] is False

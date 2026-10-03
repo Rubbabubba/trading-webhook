@@ -25,7 +25,8 @@ def _lower(values):
     return statistics.mean(values) - 1.96 * statistics.stdev(values) / math.sqrt(len(values))
 
 
-def evaluate(db, *, now=None, registration_path=REGISTRATION, strategy_path=STRATEGY_MODULE):
+def evaluate(db, *, now=None, registration_path=REGISTRATION, strategy_path=STRATEGY_MODULE,
+             evaluator_path=Path(__file__)):
     """Evaluate only complete future signals from events absent in earlier V12 data."""
     moment = now or datetime.now(timezone.utc)
     if moment.tzinfo is None:
@@ -48,6 +49,8 @@ def evaluate(db, *, now=None, registration_path=REGISTRATION, strategy_path=STRA
         raise ValueError("holdout_horizons_changed")
     code_hash = hashlib.sha256(Path(strategy_path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     code_unchanged = code_hash == registration["strategy_module_sha256"]
+    evaluator_hash = hashlib.sha256(Path(evaluator_path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    evaluator_unchanged = evaluator_hash == registration["evaluator_module_sha256"]
     earlier = {row[0] for row in db.execute(
         "SELECT DISTINCT event_id FROM v12_shadow_signals WHERE observed_at<?", (start.timestamp(),)
     )}
@@ -84,6 +87,7 @@ def evaluate(db, *, now=None, registration_path=REGISTRATION, strategy_path=STRA
         "registered_before_start": registered < start,
         "holdout_started": moment >= start,
         "strategy_code_frozen": code_unchanged,
+        "evaluator_code_frozen": evaluator_unchanged,
         "minimum_observation_days": (moment - start).days >= registration["minimum_observation_days"],
         "minimum_active_days": len(days) >= registration["minimum_active_days"],
         "minimum_completed_signals": len(complete) >= registration["minimum_completed_signals"],

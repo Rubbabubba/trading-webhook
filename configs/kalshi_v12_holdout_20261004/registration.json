@@ -8,6 +8,7 @@
   "execution_enabled": false,
   "production_execution_enabled": false,
   "strategy_module_sha256": "4728a64b0226abd80fb6169ed161f4bf44a31bf50ba3ce7dbb41bf62780ab4a3",
+  "evaluator_module_sha256": "fd7bc072e1007d9677941f509698c0e201fe6a01b352add6fe323849c69a0662",
   "required_markout_seconds": [5, 30, 300],
   "minimum_completed_signals": 100,
   "minimum_independent_events": 30,

@@ -188,7 +188,7 @@ def test_future_holdout_code_change_faults_and_gate_pass_escalates_once():
     status = healthy()
     status["evidence"]["v12_quote_holdout"] = {
         "holdout_start_at": "2026-10-04T00:00:00+00:00",
-        "gates": {"strategy_code_frozen": False}, "passed": False,
+        "gates": {"strategy_code_frozen": False, "evaluator_code_frozen": True}, "passed": False,
     }
     packet, checkpoint, _ = check(status, {}, REGISTRATION, now=1790013601,
                                   v12_registration=V12_REGISTRATION)

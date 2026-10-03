@@ -297,7 +297,10 @@ def _evidence_snapshot(status):
         "v12_automatic_rejection_triggered": bool(v12.get("automatic_rejection_triggered")),
         "v12_holdout_start_at": holdout.get("holdout_start_at"),
         "v12_holdout_registration_sha256": holdout.get("registration_sha256"),
-        "v12_holdout_code_frozen": bool((holdout.get("gates") or {}).get("strategy_code_frozen")),
+        "v12_holdout_code_frozen": bool(
+            (holdout.get("gates") or {}).get("strategy_code_frozen")
+            and (holdout.get("gates") or {}).get("evaluator_code_frozen")
+        ),
         "v12_holdout_complete_signals": int(holdout.get("complete_signals") or 0),
         "v12_holdout_independent_events": int(holdout.get("independent_events") or 0),
         "v12_holdout_active_days": int(holdout.get("active_days") or 0),
