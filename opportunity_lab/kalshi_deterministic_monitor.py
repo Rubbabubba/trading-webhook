@@ -250,6 +250,7 @@ def _evidence_snapshot(status):
     shadow = evidence.get("v10_shadow", {})
     challenger = evidence.get("v11_shadow", {})
     v12 = evidence.get("v12_shadow", {})
+    holdout = evidence.get("v12_quote_holdout", {})
     trial = status.get("v12_demo_trial", {})
     fillability = status.get("v12_fillability_trial", {})
     return {
@@ -294,6 +295,14 @@ def _evidence_snapshot(status):
         "v12_stressed_markout_pnl_cents": v12.get("stressed_markout_pnl_cents", {}),
         "v12_event_cluster_lcb_cents": v12.get("event_cluster_lcb_cents", {}),
         "v12_automatic_rejection_triggered": bool(v12.get("automatic_rejection_triggered")),
+        "v12_holdout_start_at": holdout.get("holdout_start_at"),
+        "v12_holdout_registration_sha256": holdout.get("registration_sha256"),
+        "v12_holdout_code_frozen": bool((holdout.get("gates") or {}).get("strategy_code_frozen")),
+        "v12_holdout_complete_signals": int(holdout.get("complete_signals") or 0),
+        "v12_holdout_independent_events": int(holdout.get("independent_events") or 0),
+        "v12_holdout_active_days": int(holdout.get("active_days") or 0),
+        "v12_holdout_event_cluster_lcb_cents": holdout.get("event_cluster_lower_bound_cents", {}),
+        "v12_holdout_passed": bool(holdout.get("passed")),
         "v12_trial_attempts": int(trial.get("attempts") or 0),
         "v12_trial_fills": int(trial.get("fills") or 0),
         "v12_trial_shadow_gate_passed": bool(trial.get("shadow_gate_passed")),

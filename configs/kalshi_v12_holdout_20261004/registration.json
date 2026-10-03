@@ -1,0 +1,20 @@
+{
+  "schema": "kalshi_v12_quote_holdout_v1",
+  "version": "microprice_value_maker_v12_quote_holdout_1.0",
+  "strategy_id": "microprice_value_maker_v12_shadow",
+  "registered_at": "2026-10-03T23:37:22Z",
+  "holdout_start_at": "2026-10-04T00:00:00Z",
+  "environment": "demo",
+  "execution_enabled": false,
+  "production_execution_enabled": false,
+  "strategy_module_sha256": "4728a64b0226abd80fb6169ed161f4bf44a31bf50ba3ce7dbb41bf62780ab4a3",
+  "required_markout_seconds": [5, 30, 300],
+  "minimum_completed_signals": 100,
+  "minimum_independent_events": 30,
+  "minimum_observation_days": 14,
+  "minimum_active_days": 10,
+  "event_isolation": "Exclude every event_id observed by V12 before holdout_start_at, including later signals for that same event.",
+  "measure": "Cost-stressed quote markouts only. No exchange fill or realized trading return is implied.",
+  "gate": "Positive stressed sum and positive event-cluster 95 percent lower bound at every required horizon.",
+  "next_stage": "Compare with actual fee-adjusted Demo fills and a complete execution dossier before any owner promotion review."
+}

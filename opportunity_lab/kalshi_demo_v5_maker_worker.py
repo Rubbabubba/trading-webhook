@@ -67,6 +67,7 @@ from .kalshi_v12_fillability_trial import (
 from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 from .kalshi_external_sleeves import research_relevance
+from .kalshi_v12_quote_holdout import evaluate as evaluate_v12_holdout
 
 
 STRATEGY_ID = "stable_balanced_maker_v9"
@@ -1543,6 +1544,7 @@ def evidence(state, journal):
 
 def write_status(path, state, journal, **values):
     current_evidence = evidence(state, journal)
+    current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     trial = v12_trial_status(state, journal, current_evidence["v12_shadow"])
     fillability = v12_fillability_status(
         state, journal, current_evidence["v12_shadow"]
