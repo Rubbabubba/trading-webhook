@@ -176,12 +176,17 @@ def faults(status, *, now):
 
 def _evidence_snapshot(status):
     evidence = status.get("evidence", {})
+    discovery = evidence.get("market_discovery", {})
     shadow = evidence.get("v10_shadow", {})
     challenger = evidence.get("v11_shadow", {})
     v12 = evidence.get("v12_shadow", {})
     trial = status.get("v12_demo_trial", {})
     fillability = status.get("v12_fillability_trial", {})
     return {
+        "market_discovery_complete": discovery.get("in_progress") is False and discovery.get("coverage_accounting_complete") is True,
+        "market_discovery_scanned": int(discovery.get("markets_scanned") or 0),
+        "market_discovery_eligible": int(discovery.get("eligible_markets") or 0),
+        "market_discovery_families": len(discovery.get("market_families") or {}),
         "post_only_attempts": int(evidence.get("post_only_attempts") or 0),
         "maker_fills": int(evidence.get("maker_fills") or 0),
         "terminal_orders": int(evidence.get("terminal_orders") or 0),

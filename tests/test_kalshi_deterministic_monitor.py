@@ -95,6 +95,21 @@ def test_missing_evidence_cannot_pass_gate():
     assert not result["requirements"]["complete_horizons"]
 
 
+def test_compact_packet_reports_completed_market_discovery():
+    status = healthy()
+    status["evidence"]["market_discovery"] = {
+        "in_progress": False, "coverage_accounting_complete": True,
+        "markets_scanned": 1200, "eligible_markets": 80,
+        "market_families": {"sports": 900, "economics": 300},
+    }
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601,
+                         v12_registration=V12_REGISTRATION)
+    assert packet["evidence"]["market_discovery_complete"] is True
+    assert packet["evidence"]["market_discovery_scanned"] == 1200
+    assert packet["evidence"]["market_discovery_eligible"] == 80
+    assert packet["evidence"]["market_discovery_families"] == 2
+
+
 def test_complete_positive_gate_passes():
     status = healthy()
     shadow = status["evidence"]["v10_shadow"]
