@@ -184,6 +184,25 @@ def test_v12_automatic_rejection_triggers_review_once():
     assert packet["investigation_needed"] is False
 
 
+def test_future_holdout_code_change_faults_and_gate_pass_escalates_once():
+    status = healthy()
+    status["evidence"]["v12_quote_holdout"] = {
+        "holdout_start_at": "2026-10-04T00:00:00+00:00",
+        "gates": {"strategy_code_frozen": False}, "passed": False,
+    }
+    packet, checkpoint, _ = check(status, {}, REGISTRATION, now=1790013601,
+                                  v12_registration=V12_REGISTRATION)
+    assert "v12_holdout_code_changed" in packet["health"]["faults"]
+    status["evidence"]["v12_quote_holdout"]["gates"]["strategy_code_frozen"] = True
+    status["evidence"]["v12_quote_holdout"]["passed"] = True
+    packet, checkpoint, _ = check(status, checkpoint, REGISTRATION,
+                                  now=1790013661, v12_registration=V12_REGISTRATION)
+    assert "v12_holdout_gate_passed" in packet["trigger_categories"]
+    packet, _, _ = check(status, checkpoint, REGISTRATION,
+                         now=1790013721, v12_registration=V12_REGISTRATION)
+    assert "v12_holdout_gate_passed" not in packet["trigger_categories"]
+
+
 def test_healthy_unchanged_check_requests_no_investigation():
     status = healthy()
     first, checkpoint, _ = check(status, {}, REGISTRATION, now=1790013601)

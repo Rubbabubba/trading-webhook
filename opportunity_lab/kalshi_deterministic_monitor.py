@@ -338,6 +338,9 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
     active = faults(status, now=now)
     previous_faults = checkpoint.get("active_faults", [])
     current_evidence = _evidence_snapshot(status)
+    if (current_evidence["v12_holdout_start_at"]
+            and not current_evidence["v12_holdout_code_frozen"]):
+        active = sorted(set(active) | {"v12_holdout_code_changed"})
     prior_evaluations = checkpoint.get("evidence", {}).get("v10_evaluations")
     evaluations = current_evidence["v10_evaluations"]
     last_progress_at = float(checkpoint.get("last_v10_progress_at") or now)
@@ -356,6 +359,8 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
     prior_gate = checkpoint.get("gate_state")
     prior_v12_gate = checkpoint.get("v12_gate_state")
     v12_rejected = current_evidence["v12_automatic_rejection_triggered"]
+    holdout_passed = current_evidence["v12_holdout_passed"]
+    prior_holdout_passed = checkpoint.get("v12_holdout_passed")
     prior_v12_rejected = bool(checkpoint.get("v12_automatic_rejection_triggered"))
     new_faults = sorted(set(active) - set(previous_faults))
     recovered = sorted(set(previous_faults) - set(active))
@@ -378,6 +383,8 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         triggers.append("v12_evidence_gate_transition")
     if v12_rejected and not prior_v12_rejected:
         triggers.append("v12_automatic_rejection")
+    if prior_holdout_passed is False and holdout_passed:
+        triggers.append("v12_holdout_gate_passed")
     if daily_due:
         triggers.append("daily_review")
     packet = {
@@ -446,6 +453,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "gate_state": gate["state"],
         "v12_gate_state": v12_gate["state"],
         "v12_automatic_rejection_triggered": v12_rejected,
+        "v12_holdout_passed": holdout_passed,
         "evidence": current_evidence,
         "last_daily_review_at": now if daily_due else checkpoint.get("last_daily_review_at", now),
         "last_escalation_fingerprint": (
