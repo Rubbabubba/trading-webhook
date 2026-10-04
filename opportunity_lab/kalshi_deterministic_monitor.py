@@ -170,6 +170,32 @@ def _research_snapshot(path, *, now):
                                     "resolved_independent_events": resolved,
                                     "modeled_net_cents": row.get("modeled_net_cents"),
                                     "event_cluster_lower_bound_cents": row.get("event_cluster_lower_bound_cents")})
+    release = source.get("official_release_probe") or {}
+    if release:
+        if (not isinstance(release, dict)
+                or release.get("schema") != "kalshi_official_release_probe_v1"
+                or release.get("execution_enabled") is not False
+                or release.get("profitability_evidence") is not False
+                or release.get("research_state") != "capture_only_rule_mapping_unverified"):
+            return None
+    release_rows = release.get("next_releases") or []
+    if not isinstance(release_rows, list) or len(release_rows) > 3:
+        return None
+    parsed_releases = []
+    for row in release_rows:
+        if (not isinstance(row, dict) or not isinstance(row.get("name"), str)
+                or len(row["name"]) > 80 or not isinstance(row.get("scheduled_at"), str)
+                or len(row["scheduled_at"]) > 50):
+            return None
+        counts = (row.get("watchlist_contracts"), row.get("close_timing_review"))
+        if any(type(value) is not int or not 0 <= value <= 1000 for value in counts):
+            return None
+        parsed_releases.append({"name": row["name"], "scheduled_at": row["scheduled_at"],
+                                "watchlist_contracts": counts[0],
+                                "close_timing_review": counts[1]})
+    release_counts = (release.get("watchlist_contracts"), release.get("demo_quote_snapshots"))
+    if release and any(type(value) is not int or not 0 <= value <= 1_000_000 for value in release_counts):
+        return None
     return {
         "generated_at": generated.isoformat(),
         "execution_enabled": False,
@@ -181,6 +207,16 @@ def _research_snapshot(path, *, now):
                               "schedule_id": fee_probe.get("schedule_id"),
                               "error": fee_probe.get("error"),
                               "versions": parsed_fee_versions},
+        "official_release_probe": {
+            "execution_enabled": False, "profitability_evidence": False,
+            "research_state": "capture_only_rule_mapping_unverified",
+            "latest_schedule_at": release.get("latest_schedule_at"),
+            "watchlist_contracts": release_counts[0] if release else 0,
+            "demo_quote_snapshots": release_counts[1] if release else 0,
+            "next_releases": parsed_releases,
+            "error": release.get("error") if isinstance(release.get("error"), str)
+            and len(release["error"]) <= 80 else None,
+        },
     }
 
 

@@ -23,6 +23,10 @@ from .kalshi_strategy_factory import (
 from .kalshi_factory_fee_probe import (
     probe_next as factory_fee_probe_next, status as factory_fee_probe_status,
 )
+from .kalshi_official_release_probe import (
+    cycle as official_release_cycle, init as init_official_release,
+    status as official_release_status,
+)
 from .kalshi_demo_v5_maker_worker import eligible_market_candidates, market_family
 from .kalshi_weather_ensemble import (
     fetch_ensemble, parse_target_date, score_resolution,
@@ -118,6 +122,7 @@ def open_db(path):
             db.execute("ROLLBACK")
             raise
     init_strategy_factory(db)
+    init_official_release(db)
     return db
 
 
@@ -639,7 +644,8 @@ def _sports(root):
 
 
 def write_status(root, db, generation, market_count, coverage=None, mve_coverage=None,
-                 error=None, weather_cycle=None, fee_probe_error=None):
+                 error=None, weather_cycle=None, fee_probe_error=None,
+                 official_release_error=None, official_release_run=None):
     structural_records = _records(db, "structural_signals")
     flb_records = _records(db, "calibration_parent_observations")
     structural = {"strategy_id": STRUCTURAL_ID, "execution_enabled": False,
@@ -666,6 +672,9 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
     packet["strategy_factory"] = strategy_factory_status(db)
     packet["factory_fee_probe"] = {**factory_fee_probe_status(db),
                                    "error": fee_probe_error}
+    packet["official_release_probe"] = {**official_release_status(db, utcnow()),
+                                        "error": official_release_error,
+                                        "last_cycle": official_release_run or {}}
     coverage = coverage or {}
     mve_coverage = mve_coverage or {}
     packet.update({"generated_at": utcnow().isoformat(), "execution_enabled": False,
@@ -719,6 +728,8 @@ def run(data_root, cycles=None, interval_seconds=60):
             generation = None; markets = []; coverage = {}; error = None
             weather_cycle = {}
             fee_probe_error = None
+            official_release_error = None
+            official_release_run = {}
             mve_coverage = _coverage_load(db, "mve_discovery", {})
             try:
                 generation, markets, coverage = maker_snapshot(root / "worker.sqlite3")
@@ -745,11 +756,19 @@ def run(data_root, cycles=None, interval_seconds=60):
                         # The audit has no authority over the frozen shadow or
                         # Demo execution loops. Report its own failure only.
                         fee_probe_error = type(exc).__name__
+                    try:
+                        official_release_run = official_release_cycle(
+                            db, client, markets, utcnow())
+                    except Exception as exc:
+                        # Research acquisition cannot affect the Demo maker or
+                        # another shadow sleeve. The status retains the error.
+                        official_release_error = type(exc).__name__
                 mve_coverage = advance_mve_coverage(db, client, utcnow())
             except Exception as exc:
                 error = type(exc).__name__
             packet = write_status(root, db, generation, len(markets), coverage,
-                                  mve_coverage, error, weather_cycle, fee_probe_error)
+                                  mve_coverage, error, weather_cycle, fee_probe_error,
+                                  official_release_error, official_release_run)
             if cycle == 0 or error or any(row["paired"] for row in packet["paired_comparisons"]):
                 print(json.dumps({"at": packet["generated_at"],
                                   "event": "research_sleeves_status",

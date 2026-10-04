@@ -161,6 +161,16 @@ def test_research_snapshot_carries_bounded_factory_candidate(tmp_path):
         "schema": "kalshi_sleeve_comparison_v1",
         "generated_at": "2026-10-03T20:00:00+00:00", "execution_enabled": False,
         "sleeves": [], "coverage": {},
+        "official_release_probe": {
+            "schema": "kalshi_official_release_probe_v1",
+            "execution_enabled": False, "profitability_evidence": False,
+            "research_state": "capture_only_rule_mapping_unverified",
+            "latest_schedule_at": "2026-10-03T19:00:00+00:00",
+            "watchlist_contracts": 2, "demo_quote_snapshots": 0,
+            "next_releases": [{"name": "Gross Domestic Product",
+                               "scheduled_at": "2026-10-29T12:30:00+00:00",
+                               "watchlist_contracts": 2, "close_timing_review": 2}],
+        },
         "strategy_factory": {
             "schema": "kalshi_strategy_factory_v1", "execution_enabled": False,
             "candidates": [{"strategy_id": "kalshi_factory_example", "state": "shadow",
@@ -176,6 +186,10 @@ def test_research_snapshot_carries_bounded_factory_candidate(tmp_path):
     path.write_text(json.dumps(source))
     result = _research_snapshot(path, now=1791057600)
     assert result["strategy_factory"]["candidates"][0]["strategy_id"] == "kalshi_factory_example"
+    assert result["official_release_probe"]["watchlist_contracts"] == 2
+    source["official_release_probe"]["profitability_evidence"] = True
+    path.write_text(json.dumps(source))
+    assert _research_snapshot(path, now=1791057600) is None
 
 
 def test_completed_sweep_remains_verifiable_during_next_scan():
