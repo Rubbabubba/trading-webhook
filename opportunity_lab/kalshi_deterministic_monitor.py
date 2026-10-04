@@ -148,6 +148,63 @@ def _research_snapshot(path, *, now):
     }
 
 
+def factory_promotion_preflight(packet):
+    """Report missing dossier inputs; never emit a live-promotion candidate."""
+    research = packet.get("research_sleeves") or {}
+    candidates = (research.get("strategy_factory") or {}).get("candidates") or []
+    trial = packet.get("factory_demo_trial") or {}
+    protocol = trial.get("protocol") or {}
+    strategy_id = protocol.get("strategy_id")
+    candidate = next((row for row in candidates if row.get("strategy_id") == strategy_id), None)
+    if candidate is None:
+        candidate = next((row for row in candidates if row.get("state") == "demo_trial_candidate"), None)
+    if candidate is None:
+        return {"schema": "kalshi_factory_promotion_preflight_v1", "strategy_id": None,
+                "ready_for_dossier": False, "blockers": ["no_shadow_passed_version"]}
+    blockers = []
+    def require(condition, code):
+        if not condition:
+            blockers.append(code)
+    require(candidate.get("state") == "demo_trial_candidate", "prospective_gate_not_passed")
+    require((candidate.get("complete_independent_events") or 0) >= 30 and
+            (candidate.get("cost_stressed_net_cents") or 0) > 0 and
+            (candidate.get("event_cluster_lower_bound_cents") or 0) > 0,
+            "prospective_sample_or_net_incomplete")
+    require(candidate.get("holdout_state") == "collecting" and
+            (candidate.get("holdout_complete_independent_events") or 0) >= 20 and
+            (candidate.get("holdout_cost_stressed_net_cents") or 0) > 0 and
+            (candidate.get("holdout_event_cluster_lower_bound_cents") or 0) > 0,
+            "untouched_holdout_incomplete")
+    try:
+        start = datetime.fromisoformat(candidate["holdout_started_at"].replace("Z", "+00:00"))
+        generated = datetime.fromisoformat(packet["generated_at"].replace("Z", "+00:00"))
+        duration_ok = start.tzinfo is not None and generated.tzinfo is not None and (generated - start).days >= 14
+    except (KeyError, TypeError, ValueError):
+        duration_ok = False
+    require(duration_ok, "holdout_duration_incomplete")
+    require(strategy_id == candidate["strategy_id"] and (trial.get("fills") or 0) >= 20 and
+            (trial.get("independent_days") or 0) >= 14 and
+            (trial.get("realized_net_cents") or 0) > 0,
+            "demo_execution_incomplete")
+    require(trial.get("attempts") == trial.get("terminal_orders") and
+            trial.get("unresolved_orders") == 0 and trial.get("flat_at_review") is True and
+            trial.get("fees_reconciled") is True,
+            "demo_reconciliation_incomplete")
+    catalog = packet.get("evidence") or {}
+    require(catalog.get("market_discovery_complete") is True,
+            "market_catalog_incomplete")
+    # Current shadow returns subtract a fixed five-cent stress allowance.
+    # Kalshi can have market-specific fees, so these estimates cannot be
+    # relabeled actual after-fee returns in the promotion evidence contract.
+    blockers.extend(("market_specific_fee_model_missing", "event_level_dossier_not_exported",
+                     "restart_and_risk_attestation_missing"))
+    return {"schema": "kalshi_factory_promotion_preflight_v1",
+            "strategy_id": candidate["strategy_id"], "ready_for_dossier": False,
+            "prospective_events": candidate.get("complete_independent_events") or 0,
+            "holdout_events": candidate.get("holdout_complete_independent_events") or 0,
+            "demo_fills": trial.get("fills") or 0, "blockers": blockers}
+
+
 def _atomic(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -565,6 +622,7 @@ def run_check(data_root, status=None, *, now=None, force=False):
             "live_execution_enabled": trial.get("live_execution_enabled"),
         }
     packet["research_sleeves"] = _research_snapshot(root / "sleeve_comparison.json", now=now)
+    packet["factory_promotion_preflight"] = factory_promotion_preflight(packet)
     metrics = _read(metrics_path, {
         "schema": "kalshi_monitor_metrics_v1", "checks": 0,
         "checks_without_ai": 0, "investigations_requested": 0,

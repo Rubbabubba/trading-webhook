@@ -1,6 +1,37 @@
 import json
 
-from opportunity_lab.kalshi_deterministic_monitor import check, gate_state, run_check
+from opportunity_lab.kalshi_deterministic_monitor import (
+    check, factory_promotion_preflight, gate_state, run_check,
+)
+
+
+def test_factory_promotion_preflight_exposes_missing_fee_and_dossier_proof():
+    packet = {
+        "generated_at": "2026-11-01T00:00:00+00:00",
+        "evidence": {"market_discovery_complete": True},
+        "research_sleeves": {"strategy_factory": {"candidates": [{
+            "strategy_id": "factory-v1", "state": "demo_trial_candidate",
+            "complete_independent_events": 35, "cost_stressed_net_cents": 100,
+            "event_cluster_lower_bound_cents": 1,
+            "holdout_started_at": "2026-10-10T00:00:00+00:00",
+            "holdout_state": "collecting", "holdout_complete_independent_events": 25,
+            "holdout_cost_stressed_net_cents": 70,
+            "holdout_event_cluster_lower_bound_cents": 1,
+        }]}},
+        "factory_demo_trial": {"protocol": {"strategy_id": "factory-v1"},
+                               "attempts": 25, "terminal_orders": 25,
+                               "unresolved_orders": 0, "fills": 20,
+                               "independent_days": 15, "realized_net_cents": 50,
+                               "flat_at_review": True, "fees_reconciled": True},
+    }
+    result = factory_promotion_preflight(packet)
+    assert result["ready_for_dossier"] is False
+    assert result["strategy_id"] == "factory-v1"
+    assert result["blockers"] == ["market_specific_fee_model_missing",
+                                  "event_level_dossier_not_exported",
+                                  "restart_and_risk_attestation_missing"]
+    packet["factory_demo_trial"]["fees_reconciled"] = False
+    assert "demo_reconciliation_incomplete" in factory_promotion_preflight(packet)["blockers"]
 
 
 REGISTRATION = {

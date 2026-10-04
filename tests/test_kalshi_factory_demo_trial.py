@@ -5,7 +5,7 @@ import sqlite3
 from opportunity_lab.kalshi_binary_journal import BinaryJournal
 from opportunity_lab.kalshi_demo_v5_maker_worker import MakerState, register_fill, submit
 from opportunity_lab.kalshi_factory_demo_trial import (
-    eligible_candidate, recent_signal, trial_allowed, trial_counts,
+    eligible_candidate, filled_fees_reconciled, recent_signal, trial_allowed, trial_counts,
 )
 from opportunity_lab.kalshi_strategy_factory import fingerprint, specs
 
@@ -46,6 +46,15 @@ def test_demo_trial_fails_closed_without_reproduced_shadow_gate(tmp_path):
             assert False, "A forged pass must not enable a Demo order"
     finally:
         db.close()
+
+
+def test_filled_trial_fee_attestation_requires_broker_detail():
+    fills = [("filled-one", "EVT-1", 0)]
+    assert not filled_fees_reconciled(fills, {})
+    assert not filled_fees_reconciled(fills, {"filled-one": {"fees_dollars": "0.00"}})
+    assert filled_fees_reconciled(fills, {"filled-one": {
+        "fees_dollars": "0.00", "fills": [{"fill_id": "f1"}],
+    }})
 
 
 def test_demo_trial_binds_one_version_and_loss_stop(tmp_path):

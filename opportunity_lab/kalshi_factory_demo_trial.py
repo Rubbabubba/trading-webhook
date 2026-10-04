@@ -67,6 +67,17 @@ def eligible_candidate(root: str | Path, *, excluded=()):
         db.close()
 
 
+def filled_fees_reconciled(fills, evidence):
+    """Require broker fee and fill details for every filled trial intent."""
+    return all(
+        cid in evidence
+        and isinstance(evidence[cid].get("fees_dollars"), str)
+        and isinstance(evidence[cid].get("fills"), list)
+        and len(evidence[cid]["fills"]) > 0
+        for cid, _, _ in fills
+    )
+
+
 def trial_counts(state, journal, *, strategy_id=None):
     rows = state.db.execute(
         "SELECT m.client_id,m.event_id,m.created_at FROM intent_meta m "
@@ -84,6 +95,10 @@ def trial_counts(state, journal, *, strategy_id=None):
     evidence = {key: json.loads(value) for key, value in journal.db.execute(
         "SELECT client_id,detail FROM broker_evidence"
     ) if key in trial_ids}
+    # The accounting replay tolerates a missing broker record for an unfilled
+    # order.  A filled order, however, is not fee-reconciled until the broker's
+    # actual fill and fee detail is present for that exact client ID.
+    fees_reconciled = filled_fees_reconciled(fills, evidence)
     settlements = [json.loads(value) for (value,) in journal.db.execute("SELECT detail FROM settlements")
                    if json.loads(value).get("ticker") in tickers]
     ledger = replay_binary(trial_records, evidence, as_of=journal.clock(), settlements=settlements)
@@ -99,7 +114,7 @@ def trial_counts(state, journal, *, strategy_id=None):
             "realized_net_cents": round(float(ledger["realized"] * 100), 2),
             "fees_cents": round(float(ledger["fees"] * 100), 2),
             "flat_at_review": not bool(ledger["positions"]),
-            "fees_reconciled": True}
+            "fees_reconciled": fees_reconciled}
 
 
 def trial_allowed(state, journal, candidate, *, flat_balance_cents, now=None):
