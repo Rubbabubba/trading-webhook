@@ -16,6 +16,10 @@ from .kalshi_external_sleeves import (
 )
 from .kalshi_strategy_evaluation import cluster_lower_bound
 from .kalshi_sleeve_comparison import comparison_packet
+from .kalshi_strategy_factory import (
+    cycle as strategy_factory_cycle, init as init_strategy_factory,
+    status as strategy_factory_status,
+)
 from .kalshi_demo_v5_maker_worker import eligible_market_candidates, market_family
 from .kalshi_weather_ensemble import (
     fetch_ensemble, parse_target_date, score_resolution,
@@ -110,6 +114,7 @@ def open_db(path):
         except Exception:
             db.execute("ROLLBACK")
             raise
+    init_strategy_factory(db)
     return db
 
 
@@ -655,6 +660,7 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
     packet["favorite_maker_gate"] = favorite_maker
     packet["weather_ensemble_gate"] = weather
     packet["weather_cycle"] = weather_cycle or {}
+    packet["strategy_factory"] = strategy_factory_status(db)
     coverage = coverage or {}
     mve_coverage = mve_coverage or {}
     packet.update({"generated_at": utcnow().isoformat(), "execution_enabled": False,
@@ -715,6 +721,7 @@ def run(data_root, cycles=None, interval_seconds=60):
                     resolve_one(db, client, utcnow())
                     weather_cycle = collect_weather_one_station(db, markets, utcnow())
                     resolve_one_weather(db, client, utcnow())
+                    strategy_factory_cycle(db, now=utcnow())
                 mve_coverage = advance_mve_coverage(db, client, utcnow())
             except Exception as exc:
                 error = type(exc).__name__

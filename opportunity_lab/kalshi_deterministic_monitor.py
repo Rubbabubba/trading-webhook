@@ -89,12 +89,52 @@ def _research_snapshot(path, *, now):
     if multivariate_scanned is not None and (isinstance(multivariate_scanned, bool)
             or not isinstance(multivariate_scanned, int) or not 0 <= multivariate_scanned <= 1_000_000_000):
         return None
+    factory = source.get("strategy_factory") or {}
+    if (not isinstance(factory, dict)
+            or factory.get("schema") not in (None, "kalshi_strategy_factory_v1")
+            or factory.get("execution_enabled") not in (None, False)):
+        return None
+    factory_rows = factory.get("candidates") or []
+    if not isinstance(factory_rows, list) or len(factory_rows) > 8:
+        return None
+    candidates = []
+    for row in factory_rows:
+        if not isinstance(row, dict) or row.get("execution_enabled") is not False:
+            return None
+        spec = row.get("spec") or {}
+        if (not isinstance(spec, dict)
+                or spec.get("primitive") != "buy_at_observed_ask_to_settlement"
+                or spec.get("stratum") not in ("sports", "non_sports")
+                or spec.get("price_bin") not in ("2-5", "5-10", "90-95", "95-98")
+                or row.get("state") not in ("shadow", "rejected", "demo_trial_candidate")):
+            return None
+        name = row.get("strategy_id")
+        if not isinstance(name, str) or len(name) > 80:
+            return None
+        count = row.get("complete_independent_events")
+        if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= 1_000_000:
+            return None
+        for metric in ("cost_stressed_net_cents", "event_cluster_lower_bound_cents"):
+            value = row.get(metric)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not math.isfinite(value) or abs(value) > 1_000_000_000):
+                return None
+        candidates.append({
+            "strategy_id": name, "state": row["state"],
+            "stratum": spec["stratum"], "price_bin": spec["price_bin"],
+            "registered_at": row.get("registered_at"),
+            "complete_independent_events": count,
+            "cost_stressed_net_cents": row.get("cost_stressed_net_cents"),
+            "event_cluster_lower_bound_cents": row.get("event_cluster_lower_bound_cents"),
+            "reason": row.get("reason"),
+        })
     return {
         "generated_at": generated.isoformat(),
         "execution_enabled": False,
         "catalog_complete": coverage.get("coverage_complete") is True,
         "multivariate_scanned": multivariate_scanned,
         "sleeves": sleeves,
+        "strategy_factory": {"execution_enabled": False, "candidates": candidates},
     }
 
 

@@ -124,6 +124,29 @@ def test_compact_packet_reports_crossing_feasibility():
     assert packet["evidence"]["v12_crossing_reason"] == "nonpositive_pre_fee_crossing_edge"
 
 
+def test_research_snapshot_carries_bounded_factory_candidate(tmp_path):
+    from opportunity_lab.kalshi_deterministic_monitor import _research_snapshot
+    source = {
+        "schema": "kalshi_sleeve_comparison_v1",
+        "generated_at": "2026-10-03T20:00:00+00:00", "execution_enabled": False,
+        "sleeves": [], "coverage": {},
+        "strategy_factory": {
+            "schema": "kalshi_strategy_factory_v1", "execution_enabled": False,
+            "candidates": [{"strategy_id": "kalshi_factory_example", "state": "shadow",
+                            "execution_enabled": False, "spec": {
+                                "primitive": "buy_at_observed_ask_to_settlement",
+                                "stratum": "sports", "price_bin": "2-5"},
+                            "registered_at": "2026-10-03T20:00:00+00:00",
+                            "complete_independent_events": 0,
+                            "cost_stressed_net_cents": None,
+                            "event_cluster_lower_bound_cents": None}]},
+    }
+    path = tmp_path / "research.json"
+    path.write_text(json.dumps(source))
+    result = _research_snapshot(path, now=1791057600)
+    assert result["strategy_factory"]["candidates"][0]["strategy_id"] == "kalshi_factory_example"
+
+
 def test_completed_sweep_remains_verifiable_during_next_scan():
     status = healthy()
     status["evidence"]["market_discovery"] = {
