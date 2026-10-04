@@ -12,6 +12,14 @@ ignored. No model-generated code, trade instructions, or live order permissions
 cross this feed. Ideas requiring a new primitive remain in the Life OS queue
 until that primitive is implemented and verified.
 
+The separate BEA GDP advance-release probe is the first additional read-only
+research test path. It retains the official release page and first observation
+time, maps recognized contract thresholds to the published value, and screens
+the first subsequently requested Demo quote for displayed one-contract depth
+and an indicative surplus after a provisional 5c cushion. Each release counts
+as one independent event across strikes. This prospective quote screen makes
+no orders, records no fills, and cannot promote a factory candidate.
+
 The deterministic monitor now publishes `factory_promotion_preflight` with explicit dossier blockers for the current version. It cannot mark a candidate ready or authorize live money. Demo fee reconciliation requires broker fill and fee detail for every filled factory intent. A separate implementation still has to export immutable event-level prospective and holdout evidence, verify market-specific fees, and attest restart and risk controls before the Life OS promotion screen can receive a real candidate dossier.
 
 A separate, forward-only `factory_fee_probe` now captures at most one fresh observation per research cycle. It reads the Demo event, parent series, and market metadata, then records the fee type, multiplier, retrieval time, source schedule, and a conservative one-contract taker-fee estimate in a separate table. The probe starts when deployed for each active version and never rewrites the frozen five-cent factory score. It labels all amounts as provisional estimates, not broker fees or filled returns. Older observations and unsupported fee types do not become fee-audited evidence. A future evaluator must validate historical fee changes, schedule changes, account rounding, and actual Demo broker fees before promoting a candidate.

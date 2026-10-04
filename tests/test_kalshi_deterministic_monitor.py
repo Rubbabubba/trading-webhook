@@ -183,6 +183,19 @@ def test_research_snapshot_carries_bounded_factory_candidate(tmp_path):
                                        "quotes_before_source": 2,
                                        "quotes_after_source": 1,
                                        "quotes_with_other_rule_version": 0}],
+            "shadow_screen": {"schema": "bea_gdp_release_shadow_v1",
+                              "execution_enabled": False, "profitability_evidence": False,
+                              "demo_fills": 0, "release_events_observed": 1,
+                              "contracts_screened": 1, "quotes_with_depth": 1,
+                              "indicative_positive_quotes": 1,
+                              "first_quote_results": [{"ticker": "KXGDP-26OCT30-T1.0",
+                                                       "source_implied_side": "yes",
+                                                       "state": "indicative_quote_only",
+                                                       "displayed_ask_cents": "40.00",
+                                                       "indicative_surplus_cents": "55.00",
+                                                       "source_to_quote_seconds": 2.5,
+                                                       "screen_positive": True,
+                                                       "demo_fills": 0}]},
             "next_releases": [{"name": "Gross Domestic Product",
                                "scheduled_at": "2026-10-29T12:30:00+00:00",
                                "watchlist_contracts": 2, "close_timing_review": 2}],
@@ -207,6 +220,8 @@ def test_research_snapshot_carries_bounded_factory_candidate(tmp_path):
     assert result["official_release_probe"]["first_gdp_annualized_percent"] == "1.5"
     assert result["official_release_probe"]["quotes_before_first_publication"] == 2
     assert result["official_release_probe"]["contract_comparisons"][0]["source_implied_result"] == "yes"
+    assert result["official_release_probe"]["shadow_screen"]["indicative_positive_quotes"] == 1
+    assert result["official_release_probe"]["shadow_screen"]["demo_fills"] == 0
     source["official_release_probe"]["profitability_evidence"] = True
     path.write_text(json.dumps(source))
     assert _research_snapshot(path, now=now) is None

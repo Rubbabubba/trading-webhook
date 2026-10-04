@@ -35,6 +35,8 @@ GDP_RESULT = re.compile(
 )
 MAX_SOURCE_BYTES = 524288
 SOURCE_WINDOW = timedelta(minutes=30)
+SHADOW_FEE_STRESS_CENTS = Decimal(5)
+SHADOW_MIN_SURPLUS_CENTS = Decimal(5)
 
 
 class _ReleaseHTML(HTMLParser):
@@ -371,20 +373,19 @@ def _book_levels(raw):
 def capture_quotes(db, client, now):
     at = _utc(now)
     rows = db.execute(
-        "SELECT release_name,scheduled_at,ticker,rules_sha256 FROM official_release_watchlist "
-        "WHERE scheduled_at>=? AND scheduled_at<=? ORDER BY scheduled_at,ticker",
+        "SELECT w.release_name,w.scheduled_at,w.ticker,w.rules_sha256,"
+        "(SELECT max(q.observed_at) FROM official_release_quotes q "
+        "WHERE q.release_name=w.release_name AND q.scheduled_at=w.scheduled_at "
+        "AND q.ticker=w.ticker) AS last_observed "
+        "FROM official_release_watchlist w WHERE w.scheduled_at>=? AND w.scheduled_at<=? "
+        "ORDER BY (last_observed IS NOT NULL),last_observed,w.scheduled_at,w.ticker",
         ((at - WINDOW_AFTER).isoformat(), (at + WINDOW_BEFORE).isoformat()),
     ).fetchall()
     captured = 0
-    for name, scheduled, ticker, digest in rows:
+    for name, scheduled, ticker, digest, previous in rows:
         if captured >= MAX_QUOTES_PER_CYCLE:
             break
-        # One per ticker per minute, without holding up the maker order loop.
-        previous = db.execute(
-            "SELECT max(observed_at) FROM official_release_quotes "
-            "WHERE release_name=? AND scheduled_at=? AND ticker=?",
-            (name, scheduled, ticker),
-        ).fetchone()[0]
+        # Never-captured and oldest books first; avoid starving higher tickers.
         if previous and at - datetime.fromisoformat(previous) < timedelta(seconds=55):
             continue
         quote = client.quote({"ticker": ticker})
@@ -411,6 +412,87 @@ def cycle(db, client, markets, now, fetcher=fetch_bea_schedule,
     publications = capture_publication(db, at, publication_fetcher)
     return {"schedule_refreshed": refreshed, "watchlist_added": added,
             "quotes_captured": quotes, "publications_captured": publications}
+
+
+def _first_quote_shadow(db, scheduled, ticker, digest, side, source_at):
+    """Screen only the first eligible quote; later prices cannot replace it."""
+    row = db.execute(
+        "SELECT observed_at,request_started_at,rules_sha256,book_json "
+        "FROM official_release_quotes WHERE scheduled_at=? AND ticker=? "
+        "AND request_started_at>=? ORDER BY request_started_at,observed_at LIMIT 1",
+        (scheduled, ticker, source_at),
+    ).fetchone()
+    if row is None:
+        return {"state": "awaiting_post_source_quote"}
+    observed, started, quote_digest, raw_book = row
+    latency = (datetime.fromisoformat(started) - datetime.fromisoformat(source_at)).total_seconds()
+    if quote_digest != digest:
+        return {"state": "rule_version_mismatch", "source_to_quote_seconds": latency}
+    if datetime.fromisoformat(observed) > datetime.fromisoformat(scheduled) + WINDOW_AFTER:
+        return {"state": "outside_capture_window", "source_to_quote_seconds": latency}
+    try:
+        book = json.loads(raw_book)
+        opposite = "no_dollars" if side == "yes" else "yes_dollars"
+        levels = [(Decimal(str(price)), Decimal(str(depth)))
+                  for price, depth in book[opposite]]
+        valid = [(price, depth) for price, depth in levels
+                 if price.is_finite() and depth.is_finite()
+                 and 0 < price < 1 and depth >= 1]
+    except (ValueError, TypeError, KeyError, InvalidOperation):
+        valid = []
+    if not valid:
+        return {"state": "no_displayed_one_contract_depth",
+                "quote_started_at": started, "quote_observed_at": observed,
+                "source_to_quote_seconds": latency}
+    best_bid = max(price for price, _ in valid)
+    ask_cents = (Decimal(1) - best_bid) * 100
+    surplus_cents = Decimal(100) - ask_cents - SHADOW_FEE_STRESS_CENTS
+    return {"state": "indicative_quote_only", "quote_started_at": started,
+            "quote_observed_at": observed, "source_to_quote_seconds": latency,
+            "displayed_ask_cents": str(ask_cents),
+            "fee_stress_cents": str(SHADOW_FEE_STRESS_CENTS),
+            "indicative_surplus_cents": str(surplus_cents),
+            "screen_positive": surplus_cents >= SHADOW_MIN_SURPLUS_CENTS,
+            "demo_fills": 0}
+
+
+def shadow_screen(db, publication_rows):
+    """Prospective source-to-quote screen, never a filled-return estimate."""
+    empty = {"schema": "bea_gdp_release_shadow_v1", "execution_enabled": False,
+             "release_events_observed": 0, "contracts_screened": 0,
+             "quotes_with_depth": 0, "indicative_positive_quotes": 0,
+             "demo_fills": 0, "profitability_evidence": False,
+             "first_quote_results": []}
+    if not publication_rows or publication_rows[0][4] != "gdp_advance_text_parsed_unverified":
+        return empty
+    values = {row[3] for row in publication_rows if row[4] == "gdp_advance_text_parsed_unverified"}
+    if len(values) != 1:
+        return empty
+    scheduled, _, source_at, value, _ = publication_rows[0]
+    source_value = Decimal(value)
+    results = []
+    for ticker, digest, raw in db.execute(
+        "SELECT w.ticker,w.rules_sha256,t.terms_json FROM official_release_watchlist w "
+        "JOIN official_release_contract_terms t ON t.release_name=w.release_name "
+        "AND t.scheduled_at=w.scheduled_at AND t.ticker=w.ticker "
+        "AND t.rules_sha256=w.rules_sha256 WHERE w.scheduled_at=? "
+        "ORDER BY w.ticker LIMIT 24", (scheduled,),
+    ):
+        mapping = json.loads(raw).get("mapping") or {}
+        if mapping.get("state") != "template_parsed_outcome_unverified":
+            continue
+        try:
+            threshold = Decimal(mapping["threshold_percent"])
+        except (InvalidOperation, KeyError, TypeError):
+            continue
+        side = "yes" if source_value > threshold else "no"
+        result = _first_quote_shadow(db, scheduled, ticker, digest, side, source_at)
+        results.append({"ticker": ticker, "source_implied_side": side, **result})
+    return {**empty, "release_events_observed": 1,
+            "contracts_screened": len(results),
+            "quotes_with_depth": sum(row["state"] == "indicative_quote_only" for row in results),
+            "indicative_positive_quotes": sum(row.get("screen_positive") is True for row in results),
+            "first_quote_results": results}
 
 
 def status(db, now):
@@ -494,9 +576,10 @@ def status(db, now):
         "quotes_before_first_publication": quote_timing[0] or 0,
         "quotes_after_first_publication": quote_timing[1] or 0,
         "contract_comparisons": comparisons,
+        "shadow_screen": shadow_screen(db, publication_rows),
         "next_releases": [{"name": name, "scheduled_at": scheduled,
                            "watchlist_contracts": count, "close_timing_review": review or 0}
                           for name, scheduled, count, review in next_rows],
-        "research_state": "capture_only_rule_mapping_unverified",
+        "research_state": "prospective_shadow_quote_screen",
         "profitability_evidence": False,
     }

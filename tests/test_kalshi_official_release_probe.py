@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
+import json
 import sqlite3
 
 from opportunity_lab.kalshi_official_release_probe import (
-    capture_publication, capture_quotes, fetch_gdp_publication, init,
+    _first_quote_shadow, capture_publication, capture_quotes, fetch_gdp_publication, init,
     parse_gdp_publication, parse_schedule, register_watchlist, refresh_schedule, status,
 )
 
@@ -137,6 +138,23 @@ def test_gdp_publication_capture_is_versioned_and_never_claims_settlement():
     assert report["first_gdp_annualized_percent"] == "1.5"
     assert report["publication_value_conflict"] is False
     assert report["contract_comparisons"][0]["source_implied_result"] == "yes"
+    assert report["shadow_screen"]["release_events_observed"] == 1
+    assert report["shadow_screen"]["quotes_with_depth"] == 0
+    digest = db.execute("SELECT rules_sha256 FROM official_release_watchlist").fetchone()[0]
+    quote_at = now + timedelta(seconds=1)
+    db.execute("INSERT INTO official_release_quotes VALUES(?,?,?,?,?,?,?)",
+               ("Gross Domestic Product", scheduled, market["ticker"], quote_at.isoformat(),
+                quote_at.isoformat(), digest,
+                json.dumps({"yes_dollars": [["0.30", "2"]],
+                            "no_dollars": [["0.60", "3"]]})))
+    screened = status(db, now)["shadow_screen"]
+    assert screened["contracts_screened"] == 1
+    assert screened["quotes_with_depth"] == 1
+    assert screened["indicative_positive_quotes"] == 1
+    assert screened["first_quote_results"][0]["displayed_ask_cents"] == "40.00"
+    assert screened["first_quote_results"][0]["source_to_quote_seconds"] == 1.0
+    assert screened["demo_fills"] == 0
+    assert screened["profitability_evidence"] is False
     assert report["profitability_evidence"] is False
     db.close()
 
@@ -161,3 +179,43 @@ def test_gdp_publication_discovery_requires_matching_bea_link(monkeypatch):
     monkeypatch.setattr(probe, "_bea_html", no_match)
     assert fetch_gdp_publication(scheduled) is None
     assert len(calls) == 1
+
+
+def test_shadow_screen_does_not_replace_an_unfillable_first_quote():
+    source = datetime(2026, 10, 29, 12, 30, tzinfo=timezone.utc)
+    scheduled = source.isoformat()
+    db = sqlite3.connect(":memory:", isolation_level=None)
+    init(db)
+    for offset, book in ((1, {"yes_dollars": [], "no_dollars": []}),
+                         (2, {"yes_dollars": [], "no_dollars": [["0.70", "4"]]})):
+        observed = source + timedelta(seconds=offset)
+        db.execute("INSERT INTO official_release_quotes VALUES(?,?,?,?,?,?,?)",
+                   ("Gross Domestic Product", scheduled, "KXGDP-TEST",
+                    observed.isoformat(), observed.isoformat(), "current-rule",
+                    json.dumps(book)))
+    result = _first_quote_shadow(db, scheduled, "KXGDP-TEST", "current-rule",
+                                 "yes", source.isoformat())
+    assert result["state"] == "no_displayed_one_contract_depth"
+    assert "indicative_surplus_cents" not in result
+    db.close()
+
+
+def test_bounded_quote_capture_rotates_across_watchlist():
+    current = datetime.now(timezone.utc)
+    release = current - timedelta(minutes=1)
+    db = sqlite3.connect(":memory:", isolation_level=None)
+    init(db)
+    for index in range(3):
+        db.execute("INSERT INTO official_release_watchlist VALUES(?,?,?,?,?,?,?)",
+                   ("Gross Domestic Product", release.isoformat(), f"KXGDP-TEST-{index}",
+                    "KXGDP-TEST", (release + timedelta(hours=1)).isoformat(),
+                    "rule-version", current.isoformat()))
+    first_time = current - timedelta(minutes=2)
+    client = DemoQuote(first_time)
+    assert capture_quotes(db, client, first_time) == 2
+    assert {row[0] for row in db.execute("SELECT DISTINCT ticker FROM official_release_quotes")} == {
+        "KXGDP-TEST-0", "KXGDP-TEST-1"}
+    client.at = current - timedelta(minutes=1)
+    assert capture_quotes(db, client, client.at) == 2
+    assert db.execute("SELECT count(DISTINCT ticker) FROM official_release_quotes").fetchone()[0] == 3
+    db.close()

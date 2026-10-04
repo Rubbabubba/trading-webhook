@@ -190,7 +190,8 @@ def _research_snapshot(path, *, now):
                 or release.get("schema") != "kalshi_official_release_probe_v1"
                 or release.get("execution_enabled") is not False
                 or release.get("profitability_evidence") is not False
-                or release.get("research_state") != "capture_only_rule_mapping_unverified"):
+                or release.get("research_state") not in (
+                    "capture_only_rule_mapping_unverified", "prospective_shadow_quote_screen")):
             return None
     release_rows = release.get("next_releases") or []
     if not isinstance(release_rows, list) or len(release_rows) > 3:
@@ -266,6 +267,61 @@ def _research_snapshot(path, *, now):
                             "quotes_before_source": counts[0],
                             "quotes_after_source": counts[1],
                             "quotes_with_other_rule_version": counts[2]})
+    shadow = release.get("shadow_screen") or {}
+    if shadow:
+        if (not isinstance(shadow, dict)
+                or shadow.get("schema") != "bea_gdp_release_shadow_v1"
+                or shadow.get("execution_enabled") is not False
+                or shadow.get("profitability_evidence") is not False
+                or shadow.get("demo_fills") != 0):
+            return None
+    shadow_counts = {key: shadow.get(key, 0) for key in (
+        "release_events_observed", "contracts_screened", "quotes_with_depth",
+        "indicative_positive_quotes")}
+    if (any(type(value) is not int or not 0 <= value <= 24 for value in shadow_counts.values())
+            or shadow_counts["release_events_observed"] > 1
+            or shadow_counts["indicative_positive_quotes"] > shadow_counts["quotes_with_depth"]
+            or shadow_counts["quotes_with_depth"] > shadow_counts["contracts_screened"]):
+        return None
+    raw_shadow_rows = shadow.get("first_quote_results") or []
+    if not isinstance(raw_shadow_rows, list) or len(raw_shadow_rows) > 24:
+        return None
+    shadow_rows = []
+    for row in raw_shadow_rows:
+        if not isinstance(row, dict):
+            return None
+        ticker, side, state = (row.get("ticker"), row.get("source_implied_side"),
+                               row.get("state"))
+        if (not isinstance(ticker, str) or len(ticker) > 100
+                or side not in ("yes", "no") or state not in (
+                    "awaiting_post_source_quote", "rule_version_mismatch",
+                    "outside_capture_window", "no_displayed_one_contract_depth",
+                    "indicative_quote_only")):
+            return None
+        price, surplus = row.get("displayed_ask_cents"), row.get("indicative_surplus_cents")
+        latency = row.get("source_to_quote_seconds")
+        if (latency is not None and (type(latency) not in (int, float)
+                                     or not math.isfinite(latency) or not 0 <= latency <= 3600)):
+            return None
+        if state == "indicative_quote_only":
+            if (type(row.get("demo_fills")) is not int or row["demo_fills"] != 0
+                    or latency is None or type(row.get("screen_positive")) is not bool
+                    or any(not isinstance(value, str) or len(value) > 20
+                           for value in (price, surplus))):
+                return None
+            try:
+                if (not 0 < float(price) < 100 or not -100 <= float(surplus) <= 100
+                        or not math.isfinite(float(price)) or not math.isfinite(float(surplus))):
+                    return None
+            except ValueError:
+                return None
+        shadow_rows.append({"ticker": ticker, "source_implied_side": side,
+                            "state": state, "displayed_ask_cents": price,
+                            "indicative_surplus_cents": surplus,
+                            "source_to_quote_seconds": latency,
+                            "screen_positive": row.get("screen_positive") is True})
+    if len(shadow_rows) != shadow_counts["contracts_screened"]:
+        return None
     return {
         "generated_at": generated.isoformat(),
         "execution_enabled": False,
@@ -279,7 +335,7 @@ def _research_snapshot(path, *, now):
                               "versions": parsed_fee_versions},
         "official_release_probe": {
             "execution_enabled": False, "profitability_evidence": False,
-            "research_state": "capture_only_rule_mapping_unverified",
+            "research_state": release.get("research_state", "capture_only_rule_mapping_unverified"),
             "latest_schedule_at": release.get("latest_schedule_at"),
             "watchlist_contracts": release_counts[0] if release else 0,
             "demo_quote_snapshots": release_counts[1] if release else 0,
@@ -294,6 +350,9 @@ def _research_snapshot(path, *, now):
             "first_gdp_annualized_percent": gdp_value,
             "publication_value_conflict": release.get("publication_value_conflict", False),
             "contract_comparisons": comparisons,
+            "shadow_screen": {"execution_enabled": False,
+                              "profitability_evidence": False, "demo_fills": 0,
+                              **shadow_counts, "first_quote_results": shadow_rows},
             "next_releases": parsed_releases,
             "error": release.get("error") if isinstance(release.get("error"), str)
             and len(release["error"]) <= 80 else None,
