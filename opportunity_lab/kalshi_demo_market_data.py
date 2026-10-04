@@ -12,9 +12,7 @@ from .kalshi_account_monitor import NoRedirect
 class DemoMarkets:
     BASE='https://demo-api.kalshi.co/trade-api/v2'
     def __init__(self):self.next_at=0;self.opener=build_opener(NoRedirect())
-    def get(self,ticker=None,*,book=False,params=None):
-        if book and ticker is None:raise ValueError('ticker_required')
-        path='/markets'+('/'+quote(ticker,safe='') if ticker else '')+('/orderbook' if book else '')
+    def _read(self,path,params=None):
         time.sleep(max(0,self.next_at-time.monotonic()));start=datetime.now(timezone.utc).timestamp()
         try:
             with self.opener.open(Request(self.BASE+path+('?' + urlencode(params) if params else '')),timeout=8) as response:
@@ -25,6 +23,14 @@ class DemoMarkets:
             return data,start,end
         except HTTPError as exc:raise ValueError('demo_market_http_'+str(exc.code)) from None
         finally:self.next_at=time.monotonic()+2
+    def get(self,ticker=None,*,book=False,params=None):
+        if book and ticker is None:raise ValueError('ticker_required')
+        path='/markets'+('/'+quote(ticker,safe='') if ticker else '')+('/orderbook' if book else '')
+        return self._read(path,params)
+    def get_event(self,event_ticker):
+        return self._read('/events/'+quote(event_ticker,safe=''))
+    def get_series(self,series_ticker):
+        return self._read('/series/'+quote(series_ticker,safe=''))
     def quote(self,payload):
         market,_,_=self.get(payload['ticker']);m=market['market']
         if m.get('ticker')!=payload['ticker'] or m.get('status')!='active' or m.get('market_type')!='binary':

@@ -2,6 +2,8 @@
 
 The deterministic monitor now publishes `factory_promotion_preflight` with explicit dossier blockers for the current version. It cannot mark a candidate ready or authorize live money. Demo fee reconciliation requires broker fill and fee detail for every filled factory intent. A separate implementation still has to export immutable event-level prospective and holdout evidence, verify market-specific fees, and attest restart and risk controls before the Life OS promotion screen can receive a real candidate dossier.
 
+A separate, forward-only `factory_fee_probe` now captures at most one fresh observation per research cycle. It reads the Demo event, parent series, and market metadata, then records the fee type, multiplier, retrieval time, source schedule, and a conservative one-contract taker-fee estimate in a separate table. The probe starts when deployed for each active version and never rewrites the frozen five-cent factory score. It labels all amounts as provisional estimates, not broker fees or filled returns. Older observations and unsupported fee types do not become fee-audited evidence. A future evaluator must validate historical fee changes, schedule changes, account rounding, and actual Demo broker fees before promoting a candidate.
+
 The demo research-sleeves worker now registers and evaluates one new
 favorite/longshot ask-price hypothesis at a time. The fixed grammar has eight
 combinations: two market groups (sports and non-sports) by four ask-price bins.

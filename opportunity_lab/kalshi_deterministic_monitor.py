@@ -138,6 +138,36 @@ def _research_snapshot(path, *, now):
             "holdout_event_cluster_lower_bound_cents": row.get("holdout_event_cluster_lower_bound_cents"),
             "reason": row.get("reason"),
         })
+    fee_probe = source.get("factory_fee_probe") or {}
+    if (not isinstance(fee_probe, dict)
+            or fee_probe.get("schema") not in (None, "kalshi_factory_fee_probe_v1")
+            or fee_probe.get("actual_fees_verified") not in (None, False)):
+        return None
+    fee_versions = fee_probe.get("versions") or []
+    if not isinstance(fee_versions, list) or len(fee_versions) > 8:
+        return None
+    parsed_fee_versions = []
+    for row in fee_versions:
+        if (not isinstance(row, dict) or not isinstance(row.get("strategy_id"), str)
+                or len(row["strategy_id"]) > 80
+                or not isinstance(row.get("started_at"), str)
+                or type(row.get("observations")) is not int
+                or not 0 <= row["observations"] <= 1_000_000):
+            return None
+        resolved = row.get("resolved_independent_events", 0)
+        if type(resolved) is not int or not 0 <= resolved <= row["observations"]:
+            return None
+        for field in ("modeled_net_cents", "event_cluster_lower_bound_cents"):
+            value = row.get(field)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not math.isfinite(value) or abs(value) > 1_000_000):
+                return None
+        parsed_fee_versions.append({"strategy_id": row["strategy_id"],
+                                    "started_at": row["started_at"],
+                                    "observations": row["observations"],
+                                    "resolved_independent_events": resolved,
+                                    "modeled_net_cents": row.get("modeled_net_cents"),
+                                    "event_cluster_lower_bound_cents": row.get("event_cluster_lower_bound_cents")})
     return {
         "generated_at": generated.isoformat(),
         "execution_enabled": False,
@@ -145,6 +175,10 @@ def _research_snapshot(path, *, now):
         "multivariate_scanned": multivariate_scanned,
         "sleeves": sleeves,
         "strategy_factory": {"execution_enabled": False, "candidates": candidates},
+        "factory_fee_probe": {"actual_fees_verified": False,
+                              "schedule_id": fee_probe.get("schedule_id"),
+                              "error": fee_probe.get("error"),
+                              "versions": parsed_fee_versions},
     }
 
 
