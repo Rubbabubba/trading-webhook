@@ -1,5 +1,7 @@
 # Official release research capture
 
+The collector retains bounded contract terms as immutable, hashed versions. It flags changed rules or strike metadata and parses only a strict GDP greater-than threshold whose rule text, strike type, and numeric strike agree. A parsed template remains **outcome unverified**: it is not a publication timestamp, a BEA value, or a trading signal. Other templates remain unverified.
+
 The first open-ended Life OS idea, **Official-Release Stale Quotes v1**, requires data outside the price-bin strategy factory. This probe starts prospective acquisition on the existing Kalshi **Demo** worker. It has no order route and cannot declare a profitable strategy.
 
 The worker reads the [BEA machine-readable release calendar](https://apps.bea.gov/API/signup/release_dates.json) at most once per six hours. It currently recognizes Gross Domestic Product and Personal Income and Outlays. The schedule is a plan, not evidence that a release was actually published. The collector uses the maker's existing market catalog and records a bounded watchlist only when the contract is active, binary, its rule text names BEA, its ticker belongs to a mapped series, and the contract closes after the scheduled release but within two days. It records the contract rule hash and flags close times more than two hours after the schedule for review. A one-day discrepancy in the current GDP contract is why this check is explicit.

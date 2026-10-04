@@ -164,12 +164,26 @@ def _research_snapshot(path, *, now):
             if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
                                       or not math.isfinite(value) or abs(value) > 1_000_000):
                 return None
+        coverage = {}
+        for split in ("prospective", "holdout"):
+            raw = row.get(f"{split}_fee_coverage") or {}
+            if not isinstance(raw, dict):
+                return None
+            counts = {key: raw.get(key, 0) for key in (
+                "resolved_events", "fully_modeled_fee_events", "missing_modeled_fee_events")}
+            if (any(type(value) is not int or not 0 <= value <= 1_000_000
+                    for value in counts.values())
+                    or counts["fully_modeled_fee_events"] + counts["missing_modeled_fee_events"]
+                    != counts["resolved_events"]):
+                return None
+            coverage[f"{split}_fee_coverage"] = counts
         parsed_fee_versions.append({"strategy_id": row["strategy_id"],
                                     "started_at": row["started_at"],
                                     "observations": row["observations"],
                                     "resolved_independent_events": resolved,
                                     "modeled_net_cents": row.get("modeled_net_cents"),
-                                    "event_cluster_lower_bound_cents": row.get("event_cluster_lower_bound_cents")})
+                                    "event_cluster_lower_bound_cents": row.get("event_cluster_lower_bound_cents"),
+                                    **coverage})
     release = source.get("official_release_probe") or {}
     if release:
         if (not isinstance(release, dict)
@@ -193,7 +207,9 @@ def _research_snapshot(path, *, now):
         parsed_releases.append({"name": row["name"], "scheduled_at": row["scheduled_at"],
                                 "watchlist_contracts": counts[0],
                                 "close_timing_review": counts[1]})
-    release_counts = (release.get("watchlist_contracts"), release.get("demo_quote_snapshots"))
+    release_counts = (release.get("watchlist_contracts"), release.get("demo_quote_snapshots"),
+                      release.get("contract_rule_versions", 0), release.get("contracts_with_rule_changes", 0),
+                      release.get("parsed_gdp_templates", 0))
     if release and any(type(value) is not int or not 0 <= value <= 1_000_000 for value in release_counts):
         return None
     return {
@@ -213,6 +229,9 @@ def _research_snapshot(path, *, now):
             "latest_schedule_at": release.get("latest_schedule_at"),
             "watchlist_contracts": release_counts[0] if release else 0,
             "demo_quote_snapshots": release_counts[1] if release else 0,
+            "contract_rule_versions": release_counts[2] if release else 0,
+            "contracts_with_rule_changes": release_counts[3] if release else 0,
+            "parsed_gdp_templates": release_counts[4] if release else 0,
             "next_releases": parsed_releases,
             "error": release.get("error") if isinstance(release.get("error"), str)
             and len(release["error"]) <= 80 else None,
@@ -265,10 +284,19 @@ def factory_promotion_preflight(packet):
     catalog = packet.get("evidence") or {}
     require(catalog.get("market_discovery_complete") is True,
             "market_catalog_incomplete")
-    # Current shadow returns subtract a fixed five-cent stress allowance.
-    # Kalshi can have market-specific fees, so these estimates cannot be
-    # relabeled actual after-fee returns in the promotion evidence contract.
-    blockers.extend(("market_specific_fee_model_missing", "event_level_dossier_not_exported",
+    fee_versions = ((research.get("factory_fee_probe") or {}).get("versions") or [])
+    fee_version = next((row for row in fee_versions
+                        if row.get("strategy_id") == candidate["strategy_id"]), None)
+    for split, expected in (("prospective", candidate.get("complete_independent_events") or 0),
+                            ("holdout", candidate.get("holdout_complete_independent_events") or 0)):
+        coverage = (fee_version or {}).get(f"{split}_fee_coverage") or {}
+        require(coverage.get("resolved_events") == expected
+                and coverage.get("fully_modeled_fee_events") == expected
+                and coverage.get("missing_modeled_fee_events") == 0,
+                f"{split}_modeled_fee_coverage_incomplete")
+    # Modeled source-specific fees are an audit screen, never a substitute for
+    # the applicable fee schedule, actual Demo broker fees, or filled returns.
+    blockers.extend(("actual_fee_basis_unverified", "event_level_dossier_not_exported",
                      "restart_and_risk_attestation_missing"))
     return {"schema": "kalshi_factory_promotion_preflight_v1",
             "strategy_id": candidate["strategy_id"], "ready_for_dossier": False,

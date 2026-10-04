@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
+import re
+from decimal import Decimal, InvalidOperation
 from urllib.request import Request, urlopen
 
 
@@ -22,6 +24,7 @@ REFRESH_HOURS = 6
 WINDOW_BEFORE = timedelta(minutes=10)
 WINDOW_AFTER = timedelta(minutes=10)
 MAX_QUOTES_PER_CYCLE = 2
+GDP_THRESHOLD = re.compile(r"(?i)\b(?:more than|greater than|exceed(?:s)?)\s+(-?[0-9]+(?:\.[0-9]+)?)\s*%?")
 
 
 def _utc(value):
@@ -42,6 +45,11 @@ def init(db):
             close_at TEXT NOT NULL,rules_sha256 TEXT NOT NULL,
             first_seen_at TEXT NOT NULL,
             PRIMARY KEY(release_name,scheduled_at,ticker));
+        CREATE TABLE IF NOT EXISTS official_release_contract_terms(
+            release_name TEXT NOT NULL,scheduled_at TEXT NOT NULL,
+            ticker TEXT NOT NULL,rules_sha256 TEXT NOT NULL,
+            terms_json TEXT NOT NULL,first_seen_at TEXT NOT NULL,
+            PRIMARY KEY(release_name,scheduled_at,ticker,rules_sha256));
         CREATE TABLE IF NOT EXISTS official_release_quotes(
             release_name TEXT NOT NULL,scheduled_at TEXT NOT NULL,
             ticker TEXT NOT NULL,observed_at TEXT NOT NULL,
@@ -119,10 +127,40 @@ def _market_match(name, release_at, market):
     event = market.get("event_ticker")
     if not isinstance(event, str) or len(event) > 100:
         return None
-    digest = hashlib.sha256(json.dumps(
-        [market.get("title"), market.get("rules_primary"), market.get("rules_secondary")],
-        sort_keys=True).encode()).hexdigest()
-    return ticker, event, close_at.isoformat(), digest
+    terms = [market.get("title"), market.get("rules_primary"), market.get("rules_secondary")]
+    if any(value is not None and (not isinstance(value, str) or len(value) > 8000)
+           for value in terms):
+        return None
+    raw_terms = {"title": terms[0], "rules_primary": terms[1],
+                 "rules_secondary": terms[2], "strike_type": market.get("strike_type"),
+                 "floor_strike": market.get("floor_strike")}
+    digest = hashlib.sha256(json.dumps(raw_terms, sort_keys=True).encode()).hexdigest()
+    mapping = _rule_mapping(name, market)
+    record = json.dumps({**raw_terms, "mapping": mapping}, sort_keys=True)
+    return ticker, event, close_at.isoformat(), digest, record
+
+
+def _rule_mapping(name, market):
+    """Recognize one exact GDP threshold template; never infer an outcome."""
+    if name != "Gross Domestic Product" or market.get("strike_type") != "greater":
+        return {"state": "unverified"}
+    rules = market.get("rules_primary") or ""
+    lowered = rules.lower()
+    if (("real gdp" not in lowered and "real gross domestic product" not in lowered)
+            or "advance estimate" not in lowered or "bea" not in lowered):
+        return {"state": "unverified"}
+    matches = GDP_THRESHOLD.findall(rules)
+    if len(matches) != 1:
+        return {"state": "unverified"}
+    try:
+        strike = Decimal(str(market.get("floor_strike")))
+        threshold = Decimal(matches[0])
+    except (InvalidOperation, TypeError, ValueError):
+        return {"state": "unverified"}
+    if not strike.is_finite() or strike != threshold or abs(strike) > 100:
+        return {"state": "unverified"}
+    return {"state": "template_parsed_outcome_unverified",
+            "comparison": "greater_than", "threshold_percent": str(threshold)}
 
 
 def register_watchlist(db, markets, now):
@@ -141,10 +179,16 @@ def register_watchlist(db, markets, now):
             match = _market_match(name, release_at, market)
             if match:
                 matches.append(match)
-        for ticker, event, close_at, digest in sorted(matches)[:24]:
+        for ticker, event, close_at, digest, terms_json in sorted(matches)[:24]:
+            db.execute("INSERT OR IGNORE INTO official_release_contract_terms VALUES(?,?,?,?,?,?)",
+                       (name, scheduled, ticker, digest, terms_json, at.isoformat()))
             cursor = db.execute("INSERT OR IGNORE INTO official_release_watchlist VALUES(?,?,?,?,?,?,?)",
                                 (name, scheduled, ticker, event, close_at, digest, at.isoformat()))
             added += cursor.rowcount
+            if cursor.rowcount == 0:
+                db.execute("UPDATE official_release_watchlist SET event_ticker=?,close_at=?,rules_sha256=? "
+                           "WHERE release_name=? AND scheduled_at=? AND ticker=? AND rules_sha256<>?",
+                           (event, close_at, digest, name, scheduled, ticker, digest))
     return added
 
 
@@ -227,6 +271,17 @@ def status(db, now):
         "source": "BEA official release calendar", "source_url": BEA_SCHEDULE_URL,
         "latest_schedule_at": db.execute("SELECT max(fetched_at) FROM official_release_schedule").fetchone()[0],
         "watchlist_contracts": db.execute("SELECT count(*) FROM official_release_watchlist").fetchone()[0],
+        "contract_rule_versions": db.execute("SELECT count(*) FROM official_release_contract_terms").fetchone()[0],
+        "contracts_with_rule_changes": db.execute(
+            "SELECT count(*) FROM (SELECT 1 FROM official_release_contract_terms "
+            "GROUP BY release_name,scheduled_at,ticker HAVING count(*)>1)").fetchone()[0],
+        "parsed_gdp_templates": db.execute(
+            "SELECT count(*) FROM official_release_watchlist w "
+            "JOIN official_release_contract_terms t ON t.release_name=w.release_name "
+            "AND t.scheduled_at=w.scheduled_at AND t.ticker=w.ticker "
+            "AND t.rules_sha256=w.rules_sha256 "
+            "WHERE json_extract(t.terms_json,'$.mapping.state')="
+            "'template_parsed_outcome_unverified'").fetchone()[0],
         "demo_quote_snapshots": db.execute("SELECT count(*) FROM official_release_quotes").fetchone()[0],
         "next_releases": [{"name": name, "scheduled_at": scheduled,
                            "watchlist_contracts": count, "close_timing_review": review or 0}

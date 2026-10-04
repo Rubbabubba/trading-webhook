@@ -27,7 +27,9 @@ def test_factory_promotion_preflight_exposes_missing_fee_and_dossier_proof():
     result = factory_promotion_preflight(packet)
     assert result["ready_for_dossier"] is False
     assert result["strategy_id"] == "factory-v1"
-    assert result["blockers"] == ["market_specific_fee_model_missing",
+    assert result["blockers"] == ["prospective_modeled_fee_coverage_incomplete",
+                                  "holdout_modeled_fee_coverage_incomplete",
+                                  "actual_fee_basis_unverified",
                                   "event_level_dossier_not_exported",
                                   "restart_and_risk_attestation_missing"]
     packet["factory_demo_trial"]["fees_reconciled"] = False

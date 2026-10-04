@@ -150,6 +150,32 @@ def probe_next(db, client, *, now=None):
 
 def status(db):
     init(db)
+    def split_coverage(strategy_id, table):
+        groups = {}
+        for event_id, resolution, detail, digest in db.execute(
+                f"SELECT o.event_id,o.resolution,f.detail,f.sha256 FROM {table} e "
+                "JOIN calibration_parent_observations o ON o.observation_id=e.observation_id "
+                "LEFT JOIN factory_fee_observations f ON f.strategy_id=e.strategy_id "
+                "AND f.observation_id=e.observation_id WHERE e.strategy_id=?", (strategy_id,)):
+            if resolution is None:
+                continue
+            valid = False
+            try:
+                outcome = json.loads(resolution)
+                basis = json.loads(detail) if detail is not None else None
+                valid = (outcome.get("hypothetical_only") is True
+                         and type(outcome.get("payout_cents")) is int
+                         and outcome["payout_cents"] in (0, 100)
+                         and basis.get("actual_fee_verified") is False
+                         and type(basis.get("modeled_entry_cost_cents")) is int
+                         and digest == hashlib.sha256(detail.encode()).hexdigest())
+            except (AttributeError, TypeError, ValueError):
+                pass
+            groups[event_id] = groups.get(event_id, True) and valid
+        covered = sum(groups.values())
+        return {"resolved_events": len(groups), "fully_modeled_fee_events": covered,
+                "missing_modeled_fee_events": len(groups) - covered}
+
     def summary(strategy_id):
         grouped = {}
         for event_id, detail, digest, resolution in db.execute(
@@ -182,6 +208,10 @@ def status(db):
                           "observations": db.execute(
                               "SELECT count(*) FROM factory_fee_observations WHERE strategy_id=?",
                               (strategy_id,)).fetchone()[0],
+                          "prospective_fee_coverage": split_coverage(
+                              strategy_id, "strategy_factory_events"),
+                          "holdout_fee_coverage": split_coverage(
+                              strategy_id, "strategy_factory_holdout_events"),
                           **summary(strategy_id)}
                          for strategy_id, started in db.execute(
                              "SELECT strategy_id,started_at FROM factory_fee_probe_protocols "

@@ -70,6 +70,10 @@ def test_probe_is_forward_only_and_uses_fresh_identity(tmp_path):
         summary = status(db)["versions"][0]
         assert summary["resolved_independent_events"] == 1
         assert summary["modeled_net_cents"] == 91
+        assert summary["prospective_fee_coverage"] == {
+            "resolved_events": 1, "fully_modeled_fee_events": 1,
+            "missing_modeled_fee_events": 0}
+        assert summary["holdout_fee_coverage"]["resolved_events"] == 0
         assert probe_next(db, Client(), now=future)["reason"] == "no_new_observation"
     finally:
         db.close()
