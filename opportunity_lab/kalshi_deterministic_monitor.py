@@ -251,6 +251,7 @@ def _evidence_snapshot(status):
     challenger = evidence.get("v11_shadow", {})
     v12 = evidence.get("v12_shadow", {})
     holdout = evidence.get("v12_quote_holdout", {})
+    crossing = evidence.get("v12_crossing_feasibility", {})
     trial = status.get("v12_demo_trial", {})
     fillability = status.get("v12_fillability_trial", {})
     return {
@@ -306,6 +307,8 @@ def _evidence_snapshot(status):
         "v12_holdout_active_days": int(holdout.get("active_days") or 0),
         "v12_holdout_event_cluster_lcb_cents": holdout.get("event_cluster_lower_bound_cents", {}),
         "v12_holdout_passed": bool(holdout.get("passed")),
+        "v12_crossing_gross_edge_cents": crossing.get("gross_crossing_edge_cents"),
+        "v12_crossing_reason": crossing.get("reason"),
         "v12_trial_attempts": int(trial.get("attempts") or 0),
         "v12_trial_fills": int(trial.get("fills") or 0),
         "v12_trial_shadow_gate_passed": bool(trial.get("shadow_gate_passed")),

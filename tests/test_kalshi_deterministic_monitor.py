@@ -111,6 +111,19 @@ def test_compact_packet_reports_completed_market_discovery():
     assert packet["evidence"]["market_discovery_families"] == 2
 
 
+def test_compact_packet_reports_crossing_feasibility():
+    status = healthy()
+    status["evidence"]["v12_crossing_feasibility"] = {
+        "gross_crossing_edge_cents": -1.0,
+        "reason": "nonpositive_pre_fee_crossing_edge",
+        "observed_at": 1790013600,
+    }
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601,
+                         v12_registration=V12_REGISTRATION)
+    assert packet["evidence"]["v12_crossing_gross_edge_cents"] == -1.0
+    assert packet["evidence"]["v12_crossing_reason"] == "nonpositive_pre_fee_crossing_edge"
+
+
 def test_completed_sweep_remains_verifiable_during_next_scan():
     status = healthy()
     status["evidence"]["market_discovery"] = {
