@@ -37,6 +37,32 @@ def publish(packet: dict, *, url: str | None = None, token: str | None = None) -
     return True
 
 
+def fetch_ideas(destination: str | Path, *, url: str | None = None,
+                token: str | None = None) -> int:
+    """Fetch owner-system research specifications, never code or orders."""
+    target = url if url is not None else os.getenv("LIFE_OS_KALSHI_INGEST_URL", "")
+    credential = token if token is not None else os.getenv("LIFE_OS_KALSHI_INGEST_TOKEN", "")
+    parsed = urlparse(target)
+    if (not credential or parsed.scheme != "https" or parsed.path != "/ingest/kalshi"
+            or parsed.username or parsed.password):
+        raise ValueError("Life OS Kalshi destination is invalid")
+    endpoint = parsed._replace(path="/research/kalshi/ideas", query="", fragment="").geturl()
+    request = Request(endpoint, headers={"Authorization": f"Bearer {credential}"}, method="GET")
+    with urlopen(request, timeout=5) as response:
+        data = response.read(32769)
+    if len(data) > 32768:
+        raise ValueError("Life OS idea response exceeds limit")
+    ideas = json.loads(data)
+    if (not isinstance(ideas, dict) or ideas.get("schema") != "kalshi_research_ideas_v1"
+            or not isinstance(ideas.get("ideas"), list) or len(ideas["ideas"]) > 32):
+        raise ValueError("Life OS idea response invalid")
+    path = Path(destination)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(ideas, sort_keys=True), encoding="utf-8")
+    temporary.replace(path)
+    return len(ideas["ideas"])
+
+
 def schedule(packet_path: str | Path, *, urgent: bool = False, interval_seconds: int = 900) -> bool:
     """Never make the worker's trading loop wait for Life OS or its network."""
     global _last_scheduled, _inflight
@@ -52,7 +78,8 @@ def schedule(packet_path: str | Path, *, urgent: bool = False, interval_seconds:
         global _inflight
         try:
             packet = json.loads(Path(packet_path).read_text(encoding="utf-8"))
-            publish(packet)
+            if publish(packet):
+                fetch_ideas(Path(packet_path).parent.parent / "life_os_strategy_ideas.json")
         except Exception as exc:
             print(f"Life OS Kalshi report export failed: {type(exc).__name__}", flush=True)
         finally:

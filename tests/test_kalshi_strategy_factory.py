@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
 import sqlite3
 
-from opportunity_lab.kalshi_strategy_factory import cycle, evaluate, fingerprint, specs
+from opportunity_lab.kalshi_strategy_factory import cycle, evaluate, fingerprint, specs, register_ideas
 
 
 def _db():
@@ -82,3 +83,34 @@ def test_failed_future_holdout_stops_candidate_without_reusing_old_events():
     assert report["holdout_reason"] == "negative_holdout_mean"
     assert report["complete_independent_events"] == 30
     assert report["holdout_complete_independent_events"] == 10
+
+
+def test_generated_idea_registers_only_supported_frozen_rule_and_future_side():
+    db = _db(); start = datetime(2026, 10, 3, tzinfo=timezone.utc)
+    raw = {"stratum": "non_sports", "price_bin": "5-10", "side": "no", "family": "*"}
+    digest = hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    idea = {"id": "12345678-1234-1234-1234-123456789abc", "spec_hash": digest, "spec": raw}
+    first = cycle(db, now=start, ideas=[idea])
+    generated = next(row for row in first["candidates"] if row["strategy_id"].startswith("kalshi_idea_"))
+    assert generated["prospective_signals"] == 0
+    assert generated["spec_hash"] == fingerprint(generated["spec"])
+    for side in ("yes", "no"):
+        detail = {"stratum": "non_sports", "price_bin": "5-10", "side": side,
+                  "family": "test", "execution_enabled": False, "fill_assumed": False}
+        db.execute("INSERT INTO calibration_parent_observations VALUES(?,?,?,?,?,?)",
+                   (side, side, 0, (start + timedelta(minutes=1)).isoformat(),
+                    json.dumps(detail), json.dumps({"cost_stressed_net_cents": 10})))
+    second = cycle(db, now=start + timedelta(hours=1), ideas=[idea])
+    updated = next(row for row in second["candidates"] if row["strategy_id"] == generated["strategy_id"])
+    assert updated["prospective_signals"] == 1
+    assert updated["complete_independent_events"] == 1
+    assert sum(row["strategy_id"].startswith("kalshi_idea_") for row in second["candidates"]) == 1
+    assert updated["execution_enabled"] is False
+
+
+def test_generated_idea_rejects_tampered_hash_and_unbounded_spec():
+    db = _db(); cycle(db, now=datetime(2026, 10, 3, tzinfo=timezone.utc))
+    raw = {"stratum": "sports", "price_bin": "all", "side": "either", "family": "*"}
+    idea = {"id": "12345678-1234-1234-1234-123456789abc", "spec_hash": "0" * 64, "spec": raw}
+    assert register_ideas(db, [idea]) is None
+    assert db.execute("SELECT count(*) FROM strategy_factory_candidates WHERE strategy_id LIKE 'kalshi_idea_%'").fetchone()[0] == 0

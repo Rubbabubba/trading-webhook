@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import statistics
 
@@ -23,6 +24,7 @@ EARLY_REJECT_EVENTS = 15
 PRODUCTIVITY_DAYS = 45
 EXTRA_FEE_STRESS_CENTS = 3  # Existing resolution already subtracts 2 cents.
 MAX_CANDIDATES = 8
+MAX_REPORTED_CANDIDATES = 24
 
 
 def specs():
@@ -35,9 +37,60 @@ def specs():
 
 
 def fingerprint(spec):
-    if spec not in tuple(specs()):
+    if spec not in tuple(specs()) and not _valid_generated_spec(spec):
         raise ValueError("unapproved_strategy_spec")
     return hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _valid_generated_spec(spec):
+    if not isinstance(spec, dict) or set(spec) != {
+        "primitive", "stratum", "price_bin", "side", "family", "origin_idea_id",
+        "extra_fee_stress_cents", "execution_enabled",
+    }:
+        return False
+    return (spec["primitive"] == "buy_at_observed_ask_to_settlement"
+            and spec["stratum"] in {"sports", "non_sports"}
+            and spec["price_bin"] in {f"{low}-{high}" for low, high in PRICE_BINS}
+            and spec["side"] in {"yes", "no", "either"}
+            and isinstance(spec["family"], str)
+            and bool(re.fullmatch(r"[A-Za-z0-9 _./:-]{1,80}|\*", spec["family"]))
+            and isinstance(spec["origin_idea_id"], str)
+            and bool(re.fullmatch(r"[0-9a-f-]{36}", spec["origin_idea_id"]))
+            and type(spec["extra_fee_stress_cents"]) is int
+            and spec["extra_fee_stress_cents"] == EXTRA_FEE_STRESS_CENTS
+            and spec["execution_enabled"] is False)
+
+
+def register_ideas(db, ideas, *, now=None):
+    """Admit at most one validated, novel AI idea to prospective shadow tests."""
+    if not isinstance(ideas, list) or len(ideas) > 32:
+        return None
+    if db.execute("SELECT 1 FROM strategy_factory_candidates WHERE state='shadow' "
+                  "AND strategy_id LIKE 'kalshi_idea_%'").fetchone():
+        return None
+    for idea in ideas:
+        if not isinstance(idea, dict) or set(idea) != {"id", "spec_hash", "spec"}:
+            continue
+        raw = idea["spec"]
+        if not isinstance(raw, dict) or set(raw) != {"stratum", "price_bin", "side", "family"}:
+            continue
+        raw_hash = hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":"),
+                                             ensure_ascii=False).encode()).hexdigest()
+        if raw_hash != idea["spec_hash"]:
+            continue
+        spec = {"primitive": "buy_at_observed_ask_to_settlement", **raw,
+                "origin_idea_id": idea["id"],
+                "extra_fee_stress_cents": EXTRA_FEE_STRESS_CENTS,
+                "execution_enabled": False}
+        if not _valid_generated_spec(spec):
+            continue
+        digest = fingerprint(spec)
+        strategy_id = "kalshi_idea_" + digest[:12]
+        db.execute("INSERT OR IGNORE INTO strategy_factory_candidates VALUES(?,?,?,?,?,?)",
+                   (strategy_id, digest, json.dumps(spec, sort_keys=True),
+                    _now(now).isoformat(), "shadow", "ai_idea_prospective_registration"))
+        return strategy_id
+    return None
 
 
 def init(db: sqlite3.Connection):
@@ -84,6 +137,8 @@ def _rows(db):
 def _matches(spec, row):
     return (row.get("stratum") == spec["stratum"]
             and row.get("price_bin") == spec["price_bin"]
+            and (spec.get("side", "either") == "either" or row.get("side") == spec["side"])
+            and (spec.get("family", "*") == "*" or row.get("family") == spec["family"])
             and row.get("execution_enabled") is False
             and row.get("fill_assumed") is False)
 
@@ -119,9 +174,11 @@ def _now(now):
 
 def register_next(db, *, now=None):
     at = _now(now)
-    if db.execute("SELECT 1 FROM strategy_factory_candidates WHERE state='shadow'").fetchone():
+    if db.execute("SELECT 1 FROM strategy_factory_candidates WHERE state='shadow' "
+                  "AND strategy_id LIKE 'kalshi_factory_%'").fetchone():
         return None
-    if db.execute("SELECT count(*) FROM strategy_factory_candidates").fetchone()[0] >= MAX_CANDIDATES:
+    if db.execute("SELECT count(*) FROM strategy_factory_candidates "
+                  "WHERE strategy_id LIKE 'kalshi_factory_%'").fetchone()[0] >= MAX_CANDIDATES:
         return None
     spec = _rank_untried(db)
     if spec is None:
@@ -270,7 +327,7 @@ def evaluate(db, strategy_id, *, now=None, update_state=True):
             "live_promotion_eligible": False}
 
 
-def cycle(db, *, now=None):
+def cycle(db, *, now=None, ideas=None):
     at = _now(now)
     init(db)
     capture_future(db)
@@ -278,17 +335,28 @@ def cycle(db, *, now=None):
         evaluate(db, strategy_id, now=at)
     capture_holdout(db)
     register_next(db, now=at)
+    if ideas:
+        register_ideas(db, ideas, now=at)
     return status(db, now=at)
 
 
 def status(db, *, now=None):
     at = _now(now)
-    rows = [evaluate(db, row[0], now=at) for row in db.execute(
+    all_rows = [evaluate(db, row[0], now=at) for row in db.execute(
         "SELECT strategy_id FROM strategy_factory_candidates ORDER BY registered_at,strategy_id")]
-    active = next((row["strategy_id"] for row in rows if row["state"] == "shadow"), None)
-    exhausted = active is None and len(rows) >= MAX_CANDIDATES
+    # Keep active and Demo candidates visible while bounding the monitor packet.
+    priority = [row for row in all_rows if row["state"] != "rejected"]
+    space = max(0, MAX_REPORTED_CANDIDATES - len(priority))
+    recent_rejected = ([row for row in all_rows if row["state"] == "rejected"][-space:]
+                       if space else [])
+    rows = sorted((priority + recent_rejected)[-MAX_REPORTED_CANDIDATES:],
+                  key=lambda row: (row["registered_at"], row["strategy_id"]))
+    active = next((row["strategy_id"] for row in all_rows if row["state"] == "shadow"), None)
+    fixed = [row for row in all_rows if row["strategy_id"].startswith("kalshi_factory_")]
+    exhausted = not any(row["state"] == "shadow" for row in fixed) and len(fixed) >= MAX_CANDIDATES
     return {"schema": "kalshi_strategy_factory_v1", "generated_at": at.isoformat(),
             "execution_enabled": False, "candidate_limit": MAX_CANDIDATES,
+            "candidate_total": len(all_rows), "reported_candidate_limit": MAX_REPORTED_CANDIDATES,
             "candidates": rows,
             "active_strategy_id": active, "grammar_exhausted": exhausted,
-            "next_action": "new_approved_primitive_required" if exhausted else "continue_prospective_search"}
+            "next_action": "new_approved_primitive_required" if exhausted and active is None else "continue_prospective_search"}

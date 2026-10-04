@@ -186,7 +186,11 @@ def recent_signal(root, candidate, state, markets, *, now=None,
             if not 0 <= clock - seen <= 3600:
                 continue
             if (row.get("stratum") != candidate["spec"]["stratum"]
-                    or row.get("price_bin") != candidate["spec"]["price_bin"]):
+                    or row.get("price_bin") != candidate["spec"]["price_bin"]
+                    or (candidate["spec"].get("side", "either") != "either"
+                        and row.get("side") != candidate["spec"]["side"])
+                    or (candidate["spec"].get("family", "*") != "*"
+                        and row.get("family") != candidate["spec"]["family"])):
                 continue
             event = row["event_id"]
             if state.db.execute("SELECT 1 FROM entered_events WHERE event_id=?", (event,)).fetchone():
@@ -209,6 +213,9 @@ def recent_signal(root, candidate, state, markets, *, now=None,
                 continue
             stratum = "sports" if event.upper().startswith(SPORTS_PREFIXES) else "non_sports"
             if market.get("event_ticker") != event or stratum != candidate["spec"]["stratum"]:
+                continue
+            family = market.get("category") or event.split("-")[0]
+            if candidate["spec"].get("family", "*") != "*" and family != candidate["spec"]["family"]:
                 continue
             frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
             _bid, ask, _bid_size, ask_size = price_book(frame, row["side"])

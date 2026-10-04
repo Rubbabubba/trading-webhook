@@ -28,7 +28,7 @@ EXPECTED_V12_TRIAL = "microprice_value_maker_v12_demo_trial"
 EXPECTED_V12_TRIAL_POLICY = "v12_one_contract_demo_trial_20261001"
 EXPECTED_V12_FILLABILITY = "microprice_value_maker_v12_fillability_trial"
 EXPECTED_V12_FILLABILITY_POLICY = "v12_one_tick_fillability_trial_20261002"
-MAX_PACKET_BYTES = 16_000
+MAX_PACKET_BYTES = 64_000
 
 
 def _iso(epoch):
@@ -95,7 +95,7 @@ def _research_snapshot(path, *, now):
             or factory.get("execution_enabled") not in (None, False)):
         return None
     factory_rows = factory.get("candidates") or []
-    if not isinstance(factory_rows, list) or len(factory_rows) > 8:
+    if not isinstance(factory_rows, list) or len(factory_rows) > 24:
         return None
     candidates = []
     for row in factory_rows:
@@ -126,6 +126,8 @@ def _research_snapshot(path, *, now):
         candidates.append({
             "strategy_id": name, "state": row["state"],
             "stratum": spec["stratum"], "price_bin": spec["price_bin"],
+            "side": spec.get("side", "either"), "family": spec.get("family", "*"),
+            "origin_idea_id": spec.get("origin_idea_id"),
             "registered_at": row.get("registered_at"),
             "complete_independent_events": count,
             "cost_stressed_net_cents": row.get("cost_stressed_net_cents"),
@@ -144,7 +146,7 @@ def _research_snapshot(path, *, now):
             or fee_probe.get("actual_fees_verified") not in (None, False)):
         return None
     fee_versions = fee_probe.get("versions") or []
-    if not isinstance(fee_versions, list) or len(fee_versions) > 8:
+    if not isinstance(fee_versions, list) or len(fee_versions) > 24:
         return None
     parsed_fee_versions = []
     for row in fee_versions:

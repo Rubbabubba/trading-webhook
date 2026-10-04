@@ -727,7 +727,18 @@ def run(data_root, cycles=None, interval_seconds=60):
                     resolve_one(db, client, utcnow())
                     weather_cycle = collect_weather_one_station(db, markets, utcnow())
                     resolve_one_weather(db, client, utcnow())
-                    strategy_factory_cycle(db, now=utcnow())
+                    idea_file = root / "life_os_strategy_ideas.json"
+                    ideas = []
+                    try:
+                        if idea_file.exists() and idea_file.stat().st_size <= 32768:
+                            supplied = json.loads(idea_file.read_text(encoding="utf-8"))
+                            if (isinstance(supplied, dict)
+                                    and supplied.get("schema") == "kalshi_research_ideas_v1"
+                                    and isinstance(supplied.get("ideas"), list)):
+                                ideas = supplied["ideas"]
+                    except (OSError, ValueError, TypeError):
+                        pass
+                    strategy_factory_cycle(db, now=utcnow(), ideas=ideas)
                     try:
                         factory_fee_probe_next(db, client, now=utcnow())
                     except Exception as exc:

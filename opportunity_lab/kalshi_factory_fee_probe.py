@@ -88,24 +88,26 @@ def probe_next(db, client, *, now=None):
     if at.tzinfo is None:
         raise ValueError("timezone_required")
     init(db)
-    candidate = db.execute(
-        "SELECT strategy_id,spec_hash FROM strategy_factory_candidates "
-        "WHERE state IN ('shadow','demo_trial_candidate') "
-        "ORDER BY CASE state WHEN 'shadow' THEN 0 ELSE 1 END,"
-        "registered_at,strategy_id LIMIT 1"
-    ).fetchone()
-    if candidate is None:
+    candidates = db.execute(
+        "SELECT c.strategy_id,c.spec_hash FROM strategy_factory_candidates c "
+        "LEFT JOIN factory_fee_observations f ON f.strategy_id=c.strategy_id "
+        "WHERE c.state IN ('shadow','demo_trial_candidate') "
+        "GROUP BY c.strategy_id,c.spec_hash "
+        "ORDER BY count(f.observation_id),c.registered_at,c.strategy_id LIMIT 4"
+    ).fetchall()
+    if not candidates:
         return {"probed": False, "reason": "no_active_candidate"}
-    strategy_id, digest = candidate
-    db.execute("INSERT OR IGNORE INTO factory_fee_probe_protocols VALUES(?,?,?,?)",
-               (strategy_id, digest, at.isoformat(), "fee_probe_v1"))
-    protocol = db.execute(
-        "SELECT spec_hash,started_at,probe_version FROM factory_fee_probe_protocols "
-        "WHERE strategy_id=?", (strategy_id,)
-    ).fetchone()
-    if protocol[0] != digest or protocol[2] != "fee_probe_v1":
-        raise ValueError("fee_probe_protocol_changed")
-    target = db.execute(
+    selected = None
+    for strategy_id, digest in candidates:
+        db.execute("INSERT OR IGNORE INTO factory_fee_probe_protocols VALUES(?,?,?,?)",
+                   (strategy_id, digest, at.isoformat(), "fee_probe_v1"))
+        protocol = db.execute(
+            "SELECT spec_hash,started_at,probe_version FROM factory_fee_probe_protocols "
+            "WHERE strategy_id=?", (strategy_id,)
+        ).fetchone()
+        if protocol[0] != digest or protocol[2] != "fee_probe_v1":
+            raise ValueError("fee_probe_protocol_changed")
+        target = db.execute(
         "SELECT o.observation_id,o.event_id,o.detail FROM calibration_parent_observations o "
         "WHERE o.observed_at>? AND o.observed_at>=? AND ("
         "EXISTS(SELECT 1 FROM strategy_factory_events e WHERE e.strategy_id=? "
@@ -115,11 +117,15 @@ def probe_next(db, client, *, now=None):
         "AND NOT EXISTS(SELECT 1 FROM factory_fee_observations f WHERE f.strategy_id=? "
         "AND f.observation_id=o.observation_id) "
         "ORDER BY o.observed_at DESC,o.observation_id LIMIT 1",
-        (protocol[1], (at - timedelta(seconds=MAX_METADATA_LAG_SECONDS - 20)).isoformat(),
-         strategy_id, strategy_id, strategy_id),
-    ).fetchone()
-    if target is None:
+            (protocol[1], (at - timedelta(seconds=MAX_METADATA_LAG_SECONDS - 20)).isoformat(),
+             strategy_id, strategy_id, strategy_id),
+        ).fetchone()
+        if target is not None:
+            selected = strategy_id, target
+            break
+    if selected is None:
         return {"probed": False, "reason": "no_new_observation"}
+    strategy_id, target = selected
     observation_id, event_id, raw = target
     row = json.loads(raw)
     # Get Event identifies its parent series and any event-level fee override.
