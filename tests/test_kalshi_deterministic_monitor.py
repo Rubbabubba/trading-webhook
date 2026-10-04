@@ -288,12 +288,23 @@ def test_compact_monitor_includes_independent_research_sleeves(tmp_path):
                      "event_clustered_95pct_lower_bound_cents": -1.5,
                      "maximum_drawdown_cents": 10.0}],
     }))
-    run_check(tmp_path, healthy("2026-09-21T18:00:01+00:00"), now=now, force=True)
+    status = healthy("2026-09-21T18:00:01+00:00")
+    status["factory_demo_trial"] = {
+        "protocol": None, "attempts": 0, "fills": 0, "attempts_today": 0,
+        "independent_events": 0, "independent_days": 0,
+        "terminal_orders": 0, "unresolved_orders": 0,
+        "realized_net_cents": 0, "fees_cents": 0,
+        "flat_at_review": True, "fees_reconciled": True,
+        "execution_environment": "demo", "live_execution_enabled": False,
+    }
+    run_check(tmp_path, status, now=now, force=True)
     packet = json.loads((tmp_path / "monitor" / "review_packet.json").read_text())
     assert packet["research_sleeves"]["execution_enabled"] is False
     assert packet["research_sleeves"]["catalog_complete"] is True
     assert packet["research_sleeves"]["multivariate_scanned"] == 340
     assert packet["research_sleeves"]["sleeves"][0]["cost_stressed_net_cents"] == -4.0
+    assert packet["factory_demo_trial"]["attempts"] == 0
+    assert packet["factory_demo_trial"]["live_execution_enabled"] is False
 
 
 def test_stale_research_sleeves_are_not_reported_as_current(tmp_path):

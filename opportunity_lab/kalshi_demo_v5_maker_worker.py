@@ -67,6 +67,15 @@ from .kalshi_v12_fillability_trial import (
 from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 from .kalshi_external_sleeves import research_relevance
+from .kalshi_factory_demo_trial import (
+    CLIENT_ID_PREFIX as FACTORY_TRIAL_CLIENT_ID_PREFIX,
+    MAX_FLAT_LOSS_CENTS as FACTORY_TRIAL_MAX_LOSS_CENTS,
+    SCAN_INTERVAL_SECONDS as FACTORY_TRIAL_SCAN_INTERVAL_SECONDS,
+    eligible_candidate as factory_eligible_candidate,
+    recent_signal as factory_recent_signal,
+    trial_allowed as factory_trial_allowed,
+    trial_counts as factory_trial_counts,
+)
 from .kalshi_v12_quote_holdout import evaluate as evaluate_v12_holdout
 from .kalshi_v12_execution_feasibility import crossing_diagnostic
 
@@ -515,6 +524,8 @@ class MakerState:
           CREATE TABLE IF NOT EXISTS intent_meta(
             client_id TEXT PRIMARY KEY,kind TEXT NOT NULL,event_id TEXT NOT NULL,
             ticker TEXT NOT NULL,outcome TEXT NOT NULL,created_at REAL NOT NULL);
+          CREATE TABLE IF NOT EXISTS factory_trial_assignments(
+            client_id TEXT PRIMARY KEY,strategy_id TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS entered_events(event_id TEXT PRIMARY KEY,entered_at REAL NOT NULL);
           CREATE TABLE IF NOT EXISTS maker_fills(
             client_id TEXT PRIMARY KEY,ticker TEXT NOT NULL,outcome TEXT NOT NULL,
@@ -869,17 +880,25 @@ def release_legacy_uncertainty_stop(state, journal):
 
 
 def submit(state, journal, broker, markets, market, outcome, action, price_cents, *,
-           maker=False, context=None, client_id_prefix=CLIENT_ID_PREFIX):
+           maker=False, context=None, client_id_prefix=CLIENT_ID_PREFIX,
+           entry_kind=None, strategy_id=None):
     client_id = client_id_prefix + uuid.uuid4().hex
-    kind = "maker_entry" if maker else "exit"
+    if entry_kind not in (None, "factory_trial_entry") or (entry_kind and (maker or action != "buy")):
+        raise ValueError("invalid_demo_entry_kind")
+    if (entry_kind == "factory_trial_entry") != (isinstance(strategy_id, str) and bool(strategy_id)):
+        raise ValueError("factory_trial_version_required")
+    kind = entry_kind or ("maker_entry" if maker else "exit")
     at = time.time()
     state.db.execute("INSERT INTO intent_meta VALUES(?,?,?,?,?,?)",
                      (client_id, kind, event_id(market), market["ticker"], outcome, at))
+    if entry_kind == "factory_trial_entry":
+        state.db.execute("INSERT INTO factory_trial_assignments VALUES(?,?)", (client_id, strategy_id))
     if maker:
         if not isinstance(context, dict):
             raise ValueError("maker_flow_context_required")
         state.db.execute("INSERT INTO flow_context VALUES(?,?)", (client_id, json.dumps(context, sort_keys=True)))
     def discard_unsent_metadata():
+        state.db.execute("DELETE FROM factory_trial_assignments WHERE client_id=?", (client_id,))
         state.db.execute("DELETE FROM flow_context WHERE client_id=?", (client_id,))
         state.db.execute("DELETE FROM intent_meta WHERE client_id=?", (client_id,))
 
@@ -1102,11 +1121,17 @@ def register_fill(state, record, frame):
     if record["filled"] != 1:
         return
     cid = record["payload"]["client_order_id"]
-    meta = state.db.execute("SELECT event_id,ticker,outcome,created_at FROM intent_meta WHERE client_id=?",
+    meta = state.db.execute("SELECT event_id,ticker,outcome,created_at,kind FROM intent_meta WHERE client_id=?",
                             (cid,)).fetchone()
     if meta is None:
         raise ValueError("maker_fill_metadata_missing")
     state.db.execute("INSERT OR IGNORE INTO entered_events VALUES(?,?)", (meta[0], meta[3]))
+    if meta[4] == "factory_trial_entry":
+        state.record(meta[1], {"action": "factory_trial_fill", "client_order_id": cid,
+                               "event_id": meta[0], "environment": "demo"})
+        return
+    if meta[4] != "maker_entry":
+        raise ValueError("entry_fill_kind_invalid")
     state.db.execute("INSERT OR IGNORE INTO maker_fills VALUES(?,?,?,?,?)",
                      (cid, meta[1], meta[2], time.time(), str(midpoint(frame))))
 
@@ -1120,11 +1145,13 @@ def current_position(journal, state):
     ticker, signed = next(iter(accounting["positions"].items()))
     outcome = "yes" if signed > 0 else "no"
     row = state.db.execute(
-        "SELECT event_id,created_at FROM intent_meta WHERE ticker=? AND outcome=? AND kind='maker_entry' "
+        "SELECT event_id,created_at,kind FROM intent_meta WHERE ticker=? AND outcome=? "
+        "AND kind IN ('maker_entry','factory_trial_entry') "
         "ORDER BY created_at DESC LIMIT 1", (ticker, outcome)).fetchone()
     if row is None:
         raise ValueError("position_metadata_missing")
     return {"ticker": ticker, "outcome": outcome, "event_id": row[0], "opened_at": row[1],
+            "entry_kind": row[2],
             "basis_cents": float(accounting["open_basis"] * 100)}, accounting
 
 
@@ -1573,6 +1600,13 @@ def write_status(path, state, journal, **values):
                "v12_fillability_trial_enabled": V12_FILLABILITY_ENABLED,
                "v12_fillability_trial_policy_id": V12_FILLABILITY_POLICY_ID,
                "v12_fillability_trial": fillability,
+               "factory_demo_trial": {
+                   "protocol": (factory_protocol := state.load("factory_trial_protocol")),
+                   **factory_trial_counts(state, journal,
+                                          strategy_id=(factory_protocol or {}).get("strategy_id")),
+                   "execution_environment": "demo",
+                   "live_execution_enabled": False,
+               },
                "evidence": current_evidence, **values}
     temp = path.with_suffix(".tmp"); temp.write_text(json.dumps(payload, indent=2) + "\n")
     temp.replace(path)
@@ -1643,6 +1677,11 @@ def run(data_root, *, cycles=None):
                             time.sleep(RECONCILIATION_WAIT_SECONDS)
                         continue
                 position, accounting = current_position(journal, state)
+                if (position and position.get("entry_kind") == "factory_trial_entry"
+                        and time.time() - float(state.load("factory_trial_last_settlement_check", 0)) >= 60):
+                    broker.reconcile_settlements()
+                    state.save("factory_trial_last_settlement_check", time.time())
+                    position, accounting = current_position(journal, state)
                 active = working_order(journal)
                 if not position and not active and state.load(V12_TRIAL_START_BALANCE_KEY) is None:
                     activation = broker.snapshot()["balance"]["balance"]
@@ -1707,6 +1746,25 @@ def run(data_root, *, cycles=None):
                         quote = markets.quote({"ticker": ticker}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
                         register_fill(state, refreshed, frame); record_due_markouts(state, ticker, frame)
                 elif position:
+                    if position.get("entry_kind") == "factory_trial_entry":
+                        # The registered hypothesis is buy-at-ask to settlement.
+                        # Do not apply the older maker strategy's timed exit.
+                        if (time.time() - position["opened_at"] > 48 * 3600
+                                and state.load("factory_trial_overdue_ticker") != position["ticker"]):
+                            journal.stop()
+                            state.save("factory_trial_overdue_ticker", position["ticker"])
+                            state.record(position["ticker"], {
+                                "action": "factory_trial_settlement_overdue",
+                                "event_id": position["event_id"], "environment": "demo",
+                            })
+                        write_status(root / "status.json", state, journal,
+                                     phase="running", errors=[],
+                                     open_positions=len(accounting["positions"]),
+                                     cohort_size=len(cohort))
+                        cycle += 1
+                        if cycles is None or cycle < cycles:
+                            time.sleep(2)
+                        continue
                     raw, _a, _b = markets.get(position["ticker"]); market = raw["market"]
                     quote = markets.quote({"ticker": position["ticker"]}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
                     observe_frame(state, position["ticker"], frame, position["event_id"])
@@ -1729,6 +1787,49 @@ def run(data_root, *, cycles=None):
                                       pending_event[0] if pending_event else pending)
                         record_due_markouts(state, pending, frame)
                     else:
+                        if (time.time() - float(state.load("factory_trial_last_scan", 0))
+                                >= FACTORY_TRIAL_SCAN_INTERVAL_SECONDS):
+                            state.save("factory_trial_last_scan", time.time())
+                            completed_trials = state.load("factory_trial_completed_ids", [])
+                            candidate = factory_eligible_candidate(root, excluded=completed_trials)
+                            if candidate is not None:
+                                flat_balance = broker.snapshot()["balance"]["balance"]
+                                allowed, reason = factory_trial_allowed(
+                                    state, journal, candidate, flat_balance_cents=flat_balance)
+                                if allowed:
+                                    prior_net = factory_trial_counts(state, journal)["realized_net_cents"]
+                                    plan = factory_recent_signal(
+                                        root, candidate, state, markets,
+                                        max_total_risk_cents=FACTORY_TRIAL_MAX_LOSS_CENTS + prior_net)
+                                    if plan is not None:
+                                        result = submit(
+                                            state, journal, broker, markets, plan["market"],
+                                            plan["outcome"], "buy", plan["price_cents"],
+                                            client_id_prefix=FACTORY_TRIAL_CLIENT_ID_PREFIX,
+                                            entry_kind="factory_trial_entry",
+                                            strategy_id=plan["strategy_id"],
+                                        )
+                                        state.record(plan["market"]["ticker"], {
+                                            "action": "factory_trial_entry", "strategy_id": plan["strategy_id"],
+                                            "event_id": plan["event_id"], "state": result["state"],
+                                            "filled": result["filled"], "environment": "demo",
+                                        })
+                                        if result["filled"]:
+                                            register_fill(state, result, plan["frame"])
+                                        write_status(root / "status.json", state, journal,
+                                                     phase="running", errors=[],
+                                                     open_positions=int(bool(result["filled"])),
+                                                     cohort_size=len(cohort))
+                                        cycle += 1
+                                        if cycles is None or cycle < cycles:
+                                            time.sleep(2)
+                                        continue
+                                elif reason != state.load("factory_trial_last_skip_reason"):
+                                    state.save("factory_trial_last_skip_reason", reason)
+                                    state.record(None, {"action": "factory_trial_skip", "reason": reason})
+                                if reason in ("attempt_cap", "fill_cap", "negative_demo_net"):
+                                    state.save("factory_trial_completed_ids",
+                                               completed_trials + [candidate["strategy_id"]])
                         market = next_sampling_market(state, cohort, now=time.time())
                         scan += 1; state.save("scan", scan)
                         frame, signal = scan_market_candidate(

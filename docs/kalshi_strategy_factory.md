@@ -17,11 +17,29 @@ version becomes a *Demo trial candidate* only after at least 14 days, 30
 independent completed events, positive total stressed net, and a positive
 event-level 95% lower bound. This is a shadow gate only.
 
-The factory never places orders, assumes a fill, changes live controls, or
-creates a Life OS promotion packet. Before any candidate can run a Demo order
-trial, a separate versioned executor must verify current market-specific fees,
-use the shared one-contract Demo journal and risk limits, and produce actual
-reconciled fill and fee evidence. The existing Life OS live-promotion screen
-remains separate and requires owner review. If all eight combinations fail,
-the factory reports `new_approved_primitive_required` instead of repeating
-failed tests or claiming success.
+After a shadow pass, a separate untouched holdout begins. Events from the
+first split are excluded. Ten held events with a mean at or below -1c reject
+the candidate, stopping new Demo entries. The holdout figures are still
+counterfactual, not filled returns.
+
+A passed version can also start a frozen **Demo-only** execution trial through
+the existing one-contract order journal. It requotes a recent, untouched
+event, checks that the actual ask still fits the registered bin and that the
+market expires within 24 hours, then attempts an immediate-or-cancel buy. The
+trial caps attempts at 3 per UTC day and 100 total, fills at 40, and stops
+new entries after a 100c cumulative realized trial loss. Each new order's
+price plus its 5c fee reserve must also fit the remaining 100c loss budget;
+this can exclude high-price bins from Demo execution. The shared 110c per-order, 160c
+capital, and 100c daily-loss controls still apply. A filled trial position
+is held for settlement and reconciled against actual Demo fills, fees, and
+settlements. After five fills, a flat realized loss of at least 20c retires
+the trial version; a later qualified version can rotate in when the account
+is flat and all orders are terminal. If settlement remains unresolved 48 hours after entry, the
+journal stops new orders and reports the fault.
+
+No candidate currently meets the shadow gate, so no factory Demo order can be
+placed yet. The existing Life OS live-promotion screen remains separate and
+requires a complete fee-aware evidence packet and owner review; this trial
+does not create that packet or enable live trading. If all eight combinations
+fail, the factory reports `new_approved_primitive_required` instead of
+repeating failed tests or claiming success.

@@ -53,6 +53,16 @@ def init(db: sqlite3.Connection):
         PRIMARY KEY(strategy_id,observation_id));
       CREATE INDEX IF NOT EXISTS strategy_factory_event_idx
         ON strategy_factory_events(strategy_id,event_id);
+      CREATE TABLE IF NOT EXISTS strategy_factory_holdouts(
+        strategy_id TEXT PRIMARY KEY,started_at TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('collecting','rejected')),
+        reason TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS strategy_factory_holdout_events(
+        strategy_id TEXT NOT NULL,observation_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,observed_at TEXT NOT NULL,
+        PRIMARY KEY(strategy_id,observation_id));
+      CREATE INDEX IF NOT EXISTS strategy_factory_holdout_event_idx
+        ON strategy_factory_holdout_events(strategy_id,event_id);
       CREATE INDEX IF NOT EXISTS calibration_parent_observed_idx
         ON calibration_parent_observations(observed_at);
     """)
@@ -153,21 +163,44 @@ def capture_future(db):
     return added
 
 
-def evaluate(db, strategy_id, *, now=None):
-    at = _now(now)
-    candidate = db.execute("SELECT spec_json,registered_at,state,reason FROM strategy_factory_candidates "
-                           "WHERE strategy_id=?", (strategy_id,)).fetchone()
-    if candidate is None:
-        raise ValueError("unknown_candidate")
-    spec = json.loads(candidate[0]); registered = datetime.fromisoformat(candidate[1])
-    elapsed_days = max(0, (at - registered).total_seconds() / 86400)
-    events = defaultdict(list); signals = 0
+def capture_holdout(db):
+    """Collect later events that never appeared in a candidate's first split."""
+    added = 0
+    for strategy_id, raw_spec, started_at in db.execute(
+        "SELECT c.strategy_id,c.spec_json,h.started_at FROM strategy_factory_candidates c "
+        "JOIN strategy_factory_holdouts h USING(strategy_id)"
+    ).fetchall():
+        spec = json.loads(raw_spec)
+        cursor = db.execute(
+            "SELECT o.observation_id,o.event_id,o.observed_at,o.detail "
+            "FROM calibration_parent_observations o WHERE o.observed_at>? "
+            "AND NOT EXISTS (SELECT 1 FROM strategy_factory_events e "
+            "WHERE e.strategy_id=? AND e.event_id=o.event_id) "
+            "AND NOT EXISTS (SELECT 1 FROM strategy_factory_holdout_events h "
+            "WHERE h.strategy_id=? AND h.observation_id=o.observation_id)",
+            (started_at, strategy_id, strategy_id),
+        )
+        for observation_id, event_id, observed_at, detail in cursor:
+            try:
+                row = json.loads(detail)
+            except (TypeError, ValueError):
+                continue
+            if _matches(spec, row):
+                inserted = db.execute(
+                    "INSERT OR IGNORE INTO strategy_factory_holdout_events VALUES(?,?,?,?)",
+                    (strategy_id, observation_id, event_id, observed_at),
+                )
+                added += inserted.rowcount
+    return added
+
+
+def _event_values(db, table, strategy_id, extra_fee_cents):
+    groups = defaultdict(list)
     for event_id, resolution in db.execute(
-        "SELECT e.event_id,o.resolution FROM strategy_factory_events e "
+        f"SELECT e.event_id,o.resolution FROM {table} e "
         "JOIN calibration_parent_observations o ON o.observation_id=e.observation_id "
-        "WHERE e.strategy_id=?", (strategy_id,)
+        "WHERE e.strategy_id=?", (strategy_id,),
     ):
-        signals += 1
         try:
             outcome = json.loads(resolution) if resolution else None
             raw = outcome.get("cost_stressed_net_cents") if outcome else None
@@ -175,9 +208,23 @@ def evaluate(db, strategy_id, *, now=None):
                 continue
         except (TypeError, ValueError):
             continue
-        events[event_id].append(float(raw) - spec["extra_fee_stress_cents"])
+        groups[event_id].append(float(raw) - extra_fee_cents)
+    return {event_id: statistics.mean(rows) for event_id, rows in groups.items()}
+
+
+def evaluate(db, strategy_id, *, now=None, update_state=True):
+    at = _now(now)
+    candidate = db.execute("SELECT spec_json,registered_at,state,reason FROM strategy_factory_candidates "
+                           "WHERE strategy_id=?", (strategy_id,)).fetchone()
+    if candidate is None:
+        raise ValueError("unknown_candidate")
+    spec = json.loads(candidate[0]); registered = datetime.fromisoformat(candidate[1])
+    elapsed_days = max(0, (at - registered).total_seconds() / 86400)
+    signals = db.execute("SELECT count(*) FROM strategy_factory_events WHERE strategy_id=?",
+                         (strategy_id,)).fetchone()[0]
     # Average once per parent event to avoid correlated contracts inflating n.
-    values = [statistics.mean(rows) for rows in events.values()]
+    values = list(_event_values(db, "strategy_factory_events", strategy_id,
+                                spec["extra_fee_stress_cents"]).values())
     total = sum(values)
     lower = (statistics.mean(values) - 1.96 * statistics.stdev(values) / math.sqrt(len(values))
              if len(values) >= 2 else None)
@@ -190,15 +237,35 @@ def evaluate(db, strategy_id, *, now=None):
         elif (elapsed_days >= MIN_ELAPSED_DAYS and len(values) >= MIN_COMPLETE_EVENTS
               and total > 0 and lower is not None and lower > 0):
             state, reason = "demo_trial_candidate", "prospective_shadow_gate_passed"
-        if state != candidate[2]:
+        if state != candidate[2] and update_state:
             db.execute("UPDATE strategy_factory_candidates SET state=?,reason=? WHERE strategy_id=?",
                        (state, reason, strategy_id))
+            if state == "demo_trial_candidate":
+                db.execute("INSERT OR IGNORE INTO strategy_factory_holdouts VALUES(?,?,?,?)",
+                           (strategy_id, at.isoformat(), "collecting", "future_holdout_started"))
+    holdout_row = db.execute("SELECT started_at,state,reason FROM strategy_factory_holdouts WHERE strategy_id=?",
+                             (strategy_id,)).fetchone()
+    held = list(_event_values(db, "strategy_factory_holdout_events", strategy_id,
+                              spec["extra_fee_stress_cents"]).values()) if holdout_row else []
+    held_lower = (statistics.mean(held) - 1.96 * statistics.stdev(held) / math.sqrt(len(held))
+                  if len(held) >= 2 else None)
+    if holdout_row and holdout_row[1] == "collecting" and len(held) >= 10 and statistics.mean(held) <= -1:
+        if update_state:
+            db.execute("UPDATE strategy_factory_holdouts SET state='rejected',reason='negative_holdout_mean' "
+                       "WHERE strategy_id=?", (strategy_id,))
+        holdout_row = (holdout_row[0], "rejected", "negative_holdout_mean")
     return {"strategy_id": strategy_id, "spec_hash": fingerprint(spec), "spec": spec,
             "registered_at": registered.isoformat(), "state": state, "reason": reason,
             "prospective_signals": signals, "complete_independent_events": len(values),
             "elapsed_days": round(elapsed_days, 2), "extra_fee_stress_cents": EXTRA_FEE_STRESS_CENTS,
             "cost_stressed_net_cents": round(total, 2) if values else None,
             "event_cluster_lower_bound_cents": round(lower, 3) if lower is not None else None,
+            "holdout_started_at": holdout_row[0] if holdout_row else None,
+            "holdout_state": holdout_row[1] if holdout_row else None,
+            "holdout_reason": holdout_row[2] if holdout_row else None,
+            "holdout_complete_independent_events": len(held),
+            "holdout_cost_stressed_net_cents": round(sum(held), 2) if held else None,
+            "holdout_event_cluster_lower_bound_cents": round(held_lower, 3) if held_lower is not None else None,
             "execution_enabled": False, "fill_assumed": False,
             "live_promotion_eligible": False}
 
@@ -209,6 +276,7 @@ def cycle(db, *, now=None):
     capture_future(db)
     for (strategy_id,) in db.execute("SELECT strategy_id FROM strategy_factory_candidates WHERE state='shadow'").fetchall():
         evaluate(db, strategy_id, now=at)
+    capture_holdout(db)
     register_next(db, now=at)
     return status(db, now=at)
 

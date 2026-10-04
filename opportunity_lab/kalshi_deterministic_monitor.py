@@ -114,7 +114,11 @@ def _research_snapshot(path, *, now):
         count = row.get("complete_independent_events")
         if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= 1_000_000:
             return None
-        for metric in ("cost_stressed_net_cents", "event_cluster_lower_bound_cents"):
+        held_count = row.get("holdout_complete_independent_events", 0)
+        if isinstance(held_count, bool) or not isinstance(held_count, int) or not 0 <= held_count <= 1_000_000:
+            return None
+        for metric in ("cost_stressed_net_cents", "event_cluster_lower_bound_cents",
+                       "holdout_cost_stressed_net_cents", "holdout_event_cluster_lower_bound_cents"):
             value = row.get(metric)
             if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
                                       or not math.isfinite(value) or abs(value) > 1_000_000_000):
@@ -126,6 +130,12 @@ def _research_snapshot(path, *, now):
             "complete_independent_events": count,
             "cost_stressed_net_cents": row.get("cost_stressed_net_cents"),
             "event_cluster_lower_bound_cents": row.get("event_cluster_lower_bound_cents"),
+            "holdout_started_at": row.get("holdout_started_at"),
+            "holdout_state": row.get("holdout_state"),
+            "holdout_reason": row.get("holdout_reason"),
+            "holdout_complete_independent_events": held_count,
+            "holdout_cost_stressed_net_cents": row.get("holdout_cost_stressed_net_cents"),
+            "holdout_event_cluster_lower_bound_cents": row.get("holdout_event_cluster_lower_bound_cents"),
             "reason": row.get("reason"),
         })
     return {
@@ -536,6 +546,24 @@ def run_check(data_root, status=None, *, now=None, force=False):
     packet, next_checkpoint, duplicate = check(
         status, checkpoint, registration, now=now, v12_registration=v12_registration
     )
+    trial = status.get("factory_demo_trial")
+    if isinstance(trial, dict):
+        packet["factory_demo_trial"] = {
+            "protocol": trial.get("protocol"),
+            "attempts": trial.get("attempts"),
+            "fills": trial.get("fills"),
+            "attempts_today": trial.get("attempts_today"),
+            "independent_events": trial.get("independent_events"),
+            "independent_days": trial.get("independent_days"),
+            "terminal_orders": trial.get("terminal_orders"),
+            "unresolved_orders": trial.get("unresolved_orders"),
+            "realized_net_cents": trial.get("realized_net_cents"),
+            "fees_cents": trial.get("fees_cents"),
+            "flat_at_review": trial.get("flat_at_review"),
+            "fees_reconciled": trial.get("fees_reconciled"),
+            "execution_environment": trial.get("execution_environment"),
+            "live_execution_enabled": trial.get("live_execution_enabled"),
+        }
     packet["research_sleeves"] = _research_snapshot(root / "sleeve_comparison.json", now=now)
     metrics = _read(metrics_path, {
         "schema": "kalshi_monitor_metrics_v1", "checks": 0,

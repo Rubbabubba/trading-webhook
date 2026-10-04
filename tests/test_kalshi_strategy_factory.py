@@ -57,3 +57,28 @@ def test_factory_positive_shadow_only_becomes_demo_candidate():
     assert report["execution_enabled"] is False
     assert report["fill_assumed"] is False
     assert report["live_promotion_eligible"] is False
+    assert report["holdout_started_at"] is not None
+    for index in range(20):
+        _observation(db, f"held-{index}", start + timedelta(days=16, hours=index),
+                     net=18, spec=candidate["spec"])
+    held = cycle(db, now=start + timedelta(days=18))["candidates"][0]
+    assert held["holdout_complete_independent_events"] == 20
+    assert held["holdout_event_cluster_lower_bound_cents"] > 0
+    assert held["complete_independent_events"] == 30
+
+
+def test_failed_future_holdout_stops_candidate_without_reusing_old_events():
+    db = _db(); start = datetime(2026, 10, 3, tzinfo=timezone.utc)
+    candidate = cycle(db, now=start)["candidates"][0]
+    for index in range(30):
+        _observation(db, f"first-{index}", start + timedelta(hours=index + 1),
+                     net=20, spec=candidate["spec"])
+    cycle(db, now=start + timedelta(days=15))
+    for index in range(10):
+        _observation(db, f"bad-{index}", start + timedelta(days=16, hours=index),
+                     net=-20, spec=candidate["spec"])
+    report = cycle(db, now=start + timedelta(days=17))["candidates"][0]
+    assert report["holdout_state"] == "rejected"
+    assert report["holdout_reason"] == "negative_holdout_mean"
+    assert report["complete_independent_events"] == 30
+    assert report["holdout_complete_independent_events"] == 10
