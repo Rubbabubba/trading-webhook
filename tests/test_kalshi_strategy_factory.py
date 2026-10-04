@@ -114,3 +114,20 @@ def test_generated_idea_rejects_tampered_hash_and_unbounded_spec():
     idea = {"id": "12345678-1234-1234-1234-123456789abc", "spec_hash": "0" * 64, "spec": raw}
     assert register_ideas(db, [idea]) is None
     assert db.execute("SELECT count(*) FROM strategy_factory_candidates WHERE strategy_id LIKE 'kalshi_idea_%'").fetchone()[0] == 0
+
+
+def test_rejected_idea_does_not_block_next_queued_hypothesis():
+    db = _db(); start = datetime(2026, 10, 3, tzinfo=timezone.utc)
+    cycle(db, now=start)
+    def idea(identifier, side):
+        raw = {"stratum": "non_sports", "price_bin": "5-10", "side": side, "family": "*"}
+        digest = hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return {"id": identifier, "spec_hash": digest, "spec": raw}
+    first = idea("12345678-1234-1234-1234-123456789abc", "no")
+    second = idea("12345678-1234-1234-1234-123456789abd", "yes")
+    registered = register_ideas(db, [first], now=start)
+    assert registered is not None
+    db.execute("UPDATE strategy_factory_candidates SET state='rejected' WHERE strategy_id=?", (registered,))
+    next_id = register_ideas(db, [first, second], now=start + timedelta(days=1))
+    assert next_id is not None and next_id != registered
+    assert db.execute("SELECT count(*) FROM strategy_factory_candidates WHERE strategy_id LIKE 'kalshi_idea_%'").fetchone()[0] == 2

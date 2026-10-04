@@ -69,7 +69,11 @@ def register_ideas(db, ideas, *, now=None):
                   "AND strategy_id LIKE 'kalshi_idea_%'").fetchone():
         return None
     for idea in ideas:
-        if not isinstance(idea, dict) or set(idea) != {"id", "spec_hash", "spec"}:
+        if not isinstance(idea, dict) or set(idea) not in (
+                {"id", "spec_hash", "spec"},
+                {"id", "capability_id", "version", "spec_hash", "spec"}):
+            continue
+        if idea.get("capability_id", "ask_to_settlement_v1") != "ask_to_settlement_v1" or idea.get("version", 1) != 1:
             continue
         raw = idea["spec"]
         if not isinstance(raw, dict) or set(raw) != {"stratum", "price_bin", "side", "family"}:
@@ -86,10 +90,11 @@ def register_ideas(db, ideas, *, now=None):
             continue
         digest = fingerprint(spec)
         strategy_id = "kalshi_idea_" + digest[:12]
-        db.execute("INSERT OR IGNORE INTO strategy_factory_candidates VALUES(?,?,?,?,?,?)",
-                   (strategy_id, digest, json.dumps(spec, sort_keys=True),
-                    _now(now).isoformat(), "shadow", "ai_idea_prospective_registration"))
-        return strategy_id
+        cursor = db.execute("INSERT OR IGNORE INTO strategy_factory_candidates VALUES(?,?,?,?,?,?)",
+                            (strategy_id, digest, json.dumps(spec, sort_keys=True),
+                             _now(now).isoformat(), "shadow", "ai_idea_prospective_registration"))
+        if cursor.rowcount:
+            return strategy_id
     return None
 
 

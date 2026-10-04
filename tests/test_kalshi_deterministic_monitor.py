@@ -164,6 +164,14 @@ def test_research_snapshot_carries_bounded_factory_candidate(tmp_path):
         "schema": "kalshi_sleeve_comparison_v1",
         "generated_at": "2026-10-29T12:35:00+00:00", "execution_enabled": False,
         "sleeves": [], "coverage": {},
+        "experiment_registry": {"schema": "kalshi_experiment_registry_v1",
+                                "execution_enabled": False, "experiments": [{
+            "idea_id": "12345678-1234-1234-1234-123456789abc",
+            "capability_id": "bea_gdp_release_quote_v1", "version": 1,
+            "spec_hash": "a" * 64, "registered_at": "2026-10-04T00:00:00+00:00",
+            "state": "shadow", "independent_events": 1,
+            "evidence_ref": "https://www.bea.gov/news/2026/gdp-advance-estimate-3rd-quarter-2026",
+            "orders_enabled": False}]},
         "official_release_probe": {
             "schema": "kalshi_official_release_probe_v1",
             "execution_enabled": False, "profitability_evidence": False,
@@ -215,6 +223,7 @@ def test_research_snapshot_carries_bounded_factory_candidate(tmp_path):
     path.write_text(json.dumps(source))
     now = datetime.fromisoformat(source["generated_at"]).timestamp()
     result = _research_snapshot(path, now=now)
+    assert result["experiment_registry"]["experiments"][0]["independent_events"] == 1
     assert result["strategy_factory"]["candidates"][0]["strategy_id"] == "kalshi_factory_example"
     assert result["official_release_probe"]["watchlist_contracts"] == 2
     assert result["official_release_probe"]["first_gdp_annualized_percent"] == "1.5"

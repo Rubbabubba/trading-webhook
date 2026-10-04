@@ -20,6 +20,7 @@ from .kalshi_strategy_factory import (
     cycle as strategy_factory_cycle, init as init_strategy_factory,
     status as strategy_factory_status,
 )
+from .kalshi_experiment_registry import register as register_experiments, status as experiment_status
 from .kalshi_factory_fee_probe import (
     probe_next as factory_fee_probe_next, status as factory_fee_probe_status,
 )
@@ -675,6 +676,8 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
     packet["official_release_probe"] = {**official_release_status(db, utcnow()),
                                         "error": official_release_error,
                                         "last_cycle": official_release_run or {}}
+    packet["experiment_registry"] = experiment_status(
+        db, packet["strategy_factory"], packet["official_release_probe"])
     coverage = coverage or {}
     mve_coverage = mve_coverage or {}
     packet.update({"generated_at": utcnow().isoformat(), "execution_enabled": False,
@@ -749,6 +752,7 @@ def run(data_root, cycles=None, interval_seconds=60):
                                 ideas = supplied["ideas"]
                     except (OSError, ValueError, TypeError):
                         pass
+                    register_experiments(db, ideas, now=utcnow())
                     strategy_factory_cycle(db, now=utcnow(), ideas=ideas)
                     try:
                         factory_fee_probe_next(db, client, now=utcnow())

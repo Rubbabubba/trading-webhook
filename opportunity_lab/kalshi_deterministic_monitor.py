@@ -322,6 +322,29 @@ def _research_snapshot(path, *, now):
                             "screen_positive": row.get("screen_positive") is True})
     if len(shadow_rows) != shadow_counts["contracts_screened"]:
         return None
+    registry = source.get("experiment_registry") or {}
+    experiments = []
+    if registry:
+        if (not isinstance(registry, dict)
+                or registry.get("schema") != "kalshi_experiment_registry_v1"
+                or registry.get("execution_enabled") is not False
+                or not isinstance(registry.get("experiments"), list)
+                or len(registry["experiments"]) > 24):
+            return None
+        for item in registry["experiments"]:
+            if (not isinstance(item, dict) or item.get("orders_enabled") is not False
+                    or item.get("capability_id") not in ("ask_to_settlement_v1", "bea_gdp_release_quote_v1")
+                    or item.get("version") != 1
+                    or item.get("state") not in ("awaiting_runner", "awaiting_future_release", "shadow",
+                                                   "rejected", "demo_trial_candidate")
+                    or not isinstance(item.get("idea_id"), str) or len(item["idea_id"]) != 36
+                    or not isinstance(item.get("spec_hash"), str) or len(item["spec_hash"]) != 64
+                    or type(item.get("independent_events")) is not int
+                    or not 0 <= item["independent_events"] <= 1_000_000):
+                return None
+            experiments.append({key: item.get(key) for key in (
+                "idea_id", "capability_id", "version", "spec_hash", "registered_at",
+                "state", "independent_events", "evidence_ref", "orders_enabled")})
     return {
         "generated_at": generated.isoformat(),
         "execution_enabled": False,
@@ -329,6 +352,8 @@ def _research_snapshot(path, *, now):
         "multivariate_scanned": multivariate_scanned,
         "sleeves": sleeves,
         "strategy_factory": {"execution_enabled": False, "candidates": candidates},
+        "experiment_registry": {"schema": "kalshi_experiment_registry_v1",
+                                "execution_enabled": False, "experiments": experiments},
         "factory_fee_probe": {"actual_fees_verified": False,
                               "schedule_id": fee_probe.get("schedule_id"),
                               "error": fee_probe.get("error"),

@@ -1,5 +1,21 @@
 # Bounded Kalshi strategy factory v1
 
+## Versioned experiment registry
+
+Life OS now labels each new AI hypothesis with an exact test capability. The
+worker admits only `ask_to_settlement_v1` or `bea_gdp_release_quote_v1` with
+a matching specification hash and version 1. It records the admission time
+and returns the idea ID, test state, independent event count, and evidence
+reference in the compact monitor packet. The ask-to-settlement evaluator
+keeps its existing prospective shadow and holdout gates. The BEA evaluator
+counts only a publication first observed after that idea was registered;
+one GDP release counts as one event regardless of the number of contracts.
+Neither capability submits live orders. Unsupported ideas remain marked
+`capability_needed` in Life OS until a separate tested evaluator exists.
+Older idea cards are still readable and existing ask-to-settlement queue
+entries remain valid. Earlier BEA research cards are not retroactively
+attributed to the new registered experiment.
+
 Life OS now runs a budgeted daily idea search and exposes supported,
 declarative ask-to-settlement specifications through an authenticated feed.
 The Demo report publisher fetches that feed into the worker data directory.
