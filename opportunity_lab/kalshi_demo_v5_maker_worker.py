@@ -68,6 +68,7 @@ from .kalshi_process_lock import acquire
 from .kalshi_shadow import cost, price_book
 from .kalshi_external_sleeves import research_relevance
 from .kalshi_v12_quote_holdout import evaluate as evaluate_v12_holdout
+from .kalshi_v12_execution_feasibility import crossing_diagnostic
 
 
 STRATEGY_ID = "stable_balanced_maker_v9"
@@ -1545,6 +1546,18 @@ def evidence(state, journal):
 def write_status(path, state, journal, **values):
     current_evidence = evidence(state, journal)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
+    latest_v12 = state.db.execute(
+        "SELECT detail,observed_at,ticker FROM v12_shadow_signals ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    current_evidence["v12_crossing_feasibility"] = (
+        {"available": False, "reason": "no_v12_signal", "execution_enabled": False}
+        if latest_v12 is None else {
+            "available": True,
+            "observed_at": latest_v12[1],
+            "ticker": latest_v12[2],
+            **crossing_diagnostic(json.loads(latest_v12[0])),
+        }
+    )
     trial = v12_trial_status(state, journal, current_evidence["v12_shadow"])
     fillability = v12_fillability_status(
         state, journal, current_evidence["v12_shadow"]
