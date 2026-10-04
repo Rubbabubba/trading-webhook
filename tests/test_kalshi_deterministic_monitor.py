@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 from opportunity_lab.kalshi_deterministic_monitor import (
     check, factory_promotion_preflight, gate_state, run_check,
@@ -161,7 +162,7 @@ def test_research_snapshot_carries_bounded_factory_candidate(tmp_path):
     from opportunity_lab.kalshi_deterministic_monitor import _research_snapshot
     source = {
         "schema": "kalshi_sleeve_comparison_v1",
-        "generated_at": "2026-10-03T20:00:00+00:00", "execution_enabled": False,
+        "generated_at": "2026-10-29T12:35:00+00:00", "execution_enabled": False,
         "sleeves": [], "coverage": {},
         "official_release_probe": {
             "schema": "kalshi_official_release_probe_v1",
@@ -169,6 +170,19 @@ def test_research_snapshot_carries_bounded_factory_candidate(tmp_path):
             "research_state": "capture_only_rule_mapping_unverified",
             "latest_schedule_at": "2026-10-03T19:00:00+00:00",
             "watchlist_contracts": 2, "demo_quote_snapshots": 0,
+            "publication_versions": 1,
+            "first_publication_observed_at": "2026-10-29T12:31:00+00:00",
+            "first_publication_source_url": "https://www.bea.gov/news/2026/gdp-advance-estimate-3rd-quarter-2026",
+            "first_gdp_annualized_percent": "1.5",
+            "publication_value_conflict": False,
+            "quotes_before_first_publication": 2,
+            "quotes_after_first_publication": 1,
+            "contract_comparisons": [{"ticker": "KXGDP-26OCT30-T1.0",
+                                       "threshold_percent": "1.0",
+                                       "source_implied_result": "yes",
+                                       "quotes_before_source": 2,
+                                       "quotes_after_source": 1,
+                                       "quotes_with_other_rule_version": 0}],
             "next_releases": [{"name": "Gross Domestic Product",
                                "scheduled_at": "2026-10-29T12:30:00+00:00",
                                "watchlist_contracts": 2, "close_timing_review": 2}],
@@ -186,12 +200,20 @@ def test_research_snapshot_carries_bounded_factory_candidate(tmp_path):
     }
     path = tmp_path / "research.json"
     path.write_text(json.dumps(source))
-    result = _research_snapshot(path, now=1791057600)
+    now = datetime.fromisoformat(source["generated_at"]).timestamp()
+    result = _research_snapshot(path, now=now)
     assert result["strategy_factory"]["candidates"][0]["strategy_id"] == "kalshi_factory_example"
     assert result["official_release_probe"]["watchlist_contracts"] == 2
+    assert result["official_release_probe"]["first_gdp_annualized_percent"] == "1.5"
+    assert result["official_release_probe"]["quotes_before_first_publication"] == 2
+    assert result["official_release_probe"]["contract_comparisons"][0]["source_implied_result"] == "yes"
     source["official_release_probe"]["profitability_evidence"] = True
     path.write_text(json.dumps(source))
-    assert _research_snapshot(path, now=1791057600) is None
+    assert _research_snapshot(path, now=now) is None
+    source["official_release_probe"]["profitability_evidence"] = False
+    source["official_release_probe"]["first_publication_source_url"] = "https://other.example/news/fake"
+    path.write_text(json.dumps(source))
+    assert _research_snapshot(path, now=now) is None
 
 
 def test_completed_sweep_remains_verifiable_during_next_scan():

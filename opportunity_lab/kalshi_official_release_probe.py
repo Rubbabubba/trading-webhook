@@ -8,14 +8,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+from html.parser import HTMLParser
 import json
 import math
 import re
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
 
 BEA_SCHEDULE_URL = "https://apps.bea.gov/API/signup/release_dates.json"
+BEA_RELEASE_INDEX = "https://www.bea.gov/news/current-releases"
 RELEASE_SERIES = {
     "Gross Domestic Product": ("KXGDP-",),
     "Personal Income and Outlays": ("KXPCE-", "KXPCECORE-"),
@@ -25,6 +28,42 @@ WINDOW_BEFORE = timedelta(minutes=10)
 WINDOW_AFTER = timedelta(minutes=10)
 MAX_QUOTES_PER_CYCLE = 2
 GDP_THRESHOLD = re.compile(r"(?i)\b(?:more than|greater than|exceed(?:s)?)\s+(-?[0-9]+(?:\.[0-9]+)?)\s*%?")
+GDP_RESULT = re.compile(
+    r"\breal (?:gross domestic product\s*\(GDP\)|GDP)\s+"
+    r"(increased|decreased) at an annual rate of\s+([0-9]+(?:\.[0-9]+)?) percent\b",
+    re.IGNORECASE,
+)
+MAX_SOURCE_BYTES = 524288
+SOURCE_WINDOW = timedelta(minutes=30)
+
+
+class _ReleaseHTML(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.links = []
+        self._href = None
+        self._anchor = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self._href = dict(attrs).get("href")
+            self._anchor = []
+
+    def handle_data(self, data):
+        self.parts.append(data)
+        if self._href is not None:
+            self._anchor.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._href is not None:
+            self.links.append((" ".join(" ".join(self._anchor).split()), self._href))
+            self._href = None
+            self._anchor = []
+
+    @property
+    def text(self):
+        return " ".join(" ".join(self.parts).split())
 
 
 def _utc(value):
@@ -58,6 +97,13 @@ def init(db):
             PRIMARY KEY(release_name,scheduled_at,ticker,observed_at));
         CREATE INDEX IF NOT EXISTS official_release_quote_event_idx
             ON official_release_quotes(release_name,scheduled_at,ticker);
+        CREATE TABLE IF NOT EXISTS official_release_publications(
+            release_name TEXT NOT NULL,scheduled_at TEXT NOT NULL,
+            body_sha256 TEXT NOT NULL,source_url TEXT NOT NULL,
+            request_started_at TEXT NOT NULL,first_observed_at TEXT NOT NULL,
+            gdp_annualized_percent TEXT,parse_state TEXT NOT NULL,
+            source_html TEXT NOT NULL,
+            PRIMARY KEY(release_name,scheduled_at,body_sha256));
     """)
 
 
@@ -70,6 +116,116 @@ def fetch_bea_schedule():
     if len(body) > 131072:
         raise ValueError("bea_schedule_too_large")
     return json.loads(body)
+
+
+def _bea_html(url):
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc != "www.bea.gov":
+        raise ValueError("unexpected_bea_source_url")
+    started = datetime.now(timezone.utc)
+    request = Request(url, headers={"User-Agent": "KalshiDemoResearch/1.0"})
+    with urlopen(request, timeout=8) as response:
+        landed = urlparse(response.url)
+        if landed.scheme != "https" or landed.netloc != "www.bea.gov":
+            raise ValueError("bea_source_redirected")
+        body = response.read(MAX_SOURCE_BYTES + 1)
+        observed = datetime.now(timezone.utc)
+        final_url = response.url
+    if len(body) > MAX_SOURCE_BYTES:
+        raise ValueError("bea_source_too_large")
+    return final_url, body, started, observed
+
+
+def _gdp_advance_title(scheduled):
+    at = _utc(datetime.fromisoformat(scheduled))
+    month = at.month
+    if month in (1, 2, 3):
+        quarter, year = 4, at.year - 1
+    elif month in (4, 5, 6):
+        quarter, year = 1, at.year
+    elif month in (7, 8, 9):
+        quarter, year = 2, at.year
+    else:
+        quarter, year = 3, at.year
+    return f"GDP (Advance Estimate), {quarter}{'st' if quarter == 1 else 'nd' if quarter == 2 else 'rd' if quarter == 3 else 'th'} Quarter {year}"
+
+
+def fetch_gdp_publication(scheduled):
+    """Find the matching BEA release page after publication, without guessing a URL."""
+    title = _gdp_advance_title(scheduled)
+    _, index, _, _ = _bea_html(BEA_RELEASE_INDEX)
+    parser = _ReleaseHTML()
+    parser.feed(index.decode("utf-8", errors="replace"))
+    candidates = []
+    for label, href in parser.links:
+        url = urljoin(BEA_RELEASE_INDEX, href)
+        parsed = urlparse(url)
+        if (label == title and parsed.scheme == "https"
+                and parsed.netloc == "www.bea.gov"
+                and parsed.path.startswith(f"/news/{_utc(datetime.fromisoformat(scheduled)).year}/")):
+            candidates.append(url)
+    if len(set(candidates)) != 1:
+        return None
+    return _bea_html(candidates[0])
+
+
+def parse_gdp_publication(body, scheduled):
+    parser = _ReleaseHTML()
+    parser.feed(body.decode("utf-8", errors="replace"))
+    content = parser.text
+    title = _gdp_advance_title(scheduled)
+    position = content.find(title)
+    if position < 0:
+        return None, "title_mismatch"
+    matches = GDP_RESULT.findall(content[position:position + 2500])
+    if not matches:
+        return None, "gdp_value_unparsed"
+    first = matches[0]
+    try:
+        value = Decimal(first[1]) * (1 if first[0].lower() == "increased" else -1)
+    except InvalidOperation:
+        return None, "gdp_value_unparsed"
+    if not value.is_finite() or abs(value) > 100:
+        return None, "gdp_value_unparsed"
+    return str(value), "gdp_advance_text_parsed_unverified"
+
+
+def capture_publication(db, now, fetcher=fetch_gdp_publication):
+    """Save first-observed public source versions; never treat text as settlement."""
+    at = _utc(now)
+    rows = db.execute(
+        "SELECT DISTINCT s.release_name,s.scheduled_at FROM official_release_schedule s "
+        "JOIN official_release_watchlist w ON w.release_name=s.release_name "
+        "AND w.scheduled_at=s.scheduled_at "
+        "WHERE s.release_name='Gross Domestic Product' AND s.scheduled_at<=? "
+        "AND s.scheduled_at>=? ORDER BY s.scheduled_at LIMIT 1",
+        (at.isoformat(), (at - SOURCE_WINDOW).isoformat()),
+    ).fetchall()
+    if not rows:
+        return 0
+    name, scheduled = rows[0]
+    if db.execute("SELECT count(*) FROM official_release_publications "
+                  "WHERE release_name=? AND scheduled_at=?", (name, scheduled)).fetchone()[0] >= 8:
+        return 0
+    fetched = fetcher(scheduled)
+    if fetched is None:
+        return 0
+    source_url, body, started, observed = fetched
+    parsed = urlparse(source_url)
+    if (parsed.scheme != "https" or parsed.netloc != "www.bea.gov"
+            or not parsed.path.startswith("/news/")
+            or not isinstance(body, bytes) or len(body) > MAX_SOURCE_BYTES):
+        raise ValueError("invalid_bea_publication")
+    started, observed = _utc(started), _utc(observed)
+    if not started <= observed <= datetime.now(timezone.utc) + timedelta(seconds=5):
+        raise ValueError("invalid_bea_publication_clock")
+    value, state = parse_gdp_publication(body, scheduled)
+    digest = hashlib.sha256(body).hexdigest()
+    cursor = db.execute("INSERT OR IGNORE INTO official_release_publications VALUES(?,?,?,?,?,?,?,?,?)",
+                        (name, scheduled, digest, source_url, started.isoformat(),
+                         observed.isoformat(), value, state,
+                         body.decode("utf-8", errors="replace")))
+    return cursor.rowcount
 
 
 def parse_schedule(payload, now):
@@ -246,17 +402,64 @@ def capture_quotes(db, client, now):
     return captured
 
 
-def cycle(db, client, markets, now, fetcher=fetch_bea_schedule):
+def cycle(db, client, markets, now, fetcher=fetch_bea_schedule,
+          publication_fetcher=fetch_gdp_publication):
     at = _utc(now)
     refreshed = refresh_schedule(db, at, fetcher)
     added = register_watchlist(db, markets, at)
     quotes = capture_quotes(db, client, at)
+    publications = capture_publication(db, at, publication_fetcher)
     return {"schedule_refreshed": refreshed, "watchlist_added": added,
-            "quotes_captured": quotes}
+            "quotes_captured": quotes, "publications_captured": publications}
 
 
 def status(db, now):
     at = _utc(now)
+    publication_rows = db.execute(
+        "SELECT scheduled_at,source_url,first_observed_at,gdp_annualized_percent,parse_state "
+        "FROM official_release_publications WHERE scheduled_at="
+        "(SELECT max(scheduled_at) FROM official_release_publications) "
+        "ORDER BY first_observed_at,body_sha256 LIMIT 8"
+    ).fetchall()
+    values = {row[3] for row in publication_rows if row[4] == "gdp_advance_text_parsed_unverified"}
+    quote_timing = (0, 0)
+    if publication_rows:
+        quote_timing = db.execute(
+            "SELECT sum(CASE WHEN observed_at<? THEN 1 ELSE 0 END),"
+            "sum(CASE WHEN observed_at>=? THEN 1 ELSE 0 END) "
+            "FROM official_release_quotes WHERE scheduled_at=?",
+            (publication_rows[0][2], publication_rows[0][2], publication_rows[0][0]),
+        ).fetchone()
+    comparisons = []
+    if publication_rows and publication_rows[0][3] is not None and not len(values) > 1:
+        source_value = Decimal(publication_rows[0][3])
+        for ticker, digest, raw in db.execute(
+            "SELECT w.ticker,w.rules_sha256,t.terms_json FROM official_release_watchlist w "
+            "JOIN official_release_contract_terms t ON t.release_name=w.release_name "
+            "AND t.scheduled_at=w.scheduled_at AND t.ticker=w.ticker "
+            "AND t.rules_sha256=w.rules_sha256 WHERE w.scheduled_at=? "
+            "ORDER BY w.ticker LIMIT 24", (publication_rows[0][0],)
+        ):
+            mapping = json.loads(raw).get("mapping") or {}
+            if mapping.get("state") != "template_parsed_outcome_unverified":
+                continue
+            try:
+                threshold = Decimal(mapping["threshold_percent"])
+            except (InvalidOperation, KeyError, TypeError):
+                continue
+            before, after, mismatched = db.execute(
+                "SELECT sum(CASE WHEN observed_at<? THEN 1 ELSE 0 END),"
+                "sum(CASE WHEN observed_at>=? THEN 1 ELSE 0 END),"
+                "sum(CASE WHEN rules_sha256<>? THEN 1 ELSE 0 END) "
+                "FROM official_release_quotes WHERE scheduled_at=? AND ticker=?",
+                (publication_rows[0][2], publication_rows[0][2], digest,
+                 publication_rows[0][0], ticker),
+            ).fetchone()
+            comparisons.append({"ticker": ticker, "threshold_percent": str(threshold),
+                                "source_implied_result": "yes" if source_value > threshold else "no",
+                                "quotes_before_source": before or 0,
+                                "quotes_after_source": after or 0,
+                                "quotes_with_other_rule_version": mismatched or 0})
     next_rows = db.execute(
         "SELECT s.release_name,s.scheduled_at,count(w.ticker),"
         "sum(CASE WHEN (julianday(w.close_at)-julianday(s.scheduled_at))*24>2 "
@@ -283,6 +486,14 @@ def status(db, now):
             "WHERE json_extract(t.terms_json,'$.mapping.state')="
             "'template_parsed_outcome_unverified'").fetchone()[0],
         "demo_quote_snapshots": db.execute("SELECT count(*) FROM official_release_quotes").fetchone()[0],
+        "publication_versions": len(publication_rows),
+        "first_publication_observed_at": publication_rows[0][2] if publication_rows else None,
+        "first_publication_source_url": publication_rows[0][1] if publication_rows else None,
+        "first_gdp_annualized_percent": publication_rows[0][3] if publication_rows else None,
+        "publication_value_conflict": len(values) > 1,
+        "quotes_before_first_publication": quote_timing[0] or 0,
+        "quotes_after_first_publication": quote_timing[1] or 0,
+        "contract_comparisons": comparisons,
         "next_releases": [{"name": name, "scheduled_at": scheduled,
                            "watchlist_contracts": count, "close_timing_review": review or 0}
                           for name, scheduled, count, review in next_rows],

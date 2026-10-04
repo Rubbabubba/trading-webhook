@@ -2,7 +2,8 @@ from datetime import datetime, timedelta, timezone
 import sqlite3
 
 from opportunity_lab.kalshi_official_release_probe import (
-    capture_quotes, init, parse_schedule, register_watchlist, refresh_schedule, status,
+    capture_publication, capture_quotes, fetch_gdp_publication, init,
+    parse_gdp_publication, parse_schedule, register_watchlist, refresh_schedule, status,
 )
 
 
@@ -102,3 +103,61 @@ def test_watchlist_rejects_market_that_closes_before_release():
     market["close_time"] = (release - timedelta(minutes=1)).isoformat()
     assert register_watchlist(db, [market], datetime.now(timezone.utc)) == 0
     db.close()
+
+
+def test_gdp_publication_capture_is_versioned_and_never_claims_settlement():
+    now = datetime.now(timezone.utc)
+    release = now - timedelta(minutes=1)
+    scheduled = release.isoformat()
+    db = sqlite3.connect(":memory:", isolation_level=None)
+    init(db)
+    db.execute("INSERT INTO official_release_schedule VALUES(?,?,?,?)",
+               ("Gross Domestic Product", scheduled, now.isoformat(), "official"))
+    market = {**_market(release), "strike_type": "greater", "floor_strike": 1,
+              "rules_primary": "Resolves Yes if real GDP (as measured by the BEA's seasonally adjusted and annualized Advance Estimate) increases by more than 1.0."}
+    assert register_watchlist(db, [market], now) == 1
+    title = "GDP (Advance Estimate), 3rd Quarter 2026"
+    # Use a fixed October schedule for the title mapping, independent of the
+    # current test date; the live capture uses the stored BEA release date.
+    october = datetime(2026, 10, 29, 12, 30, tzinfo=timezone.utc).isoformat()
+    body = (f"<h1>{title}</h1><p>Real gross domestic product (GDP) increased "
+            "at an annual rate of 1.5 percent in the third quarter.</p>").encode()
+    assert parse_gdp_publication(body, october) == ("1.5", "gdp_advance_text_parsed_unverified")
+    assert parse_gdp_publication(b"<h1>Other release</h1>", october) == (None, "title_mismatch")
+    # Adapt the document title to the current release date for storage.
+    from opportunity_lab.kalshi_official_release_probe import _gdp_advance_title
+    live_body = body.replace(title.encode(), _gdp_advance_title(scheduled).encode())
+    source = ("https://www.bea.gov/news/2026/gdp-advance-estimate", live_body,
+              now - timedelta(seconds=1), now)
+    fetch = lambda _: source
+    assert capture_publication(db, now, fetch) == 1
+    assert capture_publication(db, now, fetch) == 0
+    report = status(db, now)
+    assert report["publication_versions"] == 1
+    assert report["first_gdp_annualized_percent"] == "1.5"
+    assert report["publication_value_conflict"] is False
+    assert report["contract_comparisons"][0]["source_implied_result"] == "yes"
+    assert report["profitability_evidence"] is False
+    db.close()
+
+
+def test_gdp_publication_discovery_requires_matching_bea_link(monkeypatch):
+    import opportunity_lab.kalshi_official_release_probe as probe
+    scheduled = datetime(2026, 10, 29, 12, 30, tzinfo=timezone.utc).isoformat()
+    index = (b'<a href="/news/2026/gdp-advance-estimate-3rd-quarter-2026">'
+             b'GDP (Advance Estimate), 3rd Quarter 2026</a>')
+    page = b"<h1>GDP (Advance Estimate), 3rd Quarter 2026</h1>"
+    calls = []
+    def fake_fetch(url):
+        calls.append(url)
+        return url, index if len(calls) == 1 else page, datetime.now(timezone.utc), datetime.now(timezone.utc)
+    monkeypatch.setattr(probe, "_bea_html", fake_fetch)
+    assert fetch_gdp_publication(scheduled)[1] == page
+    assert len(calls) == 2
+    calls.clear()
+    def no_match(url):
+        calls.append(url)
+        return url, b'<a href="https://other.example/news/2026/x">GDP (Advance Estimate), 3rd Quarter 2026</a>', datetime.now(timezone.utc), datetime.now(timezone.utc)
+    monkeypatch.setattr(probe, "_bea_html", no_match)
+    assert fetch_gdp_publication(scheduled) is None
+    assert len(calls) == 1

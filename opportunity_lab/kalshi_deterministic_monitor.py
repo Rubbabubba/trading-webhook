@@ -5,7 +5,7 @@ document into a compact review packet, durable checkpoint, and usage counters.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import argparse
 import hashlib
 import json
@@ -209,9 +209,63 @@ def _research_snapshot(path, *, now):
                                 "close_timing_review": counts[1]})
     release_counts = (release.get("watchlist_contracts"), release.get("demo_quote_snapshots"),
                       release.get("contract_rule_versions", 0), release.get("contracts_with_rule_changes", 0),
-                      release.get("parsed_gdp_templates", 0))
+                      release.get("parsed_gdp_templates", 0), release.get("publication_versions", 0),
+                      release.get("quotes_before_first_publication", 0),
+                      release.get("quotes_after_first_publication", 0))
     if release and any(type(value) is not int or not 0 <= value <= 1_000_000 for value in release_counts):
         return None
+    publication_at = release.get("first_publication_observed_at")
+    publication_url = release.get("first_publication_source_url")
+    gdp_value = release.get("first_gdp_annualized_percent")
+    if release:
+        if ((publication_at is None) != (publication_url is None)
+                or (gdp_value is not None and publication_at is None)
+                or (publication_at is not None and
+                    (not isinstance(publication_at, str) or len(publication_at) > 50))
+                or (publication_url is not None and
+                    (not isinstance(publication_url, str) or len(publication_url) > 250
+                     or not publication_url.startswith("https://www.bea.gov/news/")))
+                or (gdp_value is not None and
+                    (not isinstance(gdp_value, str) or len(gdp_value) > 16))
+                or type(release.get("publication_value_conflict", False)) is not bool):
+            return None
+        try:
+            if publication_at is not None:
+                observed_publication = datetime.fromisoformat(publication_at)
+                if (observed_publication.tzinfo is None
+                        or observed_publication > generated + timedelta(minutes=5)):
+                    return None
+            if gdp_value is not None and (not math.isfinite(float(gdp_value))
+                                          or abs(float(gdp_value)) > 100):
+                return None
+        except ValueError:
+            return None
+    comparison_rows = release.get("contract_comparisons") or []
+    if not isinstance(comparison_rows, list) or len(comparison_rows) > 24:
+        return None
+    comparisons = []
+    for row in comparison_rows:
+        if not isinstance(row, dict):
+            return None
+        ticker, threshold, implied = (row.get("ticker"), row.get("threshold_percent"),
+                                      row.get("source_implied_result"))
+        counts = tuple(row.get(key) for key in ("quotes_before_source", "quotes_after_source",
+                                                "quotes_with_other_rule_version"))
+        if (not isinstance(ticker, str) or len(ticker) > 100
+                or not isinstance(threshold, str) or len(threshold) > 16
+                or implied not in ("yes", "no")
+                or any(type(value) is not int or not 0 <= value <= 1_000_000 for value in counts)):
+            return None
+        try:
+            if not math.isfinite(float(threshold)) or abs(float(threshold)) > 100:
+                return None
+        except ValueError:
+            return None
+        comparisons.append({"ticker": ticker, "threshold_percent": threshold,
+                            "source_implied_result": implied,
+                            "quotes_before_source": counts[0],
+                            "quotes_after_source": counts[1],
+                            "quotes_with_other_rule_version": counts[2]})
     return {
         "generated_at": generated.isoformat(),
         "execution_enabled": False,
@@ -232,6 +286,14 @@ def _research_snapshot(path, *, now):
             "contract_rule_versions": release_counts[2] if release else 0,
             "contracts_with_rule_changes": release_counts[3] if release else 0,
             "parsed_gdp_templates": release_counts[4] if release else 0,
+            "publication_versions": release_counts[5] if release else 0,
+            "quotes_before_first_publication": release_counts[6] if release else 0,
+            "quotes_after_first_publication": release_counts[7] if release else 0,
+            "first_publication_observed_at": publication_at,
+            "first_publication_source_url": publication_url,
+            "first_gdp_annualized_percent": gdp_value,
+            "publication_value_conflict": release.get("publication_value_conflict", False),
+            "contract_comparisons": comparisons,
             "next_releases": parsed_releases,
             "error": release.get("error") if isinstance(release.get("error"), str)
             and len(release["error"]) <= 80 else None,
