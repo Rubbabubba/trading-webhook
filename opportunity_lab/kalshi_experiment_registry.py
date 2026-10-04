@@ -69,8 +69,8 @@ def register(db, ideas, *, now=None):
 
 def status(db, factory, release):
     init(db)
-    candidates = {row.get("origin_idea_id"): row for row in factory.get("candidates", [])
-                  if row.get("origin_idea_id")}
+    candidates = {(row.get("spec") or {}).get("origin_idea_id", row.get("origin_idea_id")): row
+                  for row in factory.get("candidates", [])}
     rows = []
     for idea_id, capability, version, digest, registered_at in db.execute(
         "SELECT idea_id,capability_id,version,spec_hash,registered_at FROM research_experiments "

@@ -16,6 +16,7 @@ import sqlite3
 import statistics
 
 from .kalshi_external_sleeves import PRICE_BINS
+from . import kalshi_strategy_tournament as tournament
 
 
 MIN_COMPLETE_EVENTS = 30
@@ -37,12 +38,14 @@ def specs():
 
 
 def fingerprint(spec):
-    if spec not in tuple(specs()) and not _valid_generated_spec(spec):
+    if spec not in tuple(specs()) and not _valid_generated_spec(spec) and not _valid_tournament_spec(spec):
         raise ValueError("unapproved_strategy_spec")
     return hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _valid_generated_spec(spec):
+    if isinstance(spec, dict) and spec.get("evaluation_protocol") == tournament.PROTOCOL:
+        spec = {key: value for key, value in spec.items() if key != "evaluation_protocol"}
     if not isinstance(spec, dict) or set(spec) != {
         "primitive", "stratum", "price_bin", "side", "family", "origin_idea_id",
         "extra_fee_stress_cents", "execution_enabled",
@@ -61,14 +64,30 @@ def _valid_generated_spec(spec):
             and spec["execution_enabled"] is False)
 
 
-def register_ideas(db, ideas, *, now=None):
-    """Admit at most one validated, novel AI idea to prospective shadow tests."""
+def _valid_tournament_spec(spec):
+    if not isinstance(spec, dict) or set(spec) != {
+        "primitive", "stratum", "price_bin", "side", "family", "evaluation_protocol",
+        "extra_fee_stress_cents", "execution_enabled",
+    } or spec.get("evaluation_protocol") != tournament.PROTOCOL:
+        return False
+    return _valid_generated_spec({key: value for key, value in spec.items()
+                                 if key != "evaluation_protocol"} | {
+        "origin_idea_id": "00000000-0000-0000-0000-000000000000"})
+
+
+def register_ideas(db, ideas, *, now=None, parallel=False):
+    """Admit validated novel ideas within the shared shadow concurrency cap."""
     if not isinstance(ideas, list) or len(ideas) > 32:
         return None
-    if db.execute("SELECT 1 FROM strategy_factory_candidates WHERE state='shadow' "
-                  "AND strategy_id LIKE 'kalshi_idea_%'").fetchone():
+    active = db.execute("SELECT count(*) FROM strategy_factory_candidates WHERE state='shadow' "
+                        "AND strategy_id LIKE 'kalshi_idea_%'").fetchone()[0]
+    slots = (tournament.MAX_AI_ACTIVE if parallel else 1) - active
+    if slots <= 0:
         return None
+    admitted = []
     for idea in ideas:
+        if parallel and db.execute("SELECT count(*) FROM strategy_tournament_protocols").fetchone()[0] >= tournament.MAX_REGISTERED:
+            break
         if not isinstance(idea, dict) or set(idea) not in (
                 {"id", "spec_hash", "spec"},
                 {"id", "capability_id", "version", "spec_hash", "spec"}):
@@ -86,7 +105,12 @@ def register_ideas(db, ideas, *, now=None):
                 "origin_idea_id": idea["id"],
                 "extra_fee_stress_cents": EXTRA_FEE_STRESS_CENTS,
                 "execution_enabled": False}
+        if parallel:
+            spec["evaluation_protocol"] = tournament.PROTOCOL
         if not _valid_generated_spec(spec):
+            continue
+        if db.execute("SELECT 1 FROM strategy_factory_candidates WHERE json_extract(spec_json,'$.origin_idea_id')=?",
+                      (idea["id"],)).fetchone():
             continue
         digest = fingerprint(spec)
         strategy_id = "kalshi_idea_" + digest[:12]
@@ -94,8 +118,12 @@ def register_ideas(db, ideas, *, now=None):
                             (strategy_id, digest, json.dumps(spec, sort_keys=True),
                              _now(now).isoformat(), "shadow", "ai_idea_prospective_registration"))
         if cursor.rowcount:
-            return strategy_id
-    return None
+            if parallel:
+                tournament.register_protocol(db, strategy_id, digest, _now(now))
+            admitted.append(strategy_id)
+            if len(admitted) >= slots:
+                break
+    return admitted[0] if admitted else None
 
 
 def init(db: sqlite3.Connection):
@@ -124,6 +152,7 @@ def init(db: sqlite3.Connection):
       CREATE INDEX IF NOT EXISTS calibration_parent_observed_idx
         ON calibration_parent_observations(observed_at);
     """)
+    tournament.init(db)
 
 
 def _rows(db):
@@ -197,63 +226,63 @@ def register_next(db, *, now=None):
 
 
 def capture_future(db):
-    active = db.execute("SELECT strategy_id,spec_json,registered_at FROM strategy_factory_candidates "
-                        "WHERE state='shadow'").fetchall()
+    return _capture_shared(db, holdout=False)
+
+
+def _capture_shared(db, *, holdout):
+    """Dispatch one bounded append-only feed page to every active candidate."""
+    db.execute("CREATE TABLE IF NOT EXISTS strategy_factory_cursors("
+               "strategy_id TEXT,split TEXT,last_rowid INTEGER NOT NULL,PRIMARY KEY(strategy_id,split))")
+    split = "holdout" if holdout else "prospective"
+    table = "strategy_factory_holdout_events" if holdout else "strategy_factory_events"
+    query = ("SELECT c.strategy_id,c.spec_json,h.started_at FROM strategy_factory_candidates c "
+             "JOIN strategy_factory_holdouts h USING(strategy_id) WHERE h.state='collecting'" if holdout else
+             "SELECT strategy_id,spec_json,registered_at FROM strategy_factory_candidates WHERE state='shadow'")
+    active = []
+    for strategy_id, raw_spec, started in db.execute(query).fetchall():
+        cursor = db.execute("SELECT last_rowid FROM strategy_factory_cursors WHERE strategy_id=? AND split=?",
+                            (strategy_id, split)).fetchone()
+        # Existing rows after registration remain eligible during migration.
+        if cursor:
+            last = cursor[0]
+        else:
+            first = db.execute("SELECT min(rowid) FROM calibration_parent_observations WHERE observed_at>?",
+                               (started,)).fetchone()[0]
+            last = first - 1 if first is not None else db.execute(
+                "SELECT coalesce(max(rowid),0) FROM calibration_parent_observations").fetchone()[0]
+        active.append((strategy_id, json.loads(raw_spec), started, last))
     if not active:
         return 0
+    rows = db.execute("SELECT rowid,observation_id,event_id,observed_at,detail FROM calibration_parent_observations "
+                      "WHERE rowid>? ORDER BY rowid LIMIT 2000", (min(row[3] for row in active),)).fetchall()
     added = 0
-    for strategy_id, raw_spec, registered_at in active:
-        spec = json.loads(raw_spec)
-        future = db.execute(
-            "SELECT o.observation_id,o.event_id,o.observed_at,o.detail "
-            "FROM calibration_parent_observations o "
-            "WHERE o.observed_at>? AND NOT EXISTS ("
-            "SELECT 1 FROM strategy_factory_events e WHERE e.strategy_id=? "
-            "AND e.observation_id=o.observation_id)",
-            (registered_at, strategy_id),
-        )
-        for observation_id, event_id, observed_at, detail in future:
+    for strategy_id, spec, started, last in active:
+        progress = last
+        for rowid, observation_id, event_id, observed_at, detail in rows:
+            if rowid <= last:
+                continue
+            progress = rowid
+            if observed_at <= started:
+                continue
             try:
                 row = json.loads(detail)
             except (TypeError, ValueError):
                 continue
             if not _matches(spec, row):
                 continue
-            cursor = db.execute("INSERT OR IGNORE INTO strategy_factory_events VALUES(?,?,?,?)",
-                                (strategy_id, observation_id, event_id, observed_at))
-            added += cursor.rowcount
+            if holdout and db.execute("SELECT 1 FROM strategy_factory_events WHERE strategy_id=? AND event_id=?",
+                                      (strategy_id, event_id)).fetchone():
+                continue
+            inserted = db.execute(f"INSERT OR IGNORE INTO {table} VALUES(?,?,?,?)",
+                                  (strategy_id, observation_id, event_id, observed_at))
+            added += inserted.rowcount
+        db.execute("INSERT INTO strategy_factory_cursors VALUES(?,?,?) ON CONFLICT(strategy_id,split) "
+                   "DO UPDATE SET last_rowid=excluded.last_rowid", (strategy_id, split, progress))
     return added
 
 
 def capture_holdout(db):
-    """Collect later events that never appeared in a candidate's first split."""
-    added = 0
-    for strategy_id, raw_spec, started_at in db.execute(
-        "SELECT c.strategy_id,c.spec_json,h.started_at FROM strategy_factory_candidates c "
-        "JOIN strategy_factory_holdouts h USING(strategy_id)"
-    ).fetchall():
-        spec = json.loads(raw_spec)
-        cursor = db.execute(
-            "SELECT o.observation_id,o.event_id,o.observed_at,o.detail "
-            "FROM calibration_parent_observations o WHERE o.observed_at>? "
-            "AND NOT EXISTS (SELECT 1 FROM strategy_factory_events e "
-            "WHERE e.strategy_id=? AND e.event_id=o.event_id) "
-            "AND NOT EXISTS (SELECT 1 FROM strategy_factory_holdout_events h "
-            "WHERE h.strategy_id=? AND h.observation_id=o.observation_id)",
-            (started_at, strategy_id, strategy_id),
-        )
-        for observation_id, event_id, observed_at, detail in cursor:
-            try:
-                row = json.loads(detail)
-            except (TypeError, ValueError):
-                continue
-            if _matches(spec, row):
-                inserted = db.execute(
-                    "INSERT OR IGNORE INTO strategy_factory_holdout_events VALUES(?,?,?,?)",
-                    (strategy_id, observation_id, event_id, observed_at),
-                )
-                added += inserted.rowcount
-    return added
+    return _capture_shared(db, holdout=True)
 
 
 def _event_values(db, table, strategy_id, extra_fee_cents):
@@ -261,7 +290,7 @@ def _event_values(db, table, strategy_id, extra_fee_cents):
     for event_id, resolution in db.execute(
         f"SELECT e.event_id,o.resolution FROM {table} e "
         "JOIN calibration_parent_observations o ON o.observation_id=e.observation_id "
-        "WHERE e.strategy_id=?", (strategy_id,),
+        "WHERE e.strategy_id=? ORDER BY e.observed_at,e.observation_id", (strategy_id,),
     ):
         try:
             outcome = json.loads(resolution) if resolution else None
@@ -290,6 +319,13 @@ def evaluate(db, strategy_id, *, now=None, update_state=True):
     total = sum(values)
     lower = (statistics.mean(values) - 1.96 * statistics.stdev(values) / math.sqrt(len(values))
              if len(values) >= 2 else None)
+    prospective_checkpoint = None
+    if spec.get("evaluation_protocol") == tournament.PROTOCOL:
+        prospective_checkpoint = tournament.checkpoint(
+            db, strategy_id, fingerprint(spec), "prospective",
+            _event_values(db, "strategy_factory_events", strategy_id, spec["extra_fee_stress_cents"]),
+            now=at, persist=update_state)
+        lower = prospective_checkpoint["adjusted_lower_bound_cents"] if prospective_checkpoint else None
     state, reason = candidate[2], candidate[3]
     if state == "shadow":
         if len(values) >= EARLY_REJECT_EVENTS and statistics.mean(values) <= -1:
@@ -311,12 +347,27 @@ def evaluate(db, strategy_id, *, now=None, update_state=True):
                               spec["extra_fee_stress_cents"]).values()) if holdout_row else []
     held_lower = (statistics.mean(held) - 1.96 * statistics.stdev(held) / math.sqrt(len(held))
                   if len(held) >= 2 else None)
+    holdout_checkpoint = None
+    if spec.get("evaluation_protocol") == tournament.PROTOCOL:
+        holdout_checkpoint = tournament.checkpoint(
+            db, strategy_id, fingerprint(spec), "holdout",
+            _event_values(db, "strategy_factory_holdout_events", strategy_id, spec["extra_fee_stress_cents"]),
+            now=at, persist=update_state)
+        held_lower = holdout_checkpoint["adjusted_lower_bound_cents"] if holdout_checkpoint else None
     if holdout_row and holdout_row[1] == "collecting" and len(held) >= 10 and statistics.mean(held) <= -1:
         if update_state:
             db.execute("UPDATE strategy_factory_holdouts SET state='rejected',reason='negative_holdout_mean' "
                        "WHERE strategy_id=?", (strategy_id,))
         holdout_row = (holdout_row[0], "rejected", "negative_holdout_mean")
+    historical = (db.execute("SELECT historical_events,historical_net_cents FROM strategy_tournament_screens "
+                            "WHERE spec_hash=?", (fingerprint(spec),)).fetchone()
+                  if spec.get("evaluation_protocol") == tournament.PROTOCOL else None)
     return {"strategy_id": strategy_id, "spec_hash": fingerprint(spec), "spec": spec,
+            "evaluation_protocol": spec.get("evaluation_protocol", "legacy_factory_v1"),
+            "historical_events": historical[0] if historical else 0,
+            "historical_net_cents": historical[1] if historical else None,
+            "prospective_checkpoint_events": prospective_checkpoint["events"] if prospective_checkpoint else 0,
+            "holdout_checkpoint_events": holdout_checkpoint["events"] if holdout_checkpoint else 0,
             "registered_at": registered.isoformat(), "state": state, "reason": reason,
             "prospective_signals": signals, "complete_independent_events": len(values),
             "elapsed_days": round(elapsed_days, 2), "extra_fee_stress_cents": EXTRA_FEE_STRESS_CENTS,
@@ -332,16 +383,19 @@ def evaluate(db, strategy_id, *, now=None, update_state=True):
             "live_promotion_eligible": False}
 
 
-def cycle(db, *, now=None, ideas=None):
+def cycle(db, *, now=None, ideas=None, parallel=False):
     at = _now(now)
     init(db)
     capture_future(db)
     for (strategy_id,) in db.execute("SELECT strategy_id FROM strategy_factory_candidates WHERE state='shadow'").fetchall():
         evaluate(db, strategy_id, now=at)
     capture_holdout(db)
-    register_next(db, now=at)
+    if parallel:
+        tournament.screen_and_admit(db, now=at, fingerprint=fingerprint)
+    else:
+        register_next(db, now=at)
     if ideas:
-        register_ideas(db, ideas, now=at)
+        register_ideas(db, ideas, now=at, parallel=parallel)
     return status(db, now=at)
 
 
@@ -363,5 +417,6 @@ def status(db, *, now=None):
             "execution_enabled": False, "candidate_limit": MAX_CANDIDATES,
             "candidate_total": len(all_rows), "reported_candidate_limit": MAX_REPORTED_CANDIDATES,
             "candidates": rows,
+            "tournament": tournament.summary(db),
             "active_strategy_id": active, "grammar_exhausted": exhausted,
             "next_action": "new_approved_primitive_required" if exhausted and active is None else "continue_prospective_search"}

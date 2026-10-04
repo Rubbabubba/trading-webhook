@@ -753,7 +753,7 @@ def run(data_root, cycles=None, interval_seconds=60):
                     except (OSError, ValueError, TypeError):
                         pass
                     register_experiments(db, ideas, now=utcnow())
-                    strategy_factory_cycle(db, now=utcnow(), ideas=ideas)
+                    strategy_factory_cycle(db, now=utcnow(), ideas=ideas, parallel=True)
                     try:
                         factory_fee_probe_next(db, client, now=utcnow())
                     except Exception as exc:

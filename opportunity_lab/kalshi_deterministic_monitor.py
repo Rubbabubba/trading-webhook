@@ -97,6 +97,14 @@ def _research_snapshot(path, *, now):
     factory_rows = factory.get("candidates") or []
     if not isinstance(factory_rows, list) or len(factory_rows) > 24:
         return None
+    tournament_summary = {}
+    tournament_raw = factory.get("tournament") or {}
+    if isinstance(tournament_raw, dict) and tournament_raw.get("protocol") == "tournament_v1":
+        tournament_summary = {"protocol": "tournament_v1", "historical_results_are_validation": False}
+        for key in ("active_limit", "ai_active_limit", "registered_limit", "variants_screened", "registered", "active", "rejected", "replay_row_limit"):
+            value = tournament_raw.get(key, 0)
+            if type(value) is int and 0 <= value <= 1000000:
+                tournament_summary[key] = value
     candidates = []
     for row in factory_rows:
         if not isinstance(row, dict) or row.get("execution_enabled") is not False:
@@ -127,6 +135,11 @@ def _research_snapshot(path, *, now):
             "strategy_id": name, "state": row["state"],
             "stratum": spec["stratum"], "price_bin": spec["price_bin"],
             "side": spec.get("side", "either"), "family": spec.get("family", "*"),
+            "evaluation_protocol": row.get("evaluation_protocol", "legacy_factory_v1"),
+            "historical_events": row.get("historical_events", 0),
+            "prospective_checkpoint_events": row.get("prospective_checkpoint_events", 0),
+            "holdout_checkpoint_events": row.get("holdout_checkpoint_events", 0),
+            "historical_net_cents": row.get("historical_net_cents"),
             "origin_idea_id": spec.get("origin_idea_id"),
             "registered_at": row.get("registered_at"),
             "complete_independent_events": count,
@@ -351,7 +364,7 @@ def _research_snapshot(path, *, now):
         "catalog_complete": coverage.get("coverage_complete") is True,
         "multivariate_scanned": multivariate_scanned,
         "sleeves": sleeves,
-        "strategy_factory": {"execution_enabled": False, "candidates": candidates},
+        "strategy_factory": {"execution_enabled": False, "candidates": candidates, "tournament": tournament_summary},
         "experiment_registry": {"schema": "kalshi_experiment_registry_v1",
                                 "execution_enabled": False, "experiments": experiments},
         "factory_fee_probe": {"actual_fees_verified": False,
