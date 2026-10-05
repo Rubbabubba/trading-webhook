@@ -168,11 +168,13 @@ def run(root, *, once=False):
 
 def _run(root, *, once=False):
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
-    authority = OwnerAuthority(os.environ.get("LIFE_OS_KALSHI_LIVE_GRANT_URL", ""),
-                               os.environ.get("LIFE_OS_KALSHI_LIVE_TOKEN", ""))
+    authority = None
     journal = broker = None
     while True:
         try:
+            if authority is None:
+                authority = OwnerAuthority(os.environ.get("LIFE_OS_KALSHI_LIVE_GRANT_URL", ""),
+                                           os.environ.get("LIFE_OS_KALSHI_LIVE_TOKEN", ""))
             if broker is None:
                 cached = root / "owner-grant.json"
                 # Recover previously approved orders even when the authority
