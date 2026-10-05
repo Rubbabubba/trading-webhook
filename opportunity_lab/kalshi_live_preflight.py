@@ -17,7 +17,9 @@ def check(client, markets, *, progress=None):
     if (set(progress) != {'cursor','offset'} or not isinstance(progress['cursor'],str)
             or len(progress['cursor'])>4096 or type(progress['offset']) is not int or not 0<=progress['offset']<=200):
         raise ValueError('invalid_preflight_catalog_progress')
-    params={"status":"open","limit":200}
+    # Readiness supports ordinary binary contracts. Combo markets dominate the
+    # default catalog and can have empty books; they cannot establish this check.
+    params={"status":"open","limit":200,"mve_filter":"exclude"}
     if progress['cursor']: params['cursor']=progress['cursor']
     page, _, _ = markets.get(params=params)
     rows = page.get("markets")

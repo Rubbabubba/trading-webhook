@@ -19,6 +19,7 @@ class Account:
 
 class Markets:
     def get(self, **params):
+        assert params['params']['mve_filter']=='exclude'
         return {"markets": [{"market_type": "binary", "exchange_index": 0,
                              "ticker": "T", "event_ticker": "EVENT"}]}, 0, 0
     def quote(self, payload):
