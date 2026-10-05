@@ -39,3 +39,21 @@ def test_registry_rejects_unregistered_grammar_and_hash():
     assert register(db, [{**idea, "spec_hash": "0" * 64}]) == 0
     assert register(db, [{**idea, "spec": {"execute": "live"}}]) == 0
     assert status(db, {"candidates": []}, {})["experiments"] == []
+
+
+def test_nested_spread_counts_only_future_independent_depth_and_never_fills():
+    db=sqlite3.connect(':memory:');at=datetime(2026,10,5,tzinfo=timezone.utc)
+    idea=_idea(); frozen={'capability_id':'nested_threshold_spread_quote_v1','version':1,'spec':{}}
+    idea.update(frozen);idea['spec_hash']=hashlib.sha256(json.dumps(frozen,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    assert register(db,[idea],now=at)==1
+    db.execute('CREATE TABLE structural_signals(signal_id TEXT,event_id TEXT,bucket INTEGER,observed_at TEXT,detail TEXT)')
+    good={'fill_assumed':False,'execution_enabled':False,'fully_executable_snapshot':True}
+    for index,(event,when,value) in enumerate([
+        ('old',at-timedelta(seconds=1),good),('new',at+timedelta(seconds=1),good),
+        ('new',at+timedelta(seconds=2),good),('invalid',at+timedelta(seconds=3),{**good,'fill_assumed':True})]):
+        db.execute('INSERT INTO structural_signals VALUES(?,?,?,?,?)',(str(index),event,index,when.isoformat(),json.dumps(value)))
+    row=status(db,{'candidates':[]},{})['experiments'][0]
+    assert row['independent_events']==1
+    assert row['state']=='shadow'
+    assert row['orders_enabled'] is False
+    assert 'not_filled_profit' in row['evidence_ref']

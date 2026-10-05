@@ -15,6 +15,8 @@ CAPABILITIES = {
     "bea_gdp_release_quote_v1": {"version": 1, "runner": "official_release_probe",
                                  "evidence": "official advance GDP release and later Demo quotes",
                                  "orders": False},
+    "nested_threshold_spread_quote_v1": {"version":1,"runner":"structural_signals",
+        "evidence":"matching nested rules and near-synchronous two-leg Demo depth; indicative only","orders":False},
 }
 
 
@@ -40,7 +42,7 @@ def register(db, ideas, *, now=None):
                 or type(idea["version"]) is not int or idea["version"] != 1):
             continue
         capability = idea["capability_id"]
-        if capability == "bea_gdp_release_quote_v1":
+        if capability in {"bea_gdp_release_quote_v1","nested_threshold_spread_quote_v1"}:
             if idea["spec"] != {}:
                 continue
             frozen = {"capability_id": capability, "version": 1, "spec": {}}
@@ -81,6 +83,19 @@ def status(db, factory, release):
             state = candidate.get("state", "awaiting_runner") if candidate else "awaiting_runner"
             evidence_count = candidate.get("complete_independent_events", 0) if candidate else 0
             evidence_ref = candidate.get("strategy_id") if candidate else None
+        elif capability=='nested_threshold_spread_quote_v1':
+            # Only new captures count; parent events, not contract pairs, are independent.
+            exists=db.execute("SELECT 1 FROM sqlite_master WHERE name='structural_signals'").fetchone()
+            observations=list(db.execute('SELECT event_id,detail FROM structural_signals WHERE observed_at>? ORDER BY observed_at LIMIT 20000',
+                                         (registered_at,))) if exists else []
+            verified=[]
+            for event_id,raw in observations:
+                value=json.loads(raw)
+                if value.get('fill_assumed') is False and value.get('execution_enabled') is False and value.get('fully_executable_snapshot') is True:
+                    verified.append((event_id,value))
+            evidence_count=len({event for event,_ in verified})
+            state='shadow' if evidence_count else 'awaiting_runner'
+            evidence_ref='structural_signals:prospective_depth_only_not_filled_profit'
         else:
             published_at = release.get("first_publication_observed_at")
             after_registration = bool(published_at and published_at > registered_at)

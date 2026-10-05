@@ -346,7 +346,7 @@ def _research_snapshot(path, *, now):
             return None
         for item in registry["experiments"]:
             if (not isinstance(item, dict) or item.get("orders_enabled") is not False
-                    or item.get("capability_id") not in ("ask_to_settlement_v1", "bea_gdp_release_quote_v1")
+                    or item.get("capability_id") not in ("ask_to_settlement_v1", "bea_gdp_release_quote_v1", "nested_threshold_spread_quote_v1")
                     or item.get("version") != 1
                     or item.get("state") not in ("awaiting_runner", "awaiting_future_release", "shadow",
                                                    "rejected", "demo_trial_candidate")

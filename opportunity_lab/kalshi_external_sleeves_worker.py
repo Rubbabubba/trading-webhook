@@ -3,6 +3,7 @@ from collections import defaultdict
 import ctypes
 from datetime import datetime, timedelta, timezone
 import gc
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -676,6 +677,9 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
     packet["official_release_probe"] = {**official_release_status(db, utcnow()),
                                         "error": official_release_error,
                                         "last_cycle": official_release_run or {}}
+    frozen={'capability_id':'nested_threshold_spread_quote_v1','version':1,'spec':{}}
+    register_experiments(db,[{'id':'6502b781-73a1-42f7-a6a1-16ac86eb86f0',**frozen,
+        'spec_hash':hashlib.sha256(json.dumps(frozen,sort_keys=True,separators=(',',':')).encode()).hexdigest()}],now=utcnow())
     packet["experiment_registry"] = experiment_status(
         db, packet["strategy_factory"], packet["official_release_probe"])
     coverage = coverage or {}
