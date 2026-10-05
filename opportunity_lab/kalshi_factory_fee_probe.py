@@ -93,7 +93,7 @@ def probe_next(db, client, *, now=None):
         "LEFT JOIN factory_fee_observations f ON f.strategy_id=c.strategy_id "
         "WHERE c.state IN ('shadow','demo_trial_candidate') "
         "GROUP BY c.strategy_id,c.spec_hash "
-        "ORDER BY count(f.observation_id),c.registered_at,c.strategy_id LIMIT 4"
+        "ORDER BY count(f.observation_id),c.registered_at,c.strategy_id LIMIT 12"
     ).fetchall()
     if not candidates:
         return {"probed": False, "reason": "no_active_candidate"}
@@ -144,6 +144,20 @@ def probe_next(db, client, *, now=None):
     digest = hashlib.sha256(encoded.encode()).hexdigest()
     db.execute("INSERT OR IGNORE INTO factory_fee_observations VALUES(?,?,?,?,?)",
                (strategy_id, observation_id, event_id, encoded, digest))
+    # One quote can belong to several independent hypotheses. Reuse the exact
+    # contemporaneous metadata, not a later refetch or a new assumed fee.
+    for other_id, other_digest in candidates:
+        if other_id == strategy_id:
+            continue
+        protocol = db.execute("SELECT started_at FROM factory_fee_probe_protocols WHERE strategy_id=?", (other_id,)).fetchone()
+        if not protocol or row["observed_at"] <= protocol[0]:
+            continue
+        member = db.execute("SELECT 1 FROM strategy_factory_events WHERE strategy_id=? AND observation_id=? "
+                            "UNION SELECT 1 FROM strategy_factory_holdout_events WHERE strategy_id=? AND observation_id=?",
+                            (other_id, observation_id, other_id, observation_id)).fetchone()
+        if member:
+            db.execute("INSERT OR IGNORE INTO factory_fee_observations VALUES(?,?,?,?,?)",
+                       (other_id, observation_id, event_id, encoded, digest))
     return {"probed": True, "strategy_id": strategy_id,
             "observation_id": observation_id, "sha256": digest}
 

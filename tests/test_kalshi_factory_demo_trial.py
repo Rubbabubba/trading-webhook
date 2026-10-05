@@ -133,26 +133,22 @@ def test_trial_requotes_and_rejects_changed_ask_bucket(tmp_path):
 
 def test_factory_demo_entry_is_versioned_and_uses_ioc(tmp_path):
     state = MakerState(tmp_path / "worker.sqlite3")
-    class Journal:
-        order_mode = None
-        def reserve(self, *args, **kwargs):
-            self.order_mode = kwargs["order_mode"]
-    class Broker:
-        def snapshot(self):
-            return {"environment": "demo"}
-        def submit(self, client_id, *, quote_provider):
-            assert callable(quote_provider)
-            return {"state": "terminal", "filled": 0}
+    from opportunity_lab.kalshi_binary_broker import BinaryDemoBroker
+    from test_kalshi_binary_journal import Exchange, quote
+    journal = BinaryJournal(tmp_path / "journal.sqlite3")
+    exchange = Exchange(journal); exchange.resting_only = True
+    broker = BinaryDemoBroker(journal, exchange)
     class Markets:
         def quote(self, payload):
-            return {}
-    journal = Journal()
+            return quote(journal, payload["client_order_id"])
     try:
-        result = submit(state, journal, Broker(), Markets(),
+        assert trial_allowed(state, journal, {"strategy_id": "candidate-one", "spec_hash": "a" * 64}, flat_balance_cents=50000)[0]
+        result = submit(state, journal, broker, Markets(),
                         {"ticker": "TEST-MKT", "event_ticker": "TEST-EVENT"},
                         "yes", "buy", 8, entry_kind="factory_trial_entry",
                         strategy_id="candidate-one")
-        assert result["filled"] == 0 and journal.order_mode == "ioc"
+        assert result["filled"] == 0 and result["intent"]["order_mode"] == "ioc"
+        assert state.db.execute("SELECT count(*) FROM factory_risk_attestations").fetchone()[0] == 1
         assert state.db.execute("SELECT kind FROM intent_meta").fetchone()[0] == "factory_trial_entry"
         assert state.db.execute("SELECT strategy_id FROM factory_trial_assignments").fetchone()[0] == "candidate-one"
         client_id = state.db.execute("SELECT client_id FROM factory_trial_assignments").fetchone()[0]
@@ -160,4 +156,4 @@ def test_factory_demo_entry_is_versioned_and_uses_ioc(tmp_path):
         assert state.db.execute("SELECT count(*) FROM entered_events").fetchone()[0] == 1
         assert state.db.execute("SELECT count(*) FROM maker_fills").fetchone()[0] == 0
     finally:
-        state.close()
+        state.close(); journal.close()

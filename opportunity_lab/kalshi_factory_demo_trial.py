@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 import json
+import hashlib
 import sqlite3
 import time
 
@@ -24,6 +25,28 @@ FEE_RESERVE_CENTS = 5
 MAX_EXPIRY_SECONDS = 24 * 3600
 MIN_EXPIRY_SECONDS = 300
 SCAN_INTERVAL_SECONDS = 60
+
+
+def attest_attempt(state, journal, client_id, strategy_id):
+    """Persist forward risk proof after reservation and before any Demo write."""
+    protocol = state.load("factory_trial_protocol") or {}
+    counts = trial_counts(state, journal, strategy_id=strategy_id)
+    prior = journal.accounting(exclude=client_id)
+    record = journal.get(client_id)
+    if (protocol.get("strategy_id") != strategy_id or protocol.get("environment") != "demo"
+            or record["state"] != "reserved" or record["intent"]["action"] != "buy"
+            or record["intent"]["count"] != 1 or not 0 < record["reserve"] <= MAX_FLAT_LOSS_CENTS
+            or counts["attempts"] > MAX_ATTEMPTS or counts["attempts_today"] > MAX_ATTEMPTS_PER_DAY
+            or counts["fills"] >= MAX_FILLS or prior["positions"]
+            or any(r["state"] != "terminal" for r in journal.records() if r["payload"]["client_order_id"] != client_id)
+            or trial_counts(state, journal)["realized_net_cents"] - record["reserve"] < -MAX_FLAT_LOSS_CENTS):
+        raise ValueError("factory_forward_risk_audit_failed")
+    value = {"schema": "factory_demo_risk_attestation_v1", "client_id": client_id, "strategy_id": strategy_id,
+             "protocol": protocol, "counts": counts, "reserve_cents": record["reserve"],
+             "prior_positions": {}, "prior_unresolved_orders": 0, "created_at": datetime.now(timezone.utc).isoformat()}
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    state.db.execute("CREATE TABLE IF NOT EXISTS factory_risk_attestations(client_id TEXT PRIMARY KEY,detail TEXT NOT NULL,sha256 TEXT NOT NULL)")
+    state.db.execute("INSERT INTO factory_risk_attestations VALUES(?,?,?)", (client_id, raw, hashlib.sha256(raw.encode()).hexdigest()))
 
 
 def eligible_candidate(root: str | Path, *, excluded=()):

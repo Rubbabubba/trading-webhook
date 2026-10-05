@@ -877,11 +877,23 @@ def run_check(data_root, status=None, *, now=None, force=False):
             "fees_cents": trial.get("fees_cents"),
             "flat_at_review": trial.get("flat_at_review"),
             "fees_reconciled": trial.get("fees_reconciled"),
+            "restart_reconciliation": trial.get("restart_reconciliation"),
             "execution_environment": trial.get("execution_environment"),
             "live_execution_enabled": trial.get("live_execution_enabled"),
         }
     packet["research_sleeves"] = _research_snapshot(root / "sleeve_comparison.json", now=now)
+    from .kalshi_promotion_dossier import build as build_dossier
+    dossier = build_dossier(root, packet)
+    if dossier["ready"]:
+        packet["promotion_evidence"] = dossier["evidence"]
     packet["factory_promotion_preflight"] = factory_promotion_preflight(packet)
+    if dossier["ready"]:
+        preflight = packet["factory_promotion_preflight"]
+        preflight["blockers"] = [b for b in preflight["blockers"] if b not in {
+            "actual_fee_basis_unverified", "event_level_dossier_not_exported", "restart_and_risk_attestation_missing"}]
+        preflight["ready_for_dossier"] = not preflight["blockers"]
+    else:
+        packet["factory_promotion_preflight"]["blockers"].extend(dossier["blockers"])
     metrics = _read(metrics_path, {
         "schema": "kalshi_monitor_metrics_v1", "checks": 0,
         "checks_without_ai": 0, "investigations_requested": 0,

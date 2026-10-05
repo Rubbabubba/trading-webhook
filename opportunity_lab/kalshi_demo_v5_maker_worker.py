@@ -732,6 +732,8 @@ def recover(state, journal, broker):
     # contracts correctly disappear from the exchange position endpoint.
     broker.reconcile_settlements()
     broker.reconcile_positions(allow_reserved=True)
+    state.save("factory_restart_reconciliation", {"reconciled_at": now_iso(),
+                                                  "environment": "demo", "positions_verified": True})
     stopped = journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0]
     records = journal.records()
     if stopped and not records and state.load(FRESH_FLAT_RECOVERY) is None:
@@ -911,6 +913,9 @@ def submit(state, journal, broker, markets, market, outcome, action, price_cents
         discard_unsent_metadata()
         raise
     try:
+        if entry_kind == "factory_trial_entry":
+            from .kalshi_factory_demo_trial import attest_attempt
+            attest_attempt(state, journal, client_id, strategy_id)
         result = broker.submit(client_id, quote_provider=markets.quote)
     except Exception:
         if journal.get(client_id)["state"] == "reserved":
@@ -1606,6 +1611,7 @@ def write_status(path, state, journal, **values):
                                           strategy_id=(factory_protocol or {}).get("strategy_id")),
                    "execution_environment": "demo",
                    "live_execution_enabled": False,
+                   "restart_reconciliation": state.load("factory_restart_reconciliation"),
                },
                "evidence": current_evidence, **values}
     temp = path.with_suffix(".tmp"); temp.write_text(json.dumps(payload, indent=2) + "\n")
