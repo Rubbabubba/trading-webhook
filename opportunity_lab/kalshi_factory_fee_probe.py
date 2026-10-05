@@ -260,5 +260,6 @@ def status(db):
                               strategy_id, "strategy_factory_holdout_events"),
                           **summary(strategy_id)}
                          for strategy_id, started in db.execute(
-                             "SELECT strategy_id,started_at FROM factory_fee_probe_protocols "
-                             "ORDER BY started_at,strategy_id")][:8]}
+                             "SELECT p.strategy_id,p.started_at FROM factory_fee_probe_protocols p "
+                             "JOIN strategy_factory_candidates c USING(strategy_id) "
+                             "ORDER BY c.state='rejected',p.started_at DESC,p.strategy_id")][:8]}
