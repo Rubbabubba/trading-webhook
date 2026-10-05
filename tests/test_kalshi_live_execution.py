@@ -82,7 +82,7 @@ def test_live_fill_settlement_and_restart(outcome, tmp_path):
     j.close()
 
 
-@pytest.mark.parametrize("failure", ["stale", "scope", "revoked", "spread"])
+@pytest.mark.parametrize("failure", ["stale", "scope", "revoked", "spread", "changed_quote"])
 def test_live_submission_rechecks_limits_before_network(failure, tmp_path):
     j = LiveBinaryJournal(tmp_path / "live.db", grant(), approval_verifier=lambda digest: True)
     x = LiveExchange(j); b = LiveBinaryBroker(j, x)
@@ -92,6 +92,7 @@ def test_live_submission_rechecks_limits_before_network(failure, tmp_path):
     if failure == "scope": q["market"]["event_ticker"] = "OTHER"
     if failure == "revoked": j.approval_verifier = lambda digest: False
     if failure == "spread": q["orderbook_fp"]["yes_dollars"] = [[".01", "1"]]
+    if failure == "changed_quote": q["orderbook_fp"]["no_dollars"] = [[".93", "1"]]
     with pytest.raises(ValueError): b.submit("one", quote_snapshot=q)
     assert x.posts == 0 and j.get("one")["state"] == "reserved"
     j.close()

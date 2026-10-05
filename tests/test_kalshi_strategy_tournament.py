@@ -19,6 +19,13 @@ def observation(db, name, at, spec, net):
     db.execute("INSERT INTO calibration_parent_observations VALUES(?,?,?,?,?,?)",
                (name, name, 0, at.isoformat(), json.dumps(detail),
                 json.dumps({"cost_stressed_net_cents": net})))
+    # This fixture supplies forward acquisition separately; absence is tested
+    # in the fee-cohort tests. It never refetches fees after resolution.
+    if spec.get("evaluation_protocol") == tournament.PROTOCOL:
+        for (strategy,) in db.execute("SELECT strategy_id FROM strategy_factory_candidates WHERE spec_json=?", (json.dumps(spec, sort_keys=True),)):
+            raw = json.dumps({"fixture_fee_proof": True})
+            db.execute("INSERT INTO factory_fee_observations VALUES(?,?,?,?,?)",
+                       (strategy, name, name, raw, hashlib.sha256(raw.encode()).hexdigest()))
 
 
 def test_parallel_admission_replay_not_validation_and_replacement():

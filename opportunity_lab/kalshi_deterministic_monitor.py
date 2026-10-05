@@ -99,8 +99,8 @@ def _research_snapshot(path, *, now):
         return None
     tournament_summary = {}
     tournament_raw = factory.get("tournament") or {}
-    if isinstance(tournament_raw, dict) and tournament_raw.get("protocol") == "tournament_v1":
-        tournament_summary = {"protocol": "tournament_v1", "historical_results_are_validation": False}
+    if isinstance(tournament_raw, dict) and tournament_raw.get("protocol") in ("tournament_v1", "tournament_fee_v2"):
+        tournament_summary = {"protocol": tournament_raw["protocol"], "historical_results_are_validation": False}
         for key in ("active_limit", "ai_active_limit", "registered_limit", "variants_screened", "registered", "active", "rejected", "replay_row_limit"):
             value = tournament_raw.get(key, 0)
             if type(value) is int and 0 <= value <= 1000000:

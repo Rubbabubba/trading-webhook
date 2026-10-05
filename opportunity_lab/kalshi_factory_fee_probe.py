@@ -98,15 +98,22 @@ def probe_next(db, client, *, now=None):
     if not candidates:
         return {"probed": False, "reason": "no_active_candidate"}
     selected = None
+    has_specs = "spec_json" in {r[1] for r in db.execute("PRAGMA table_info(strategy_factory_candidates)")}
+    # Initialize all registrations before selecting a quote, so shared metadata
+    # cannot starve hypotheses later in this bounded list.
     for strategy_id, digest in candidates:
         db.execute("INSERT OR IGNORE INTO factory_fee_probe_protocols VALUES(?,?,?,?)",
                    (strategy_id, digest, at.isoformat(), "fee_probe_v1"))
+    for strategy_id, digest in candidates:
         protocol = db.execute(
             "SELECT spec_hash,started_at,probe_version FROM factory_fee_probe_protocols "
             "WHERE strategy_id=?", (strategy_id,)
         ).fetchone()
         if protocol[0] != digest or protocol[2] != "fee_probe_v1":
             raise ValueError("fee_probe_protocol_changed")
+        spec_row = db.execute("SELECT spec_json FROM strategy_factory_candidates WHERE strategy_id=?", (strategy_id,)).fetchone() if has_specs else None
+        spec = json.loads(spec_row[0]) if spec_row else {}
+        forward_v2 = spec.get("evaluation_protocol") == "tournament_fee_v2"
         target = db.execute(
         "SELECT o.observation_id,o.event_id,o.detail FROM calibration_parent_observations o "
         "WHERE o.observed_at>? AND o.observed_at>=? AND ("
@@ -120,6 +127,22 @@ def probe_next(db, client, *, now=None):
             (protocol[1], (at - timedelta(seconds=MAX_METADATA_LAG_SECONDS - 20)).isoformat(),
              strategy_id, strategy_id, strategy_id),
         ).fetchone()
+        if forward_v2:
+            # Fee acquisition precedes membership and never inspects outcomes.
+            # Quotes already resolved or older than the metadata window cannot
+            # enter a v2 cohort. Search is bounded and independent of P&L.
+            from .kalshi_strategy_factory import _matches
+            target = next((item for item in db.execute(
+                "SELECT observation_id,event_id,detail FROM calibration_parent_observations o "
+                "WHERE observed_at>? AND observed_at>=? AND resolution IS NULL "
+                "AND NOT EXISTS(SELECT 1 FROM factory_fee_observations f WHERE f.strategy_id=? "
+                "AND f.event_id=o.event_id) "
+                "AND NOT EXISTS(SELECT 1 FROM strategy_factory_events e WHERE e.strategy_id=? AND e.event_id=o.event_id) "
+                "AND NOT EXISTS(SELECT 1 FROM strategy_factory_holdout_events h WHERE h.strategy_id=? AND h.event_id=o.event_id) "
+                "ORDER BY observed_at DESC,observation_id LIMIT 2000",
+                (max(protocol[1], db.execute("SELECT registered_at FROM strategy_factory_candidates WHERE strategy_id=?", (strategy_id,)).fetchone()[0]),
+                 (at - timedelta(seconds=100)).isoformat(), strategy_id, strategy_id, strategy_id))
+                if _matches(spec, json.loads(item[2]))), None)
         if target is not None:
             selected = strategy_id, target
             break
@@ -140,6 +163,8 @@ def probe_next(db, client, *, now=None):
                        "exchange_index": market.get("exchange_index", 0)},
                       event, series_payload["series"],
                       fetched_at=max(event_at, series_at, market_at))
+    if forward_v2 and basis["model_fee_upper_bound_cents"] > 2:
+        return {"probed": False, "reason": "fee_exceeds_registered_model"}
     encoded = json.dumps(basis, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(encoded.encode()).hexdigest()
     db.execute("INSERT OR IGNORE INTO factory_fee_observations VALUES(?,?,?,?,?)",
@@ -152,9 +177,16 @@ def probe_next(db, client, *, now=None):
         protocol = db.execute("SELECT started_at FROM factory_fee_probe_protocols WHERE strategy_id=?", (other_id,)).fetchone()
         if not protocol or row["observed_at"] <= protocol[0]:
             continue
+        other_spec_row = db.execute("SELECT spec_json FROM strategy_factory_candidates WHERE strategy_id=?", (other_id,)).fetchone() if spec_row else None
+        other_spec = json.loads(other_spec_row[0]) if other_spec_row else {}
         member = db.execute("SELECT 1 FROM strategy_factory_events WHERE strategy_id=? AND observation_id=? "
                             "UNION SELECT 1 FROM strategy_factory_holdout_events WHERE strategy_id=? AND observation_id=?",
                             (other_id, observation_id, other_id, observation_id)).fetchone()
+        if other_spec.get("evaluation_protocol") == "tournament_fee_v2":
+            from .kalshi_strategy_factory import _matches
+            member = (_matches(other_spec, row) and basis["model_fee_upper_bound_cents"] <= 2
+                      and not db.execute("SELECT 1 FROM factory_fee_observations WHERE strategy_id=? AND event_id=?", (other_id, event_id)).fetchone()
+                      and db.execute("SELECT resolution FROM calibration_parent_observations WHERE observation_id=?", (observation_id,)).fetchone()[0] is None)
         if member:
             db.execute("INSERT OR IGNORE INTO factory_fee_observations VALUES(?,?,?,?,?)",
                        (other_id, observation_id, event_id, encoded, digest))

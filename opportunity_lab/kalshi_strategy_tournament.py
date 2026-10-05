@@ -15,7 +15,8 @@ import re
 import statistics
 
 
-PROTOCOL = "tournament_v1"
+PROTOCOL = "tournament_fee_v2"
+SUPPORTED_PROTOCOLS = ("tournament_v1", PROTOCOL)
 MAX_ACTIVE = 8
 MAX_AI_ACTIVE = 2
 MAX_FAMILIES = 6
@@ -131,7 +132,7 @@ def screen_and_admit(db, *, now, fingerprint):
 def checkpoint(db, strategy_id, spec_hash, split, events, *, now, persist=True):
     protocol = db.execute("SELECT candidate_index,spec_hash,protocol FROM strategy_tournament_protocols "
                           "WHERE strategy_id=?", (strategy_id,)).fetchone()
-    if not protocol or protocol[1] != spec_hash or protocol[2] != PROTOCOL:
+    if not protocol or protocol[1] != spec_hash or protocol[2] not in SUPPORTED_PROTOCOLS:
         raise ValueError("tournament_protocol_missing_or_changed")
     base = 30 if split == "prospective" else 20
     latest = None

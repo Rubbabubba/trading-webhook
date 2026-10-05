@@ -753,13 +753,17 @@ def run(data_root, cycles=None, interval_seconds=60):
                     except (OSError, ValueError, TypeError):
                         pass
                     register_experiments(db, ideas, now=utcnow())
-                    strategy_factory_cycle(db, now=utcnow(), ideas=ideas, parallel=True)
                     try:
-                        factory_fee_probe_next(db, client, now=utcnow())
+                        # Bounded read-only acquisition; all quotes enter the
+                        # cohort only after fee proof, before settlement.
+                        for _ in range(4):
+                            if not factory_fee_probe_next(db, client, now=utcnow()).get("probed"):
+                                break
                     except Exception as exc:
                         # The audit has no authority over the frozen shadow or
                         # Demo execution loops. Report its own failure only.
                         fee_probe_error = type(exc).__name__
+                    strategy_factory_cycle(db, now=utcnow(), ideas=ideas, parallel=True)
                     try:
                         official_release_run = official_release_cycle(
                             db, client, markets, utcnow())

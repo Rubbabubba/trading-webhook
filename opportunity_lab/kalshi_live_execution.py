@@ -150,6 +150,10 @@ class LiveBinaryJournal(BinaryJournal):
         spec = self.grant["spec"]; market = quote_snapshot.get("market") or {}
         low, high = map(int, spec["price_bin"].split("-"))
         price = record["intent"]["price_cents"]
+        from decimal import Decimal, ROUND_CEILING
+        fresh_ask = int((Decimal(ask.numerator) / Decimal(ask.denominator) * 100).to_integral_value(rounding=ROUND_CEILING))
+        if fresh_ask != price:
+            raise ValueError("live_quote_changed_replan_required")
         from .kalshi_external_sleeves import SPORTS_PREFIXES, PRICE_BINS
         event = market.get("event_ticker", "")
         stratum = "sports" if event.upper().startswith(SPORTS_PREFIXES) else "non_sports"

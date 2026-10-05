@@ -58,7 +58,7 @@ def build(root, packet):
         candidate = evaluate(research, strategy, update_state=False)
         if candidate["state"] != "demo_trial_candidate" or candidate["spec_hash"] != protocol.get("spec_hash"):
             raise ValueError("candidate_not_frozen_shadow_pass")
-        if candidate["evaluation_protocol"] != "tournament_v1":
+        if candidate["evaluation_protocol"] not in ("tournament_v1", "tournament_fee_v2"):
             raise ValueError("selection_protocol_not_registered")
         if not candidate["holdout_started_at"] or candidate["holdout_state"] == "rejected":
             raise ValueError("untouched_holdout_missing_or_rejected")
@@ -126,7 +126,7 @@ def build(root, packet):
             raise ValueError("restart_reconciliation_evidence_missing")
         prospective_start = research.execute("SELECT min(observed_at) FROM strategy_factory_events WHERE strategy_id=?", (strategy,)).fetchone()[0]
         evidence = {"schema": "kalshi_promotion_evidence_v1", "strategy_id": strategy,
-                    "version": "tournament_v1", "registration_sha256": candidate["spec_hash"],
+                    "version": candidate["evaluation_protocol"], "registration_sha256": candidate["spec_hash"],
                     "strategy_spec": candidate["spec"],
                     "registered_at": candidate["registered_at"], "prospective_started_at": prospective_start,
                     "holdout_started_at": candidate["holdout_started_at"],

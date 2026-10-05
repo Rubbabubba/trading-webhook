@@ -44,7 +44,7 @@ def fingerprint(spec):
 
 
 def _valid_generated_spec(spec):
-    if isinstance(spec, dict) and spec.get("evaluation_protocol") == tournament.PROTOCOL:
+    if isinstance(spec, dict) and spec.get("evaluation_protocol") in tournament.SUPPORTED_PROTOCOLS:
         spec = {key: value for key, value in spec.items() if key != "evaluation_protocol"}
     if not isinstance(spec, dict) or set(spec) != {
         "primitive", "stratum", "price_bin", "side", "family", "origin_idea_id",
@@ -68,7 +68,7 @@ def _valid_tournament_spec(spec):
     if not isinstance(spec, dict) or set(spec) != {
         "primitive", "stratum", "price_bin", "side", "family", "evaluation_protocol",
         "extra_fee_stress_cents", "execution_enabled",
-    } or spec.get("evaluation_protocol") != tournament.PROTOCOL:
+    } or spec.get("evaluation_protocol") not in tournament.SUPPORTED_PROTOCOLS:
         return False
     return _valid_generated_spec({key: value for key, value in spec.items()
                                  if key != "evaluation_protocol"} | {
@@ -109,8 +109,9 @@ def register_ideas(db, ideas, *, now=None, parallel=False):
             spec["evaluation_protocol"] = tournament.PROTOCOL
         if not _valid_generated_spec(spec):
             continue
-        if db.execute("SELECT 1 FROM strategy_factory_candidates WHERE json_extract(spec_json,'$.origin_idea_id')=?",
-                      (idea["id"],)).fetchone():
+        if db.execute("SELECT 1 FROM strategy_factory_candidates WHERE json_extract(spec_json,'$.origin_idea_id')=? "
+                      "AND coalesce(json_extract(spec_json,'$.evaluation_protocol'),'legacy_factory_v1')=?",
+                      (idea["id"], spec.get("evaluation_protocol", "legacy_factory_v1"))).fetchone():
             continue
         digest = fingerprint(spec)
         strategy_id = "kalshi_idea_" + digest[:12]
@@ -153,6 +154,8 @@ def init(db: sqlite3.Connection):
         ON calibration_parent_observations(observed_at);
     """)
     tournament.init(db)
+    from .kalshi_factory_fee_probe import init as fee_init
+    fee_init(db)
 
 
 def _rows(db):
@@ -270,6 +273,19 @@ def _capture_shared(db, *, holdout):
                 continue
             if not _matches(spec, row):
                 continue
+            if spec.get("evaluation_protocol") == tournament.PROTOCOL:
+                # New registrations accept only quotes audited before settlement.
+                # Missing metadata is acquisition failure, never a later outcome filter.
+                proof = db.execute("SELECT detail,sha256 FROM factory_fee_observations "
+                                   "WHERE strategy_id=? AND observation_id=?",
+                                   (strategy_id, observation_id)).fetchone()
+                if not proof or hashlib.sha256(proof[0].encode()).hexdigest() != proof[1]:
+                    continue
+                # Exactly one audited quote per parent event is preregistered
+                # in v2. Later resolutions cannot change a frozen event mean.
+                if db.execute(f"SELECT 1 FROM {table} WHERE strategy_id=? AND event_id=?",
+                              (strategy_id, event_id)).fetchone():
+                    continue
             if holdout and db.execute("SELECT 1 FROM strategy_factory_events WHERE strategy_id=? AND event_id=?",
                                       (strategy_id, event_id)).fetchone():
                 continue
@@ -320,7 +336,7 @@ def evaluate(db, strategy_id, *, now=None, update_state=True):
     lower = (statistics.mean(values) - 1.96 * statistics.stdev(values) / math.sqrt(len(values))
              if len(values) >= 2 else None)
     prospective_checkpoint = None
-    if spec.get("evaluation_protocol") == tournament.PROTOCOL:
+    if spec.get("evaluation_protocol") in tournament.SUPPORTED_PROTOCOLS:
         prospective_checkpoint = tournament.checkpoint(
             db, strategy_id, fingerprint(spec), "prospective",
             _event_values(db, "strategy_factory_events", strategy_id, spec["extra_fee_stress_cents"]),
@@ -348,7 +364,7 @@ def evaluate(db, strategy_id, *, now=None, update_state=True):
     held_lower = (statistics.mean(held) - 1.96 * statistics.stdev(held) / math.sqrt(len(held))
                   if len(held) >= 2 else None)
     holdout_checkpoint = None
-    if spec.get("evaluation_protocol") == tournament.PROTOCOL:
+    if spec.get("evaluation_protocol") in tournament.SUPPORTED_PROTOCOLS:
         holdout_checkpoint = tournament.checkpoint(
             db, strategy_id, fingerprint(spec), "holdout",
             _event_values(db, "strategy_factory_holdout_events", strategy_id, spec["extra_fee_stress_cents"]),
@@ -361,7 +377,7 @@ def evaluate(db, strategy_id, *, now=None, update_state=True):
         holdout_row = (holdout_row[0], "rejected", "negative_holdout_mean")
     historical = (db.execute("SELECT historical_events,historical_net_cents FROM strategy_tournament_screens "
                             "WHERE spec_hash=?", (fingerprint(spec),)).fetchone()
-                  if spec.get("evaluation_protocol") == tournament.PROTOCOL else None)
+                  if spec.get("evaluation_protocol") in tournament.SUPPORTED_PROTOCOLS else None)
     return {"strategy_id": strategy_id, "spec_hash": fingerprint(spec), "spec": spec,
             "evaluation_protocol": spec.get("evaluation_protocol", "legacy_factory_v1"),
             "historical_events": historical[0] if historical else 0,
@@ -386,6 +402,17 @@ def evaluate(db, strategy_id, *, now=None, update_state=True):
 def cycle(db, *, now=None, ideas=None, parallel=False):
     at = _now(now)
     init(db)
+    from .kalshi_factory_fee_probe import init as fee_init
+    fee_init(db)
+    # Retain every old result and checkpoint. Versions without complete forward
+    # fee evidence cannot become live dossiers; retire them and register v2
+    # independently, with a new hash, date and statistical candidate index.
+    if parallel:
+        for strategy_id, raw in db.execute("SELECT strategy_id,spec_json FROM strategy_factory_candidates "
+                                          "WHERE state='shadow'").fetchall():
+            if json.loads(raw).get("evaluation_protocol") == "tournament_v1":
+                db.execute("UPDATE strategy_factory_candidates SET state='rejected',reason=? WHERE strategy_id=?",
+                           ("superseded_by_forward_fee_protocol", strategy_id))
     capture_future(db)
     for (strategy_id,) in db.execute("SELECT strategy_id FROM strategy_factory_candidates WHERE state='shadow'").fetchall():
         evaluate(db, strategy_id, now=at)

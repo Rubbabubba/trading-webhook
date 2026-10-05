@@ -56,7 +56,8 @@ class OwnerAuthority:
             return False
 
     def report(self, value):
-        endpoint = urlparse(self.url)._replace(path="/execution/kalshi/status").geturl()
+        path = "/execution/kalshi/preflight" if value.get("schema") == "kalshi_live_preflight_v1" else "/execution/kalshi/status"
+        endpoint = urlparse(self.url)._replace(path=path).geturl()
         request = Request(endpoint, json.dumps(value).encode(),
                           {"Authorization": "Bearer " + self.token, "Content-Type": "application/json"}, method="POST")
         with self.opener.open(request, timeout=5) as response:
@@ -117,6 +118,11 @@ def select_entry(markets, journal, root):
                               event_data["event"], series_data["series"], fetched_at=max(event_at, series_at))
             if basis["model_fee_upper_bound_cents"] > 2:
                 continue
+            # Reserve covers even an improved execution price anywhere on the
+            # binary curve; P*(1-P) is bounded by 1/4.
+            maximum_fee = int((Decimal(7) * Decimal(basis["fee_multiplier"]) / 4).to_integral_value(rounding=ROUND_CEILING))
+            if maximum_fee > 5:
+                continue
             cid = "live-" + hashlib.sha256((journal.grant["approval_id"] + ":" + event).encode()).hexdigest()[:32]
             return {"client_id": cid, "ticker": ticker, "event_id": event, "outcome": side, "price_cents": price,
                     "fee_reserve_cents": 5, "fee_basis": basis}
@@ -151,6 +157,16 @@ def cycle(broker, markets, root):
 
 
 def run(root, *, once=False):
+    from .college_football_paper import lock_process
+    root = Path(root); root.mkdir(parents=True, exist_ok=True)
+    lock = lock_process(root / "worker.lock")
+    try:
+        return _run(root, once=once)
+    finally:
+        lock.close()
+
+
+def _run(root, *, once=False):
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
     authority = OwnerAuthority(os.environ.get("LIFE_OS_KALSHI_LIVE_GRANT_URL", ""),
                                os.environ.get("LIFE_OS_KALSHI_LIVE_TOKEN", ""))
@@ -163,6 +179,13 @@ def run(root, *, once=False):
                 # is down/revoked; _gate still forbids every new submission.
                 grant = json.loads(cached.read_text()) if cached.exists() else authority.fetch()
                 if grant is None:
+                    # Read-only readiness can be verified before granting any
+                    # strategy permission. This transport exposes GET only.
+                    if os.environ.get("KALSHI_LIVE_API_KEY_ID") and os.environ.get("KALSHI_LIVE_PRIVATE_KEY_PATH"):
+                        from .kalshi_live_preflight import run as preflight
+                        proof = preflight(os.environ["KALSHI_LIVE_API_KEY_ID"], os.environ["KALSHI_LIVE_PRIVATE_KEY_PATH"], ProductionMarkets())
+                        write_json(root / "preflight.json", proof)
+                        authority.report(proof)
                     result = {"state": "awaiting_owner_grant", "new_entries": False}
                 else:
                     recovering = (root / "journal.sqlite3").exists()
