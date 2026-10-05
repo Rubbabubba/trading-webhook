@@ -79,6 +79,9 @@ def init(db):
         strategy_id TEXT NOT NULL,observation_id TEXT NOT NULL,
         event_id TEXT NOT NULL,detail TEXT NOT NULL,sha256 TEXT NOT NULL,
         PRIMARY KEY(strategy_id,observation_id));
+      CREATE TABLE IF NOT EXISTS factory_fee_acquisition_attempts(
+        strategy_id TEXT NOT NULL,event_id TEXT NOT NULL,attempted_at TEXT NOT NULL,
+        PRIMARY KEY(strategy_id,event_id));
     """)
 
 
@@ -134,14 +137,15 @@ def probe_next(db, client, *, now=None):
             from .kalshi_strategy_factory import _matches
             target = next((item for item in db.execute(
                 "SELECT observation_id,event_id,detail FROM calibration_parent_observations o "
-                "WHERE observed_at>? AND observed_at>=? AND resolution IS NULL "
+                "WHERE observed_at>=? AND resolution IS NULL "
                 "AND NOT EXISTS(SELECT 1 FROM factory_fee_observations f WHERE f.strategy_id=? "
                 "AND f.event_id=o.event_id) "
                 "AND NOT EXISTS(SELECT 1 FROM strategy_factory_events e WHERE e.strategy_id=? AND e.event_id=o.event_id) "
                 "AND NOT EXISTS(SELECT 1 FROM strategy_factory_holdout_events h WHERE h.strategy_id=? AND h.event_id=o.event_id) "
+                "AND NOT EXISTS(SELECT 1 FROM factory_fee_acquisition_attempts a WHERE a.strategy_id=? AND a.event_id=o.event_id AND a.attempted_at>?) "
                 "ORDER BY observed_at DESC,observation_id LIMIT 2000",
-                (max(protocol[1], db.execute("SELECT registered_at FROM strategy_factory_candidates WHERE strategy_id=?", (strategy_id,)).fetchone()[0]),
-                 (at - timedelta(seconds=100)).isoformat(), strategy_id, strategy_id, strategy_id))
+                ((at - timedelta(days=45)).isoformat(), strategy_id, strategy_id, strategy_id, strategy_id,
+                 (at - timedelta(minutes=5)).isoformat()))
                 if _matches(spec, json.loads(item[2]))), None)
         if target is not None:
             selected = strategy_id, target
@@ -151,6 +155,38 @@ def probe_next(db, client, *, now=None):
     strategy_id, target = selected
     observation_id, event_id, raw = target
     row = json.loads(raw)
+    if forward_v2:
+        # Old indicative rows locate a market only. Measurement is a new book
+        # acquired after registration, never the old price or a known outcome.
+        db.execute("INSERT INTO factory_fee_acquisition_attempts VALUES(?,?,?) "
+                   "ON CONFLICT(strategy_id,event_id) DO UPDATE SET attempted_at=excluded.attempted_at",
+                   (strategy_id, event_id, at.isoformat()))
+        quote = client.quote({"ticker": row["ticker"]})
+        market = quote.get("market") or {}
+        if (quote.get("environment") != "demo" or market.get("event_ticker") != event_id
+                or market.get("market_type") != "binary" or market.get("status") != "active"
+                or market.get("exchange_index", 0) != 0):
+            raise ValueError("fee_market_identity_mismatch")
+        from .kalshi_shadow import price_book
+        from .kalshi_external_sleeves import PRICE_BINS, SPORTS_PREFIXES
+        _, ask, _, depth = price_book(quote, row["side"])
+        price = int((Decimal(ask.numerator) / Decimal(ask.denominator) * 100).to_integral_value(rounding=ROUND_CEILING))
+        observed = datetime.fromtimestamp(quote["observed_at"], timezone.utc)
+        if (not 0 <= quote["observed_at"] - quote["started_at"] <= 2
+                or not 0 <= (observed - at).total_seconds() <= 30
+                or observed <= datetime.fromisoformat(protocol[1]) or depth < 1):
+            raise ValueError("fee_quote_not_fresh")
+        row = {**row, "price_cents": price, "observed_at": observed.isoformat(),
+               "price_bin": next((f"{a}-{b}" for a, b in PRICE_BINS if a <= price <= b), None),
+               "stratum": "sports" if event_id.upper().startswith(SPORTS_PREFIXES) else "non_sports",
+               "family": market.get("category") or event_id.split("-")[0],
+               "expiration_time": market.get("expiration_time"), "decision_bucket": int(quote["observed_at"]),
+               "classification": "favorite" if price >= 90 else "longshot",
+               "fill_assumed": False, "execution_enabled": False}
+        if not _matches(spec, row):
+            return {"probed": False, "reason": "fresh_quote_outside_strategy"}
+        observation_id = "fee-v2:" + hashlib.sha256((row["ticker"] + ":" + row["side"] + ":" + row["observed_at"]).encode()).hexdigest()
+        row["observation_id"] = observation_id
     # Get Event identifies its parent series and any event-level fee override.
     event_payload, _, event_at = client.get_event(event_id)
     event = event_payload["event"]
@@ -167,6 +203,10 @@ def probe_next(db, client, *, now=None):
         return {"probed": False, "reason": "fee_exceeds_registered_model"}
     encoded = json.dumps(basis, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(encoded.encode()).hexdigest()
+    if forward_v2:
+        db.execute("INSERT OR IGNORE INTO calibration_parent_observations "
+                   "(observation_id,event_id,decision_bucket,observed_at,detail,resolution) VALUES(?,?,?,?,?,NULL)",
+                   (observation_id, event_id, row["decision_bucket"], row["observed_at"], json.dumps(row, sort_keys=True)))
     db.execute("INSERT OR IGNORE INTO factory_fee_observations VALUES(?,?,?,?,?)",
                (strategy_id, observation_id, event_id, encoded, digest))
     # One quote can belong to several independent hypotheses. Reuse the exact

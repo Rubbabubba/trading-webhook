@@ -738,6 +738,14 @@ def run(data_root, cycles=None, interval_seconds=60):
                 generation, markets, coverage = maker_snapshot(root / "worker.sqlite3")
                 if generation is not None:
                     collect_generation(db, client, generation, markets, utcnow())
+                    try:
+                        # Acquire current books and fee metadata before slower
+                        # research collectors. No settlement outcome is used.
+                        for _ in range(4):
+                            if not factory_fee_probe_next(db, client, now=utcnow()).get("probed"):
+                                break
+                    except Exception as exc:
+                        fee_probe_error = type(exc).__name__
                     resolve_one(db, client, utcnow())
                     weather_cycle = collect_weather_one_station(db, markets, utcnow())
                     resolve_one_weather(db, client, utcnow())
@@ -753,16 +761,6 @@ def run(data_root, cycles=None, interval_seconds=60):
                     except (OSError, ValueError, TypeError):
                         pass
                     register_experiments(db, ideas, now=utcnow())
-                    try:
-                        # Bounded read-only acquisition; all quotes enter the
-                        # cohort only after fee proof, before settlement.
-                        for _ in range(4):
-                            if not factory_fee_probe_next(db, client, now=utcnow()).get("probed"):
-                                break
-                    except Exception as exc:
-                        # The audit has no authority over the frozen shadow or
-                        # Demo execution loops. Report its own failure only.
-                        fee_probe_error = type(exc).__name__
                     strategy_factory_cycle(db, now=utcnow(), ideas=ideas, parallel=True)
                     try:
                         official_release_run = official_release_cycle(
