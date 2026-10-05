@@ -60,3 +60,8 @@ def test_preflight_skips_empty_book_and_bounds_quote_checks():
     assert result['account_verified'] and not result['quote_verified'] and not result['fee_verified']
     assert empty.checked==['0','1','2']
     assert result['execution_enabled'] is False
+    rotating=MixedMarkets('4'); progress={'cursor':'','offset':0}
+    assert not check(Account(),rotating,progress=progress)['quote_verified']
+    assert progress['offset']==3
+    assert check(Account(),rotating,progress=progress)['quote_verified']
+    assert rotating.checked==['0','1','2','3','4']

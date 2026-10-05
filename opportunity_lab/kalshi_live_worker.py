@@ -185,7 +185,8 @@ def _run(root, *, once=False):
                     # strategy permission. This transport exposes GET only.
                     if os.environ.get("KALSHI_LIVE_API_KEY_ID") and os.environ.get("KALSHI_LIVE_PRIVATE_KEY_PATH"):
                         from .kalshi_live_preflight import run as preflight
-                        proof = preflight(os.environ["KALSHI_LIVE_API_KEY_ID"], os.environ["KALSHI_LIVE_PRIVATE_KEY_PATH"], ProductionMarkets())
+                        proof = preflight(os.environ["KALSHI_LIVE_API_KEY_ID"], os.environ["KALSHI_LIVE_PRIVATE_KEY_PATH"], ProductionMarkets(),
+                                          progress_file=root / 'preflight-catalog.json')
                         write_json(root / "preflight.json", proof)
                         authority.report(proof)
                     result = {"state": "awaiting_owner_grant", "new_entries": False}
