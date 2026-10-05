@@ -38,3 +38,25 @@ def test_preflight_uses_only_reads_reports_fingerprint_and_never_authorizes():
     assert result["account_key_sha256"] == hashlib.sha256(account.key_id.encode()).hexdigest()
     assert result["account_verified"] and result["quote_verified"] and result["fee_verified"]
     assert result["execution_enabled"] is False
+
+
+def test_preflight_skips_empty_book_and_bounds_quote_checks():
+    class MixedMarkets(Markets):
+        def __init__(self, usable): self.usable=usable; self.checked=[]
+        def get(self, **params):
+            return {"markets":[{"market_type":"binary","exchange_index":0,"ticker":str(i),"event_ticker":"EVENT"} for i in range(10)]},0,0
+        def quote(self, payload):
+            self.checked.append(payload['ticker'])
+            result=super().quote(payload)
+            if payload['ticker']!=self.usable:
+                result['orderbook_fp']={'yes_dollars':[], 'no_dollars':[]}
+            return result
+    mixed=MixedMarkets('1')
+    result=check(Account(),mixed)
+    assert result['account_verified'] and result['quote_verified'] and result['fee_verified']
+    assert mixed.checked==['0','1']
+    empty=MixedMarkets('9')
+    result=check(Account(),empty)
+    assert result['account_verified'] and not result['quote_verified'] and not result['fee_verified']
+    assert empty.checked==['0','1','2']
+    assert result['execution_enabled'] is False

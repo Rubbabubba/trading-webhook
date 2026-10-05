@@ -15,14 +15,23 @@ def check(client, markets):
     rows = page.get("markets")
     if not isinstance(rows, list) or len(rows) > 200:
         raise ValueError("invalid_production_catalog")
+    checked = 0
     for market in rows[:200]:
         if market.get("market_type") != "binary" or market.get("exchange_index", 0) != 0:
             continue
+        if checked >= 3:
+            break
+        checked += 1
         quote = markets.quote({"ticker": market["ticker"]})
-        _, ask, _, depth = price_book(quote, "yes")
+        try:
+            _, ask, _, depth = price_book(quote, "yes")
+        except ValueError as error:
+            if str(error) == 'missing_book':
+                continue
+            raise
         age = datetime.now(timezone.utc).timestamp() - quote["observed_at"]
         if depth < 1 or not 0 <= age <= 5:
-            break
+            continue
         price = int((Decimal(ask.numerator) / Decimal(ask.denominator) * 100).to_integral_value(rounding=ROUND_CEILING))
         event, _, event_at = markets.get_event(market["event_ticker"])
         series, _, series_at = markets.get_series(event["event"]["series_ticker"])
