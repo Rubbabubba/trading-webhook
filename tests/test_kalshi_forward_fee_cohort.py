@@ -90,3 +90,17 @@ def test_old_snapshot_is_only_a_hint_new_quote_is_measured_after_registration():
                         "JOIN calibration_parent_observations o USING(observation_id) WHERE e.strategy_id=?", (c["strategy_id"],)).fetchone()
     assert record[0].startswith("fee-v2:") and record[1] == future.isoformat()
     assert db.execute("SELECT observed_at FROM calibration_parent_observations WHERE observation_id='old-indicative'").fetchone()[0] == (at - timedelta(days=1)).isoformat()
+
+
+def test_empty_demo_books_are_skipped_without_creating_evidence():
+    db, at, c = setup(); future = at + timedelta(seconds=10)
+    add(db, at - timedelta(days=1), c, "old-empty", event="SERIES-2")
+    class Empty(Client):
+        def quote(self, payload):
+            value = super().quote(payload)
+            value["orderbook_fp"] = {"yes_dollars": [], "no_dollars": []}
+            return value
+    result = probe_next(db, Empty(future), now=future)
+    assert result == {"probed": False, "attempted": True, "reason": "empty_demo_book"}
+    assert db.execute("SELECT count(*) FROM factory_fee_observations").fetchone()[0] == 0
+    assert capture_future(db) == 0

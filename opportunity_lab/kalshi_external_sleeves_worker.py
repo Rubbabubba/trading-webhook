@@ -742,7 +742,8 @@ def run(data_root, cycles=None, interval_seconds=60):
                         # Acquire current books and fee metadata before slower
                         # research collectors. No settlement outcome is used.
                         for _ in range(4):
-                            if not factory_fee_probe_next(db, client, now=utcnow()).get("probed"):
+                            acquisition = factory_fee_probe_next(db, client, now=utcnow())
+                            if not acquisition.get("probed") and not acquisition.get("attempted"):
                                 break
                     except Exception as exc:
                         fee_probe_error = type(exc).__name__

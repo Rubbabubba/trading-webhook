@@ -161,7 +161,12 @@ def probe_next(db, client, *, now=None):
         db.execute("INSERT INTO factory_fee_acquisition_attempts VALUES(?,?,?) "
                    "ON CONFLICT(strategy_id,event_id) DO UPDATE SET attempted_at=excluded.attempted_at",
                    (strategy_id, event_id, at.isoformat()))
-        quote = client.quote({"ticker": row["ticker"]})
+        try:
+            quote = client.quote({"ticker": row["ticker"]})
+        except ValueError as error:
+            if str(error) in {"demo_market_not_active_binary", "demo_market_http_404"}:
+                return {"probed": False, "attempted": True, "reason": "market_unavailable"}
+            raise
         market = quote.get("market") or {}
         if (quote.get("environment") != "demo" or market.get("event_ticker") != event_id
                 or market.get("market_type") != "binary" or market.get("status") != "active"
@@ -169,7 +174,12 @@ def probe_next(db, client, *, now=None):
             raise ValueError("fee_market_identity_mismatch")
         from .kalshi_shadow import price_book
         from .kalshi_external_sleeves import PRICE_BINS, SPORTS_PREFIXES
-        _, ask, _, depth = price_book(quote, row["side"])
+        try:
+            _, ask, _, depth = price_book(quote, row["side"])
+        except ValueError as error:
+            if str(error) == "missing_book":
+                return {"probed": False, "attempted": True, "reason": "empty_demo_book"}
+            raise
         price = int((Decimal(ask.numerator) / Decimal(ask.denominator) * 100).to_integral_value(rounding=ROUND_CEILING))
         observed = datetime.fromtimestamp(quote["observed_at"], timezone.utc)
         if (not 0 <= quote["observed_at"] - quote["started_at"] <= 2
@@ -184,7 +194,7 @@ def probe_next(db, client, *, now=None):
                "classification": "favorite" if price >= 90 else "longshot",
                "fill_assumed": False, "execution_enabled": False}
         if not _matches(spec, row):
-            return {"probed": False, "reason": "fresh_quote_outside_strategy"}
+            return {"probed": False, "attempted": True, "reason": "fresh_quote_outside_strategy"}
         observation_id = "fee-v2:" + hashlib.sha256((row["ticker"] + ":" + row["side"] + ":" + row["observed_at"]).encode()).hexdigest()
         row["observation_id"] = observation_id
     # Get Event identifies its parent series and any event-level fee override.
@@ -200,7 +210,7 @@ def probe_next(db, client, *, now=None):
                       event, series_payload["series"],
                       fetched_at=max(event_at, series_at, market_at))
     if forward_v2 and basis["model_fee_upper_bound_cents"] > 2:
-        return {"probed": False, "reason": "fee_exceeds_registered_model"}
+        return {"probed": False, "attempted": True, "reason": "fee_exceeds_registered_model"}
     encoded = json.dumps(basis, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(encoded.encode()).hexdigest()
     if forward_v2:
