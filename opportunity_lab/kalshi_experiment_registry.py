@@ -111,7 +111,9 @@ def status(db, factory, release, *, depth_path=None):
                 if value.get('fill_assumed') is False and value.get('execution_enabled') is False and value.get('fully_executable_snapshot') is True:
                     verified.append((event_id,value))
             evidence_count=len({event for event,_ in verified})
-            state='shadow' if evidence_count else 'awaiting_runner'
+            # An installed collector with no eligible prospective captures is not
+            # a missing runner. Zero events still confer no promotion evidence.
+            state='shadow' if exists else 'awaiting_runner'
             evidence_ref='structural_signals:prospective_depth_only_not_filled_profit'
         else:
             published_at = release.get("first_publication_observed_at")

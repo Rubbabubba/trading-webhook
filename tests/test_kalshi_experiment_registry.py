@@ -65,7 +65,12 @@ def test_nested_spread_counts_only_future_independent_depth_and_never_fills():
     idea=_idea(); frozen={'capability_id':'nested_threshold_spread_quote_v1','version':1,'spec':{}}
     idea.update(frozen);idea['spec_hash']=hashlib.sha256(json.dumps(frozen,sort_keys=True,separators=(',',':')).encode()).hexdigest()
     assert register(db,[idea],now=at)==1
+    missing=status(db,{'candidates':[]},{})['experiments'][0]
+    assert missing['state']=='awaiting_runner' and missing['independent_events']==0
     db.execute('CREATE TABLE structural_signals(signal_id TEXT,event_id TEXT,bucket INTEGER,observed_at TEXT,detail TEXT)')
+    empty=status(db,{'candidates':[]},{})['experiments'][0]
+    assert empty['state']=='shadow' and empty['independent_events']==0
+    assert empty['orders_enabled'] is False
     good={'fill_assumed':False,'execution_enabled':False,'fully_executable_snapshot':True}
     for index,(event,when,value) in enumerate([
         ('old',at-timedelta(seconds=1),good),('new',at+timedelta(seconds=1),good),
