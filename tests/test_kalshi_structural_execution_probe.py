@@ -32,12 +32,13 @@ def test_second_leg_vanishing_is_retained_as_rejection():
 
 def test_stale_changed_crossed_and_no_delay_quotes_fail_closed():
     signal,a,b=setup()
-    for mutate in ('stale','identity','crossed','no_delay'):
+    for mutate in ('stale','identity','crossed','no_delay','threshold'):
         x,y=deepcopy(a),deepcopy(b)
         if mutate=='stale': x['observed_at']=90
         if mutate=='identity': y['market']['rules_secondary']='Different rules'
         if mutate=='crossed': x['orderbook_fp']['yes_dollars']=[['.80','2']]
         if mutate=='no_delay': x['observed_at']=104
+        if mutate=='threshold': y['market']['floor_strike']=30
         with pytest.raises(ValueError): evaluate(signal,x,y,now=113)
 
 def test_failed_reads_survive_restart_and_cannot_be_retried_selectively():

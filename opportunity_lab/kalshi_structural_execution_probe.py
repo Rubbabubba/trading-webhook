@@ -57,7 +57,9 @@ def evaluate(signal,low,high,*,now):
                 or quote.get('ticker')!=signal[key] or identity!=signal['relationship_id']):
             raise ValueError('structural_probe_identity_changed')
     _,low_strike=threshold_identity(low['market']); _,high_strike=threshold_identity(high['market'])
-    if low_strike>=high_strike: raise ValueError('structural_probe_threshold_changed')
+    if (low_strike>=high_strike or low_strike!=Decimal(signal['low_strike'])
+            or high_strike!=Decimal(signal['high_strike'])):
+        raise ValueError('structural_probe_threshold_changed')
     lb,la=_book(low,'yes'); hb,ha=_book(high,'no')
     reserve=PROTOCOL['fee_reserve_cents_per_leg']; slip=PROTOCOL['slippage_cents_per_leg']
     sequential=[]
