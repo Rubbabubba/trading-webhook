@@ -19,6 +19,7 @@ from .kalshi_binary_journal import BinaryJournal
 from .kalshi_demo_broker import DemoClient, check_exchange
 from .kalshi_demo_market_data import DemoMarkets
 from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame
+from .kalshi_depth_replenishment import init as init_depth_recorder, capture as capture_depth, status as depth_status
 from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
 from .life_os_reporter import schedule as schedule_life_os_report
 from .kalshi_maker_v5 import maker_quote
@@ -518,6 +519,7 @@ class MakerState:
     def __init__(self, path):
         self.db = sqlite3.connect(path, isolation_level=None, timeout=30)
         self.db.execute("PRAGMA journal_mode=WAL")
+        init_depth_recorder(self.db)
         self.db.executescript("""
           CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY,detail TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS history(at REAL NOT NULL,ticker TEXT NOT NULL,mid TEXT NOT NULL);
@@ -1306,6 +1308,11 @@ def observe_v12_shadow(state, ticker, history, frame, independent_event=None):
 
 def observe_frame(state, ticker, frame, independent_event=None):
     """Feed one decision-time frame to frozen V10 and shadow challengers."""
+    try:
+        capture_depth(state.db, ticker, independent_event or ticker, frame)
+    except (ValueError, TypeError, ArithmeticError) as error:
+        # Missing research evidence cannot change order authority or frozen trials.
+        state.save('depth_recorder_error', type(error).__name__)
     rows = state.db.execute(
         "SELECT at,mid FROM history WHERE ticker=? AND at>=? ORDER BY at",
         (ticker, frame["received_at"] - 300),
@@ -1577,6 +1584,7 @@ def evidence(state, journal):
 
 def write_status(path, state, journal, **values):
     current_evidence = evidence(state, journal)
+    current_evidence['depth_replenishment'] = depth_status(state.db)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     latest_v12 = state.db.execute(
         "SELECT detail,observed_at,ticker FROM v12_shadow_signals ORDER BY id DESC LIMIT 1"

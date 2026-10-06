@@ -347,7 +347,7 @@ def _research_snapshot(path, *, now):
             return None
         for item in registry["experiments"]:
             if (not isinstance(item, dict) or item.get("orders_enabled") is not False
-                    or item.get("capability_id") not in ("ask_to_settlement_v1", "bea_gdp_release_quote_v1", "nested_threshold_spread_quote_v1")
+                    or item.get("capability_id") not in ("ask_to_settlement_v1", "bea_gdp_release_quote_v1", "nested_threshold_spread_quote_v1", "depth_replenishment_quote_v1")
                     or item.get("version") != 1
                     or item.get("state") not in ("awaiting_runner", "awaiting_future_release", "shadow",
                                                    "rejected", "demo_trial_candidate")
@@ -801,6 +801,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "health": {"faults": active, "new_faults": new_faults,
                    "persistent_faults": persistent, "recovered": recovered},
         "evidence": current_evidence,
+        "depth_replenishment": (status.get('evidence') or {}).get('depth_replenishment'),
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),
         "v10_gate": gate,
         "v12_gate": v12_gate,

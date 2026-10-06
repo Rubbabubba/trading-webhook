@@ -687,8 +687,11 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
     frozen={'capability_id':'nested_threshold_spread_quote_v1','version':1,'spec':{}}
     register_experiments(db,[{'id':'6502b781-73a1-42f7-a6a1-16ac86eb86f0',**frozen,
         'spec_hash':hashlib.sha256(json.dumps(frozen,sort_keys=True,separators=(',',':')).encode()).hexdigest()}],now=utcnow())
+    depth_frozen = {'capability_id': 'depth_replenishment_quote_v1', 'version': 1, 'spec': {}}
+    register_experiments(db, [{'id': '07c4cfd8-c7d8-4e94-bf46-8f40e3778bf7', **depth_frozen,
+        'spec_hash': hashlib.sha256(json.dumps(depth_frozen, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}], now=utcnow())
     packet["experiment_registry"] = experiment_status(
-        db, packet["strategy_factory"], packet["official_release_probe"])
+        db, packet["strategy_factory"], packet["official_release_probe"], depth_path=root / 'worker.sqlite3')
     coverage = coverage or {}
     mve_coverage = mve_coverage or {}
     packet.update({"generated_at": utcnow().isoformat(), "execution_enabled": False,

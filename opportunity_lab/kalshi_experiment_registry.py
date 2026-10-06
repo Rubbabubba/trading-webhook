@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import closing
 import hashlib
 import json
 import re
+import sqlite3
 
 from .kalshi_strategy_factory import EXTRA_FEE_STRESS_CENTS, _valid_generated_spec
 
 
 CAPABILITIES = {
+    "depth_replenishment_quote_v1": {"version": 1, "runner": "maker_depth_recorder",
+                                   "evidence": "prospective displayed depth; no trade/cancel attribution or fills", "orders": False},
     "ask_to_settlement_v1": {"version": 1, "runner": "strategy_factory",
                              "evidence": "prospective quotes and settlements", "orders": False},
     "bea_gdp_release_quote_v1": {"version": 1, "runner": "official_release_probe",
@@ -42,7 +46,7 @@ def register(db, ideas, *, now=None):
                 or type(idea["version"]) is not int or idea["version"] != 1):
             continue
         capability = idea["capability_id"]
-        if capability in {"bea_gdp_release_quote_v1","nested_threshold_spread_quote_v1"}:
+        if capability in {"bea_gdp_release_quote_v1","nested_threshold_spread_quote_v1","depth_replenishment_quote_v1"}:
             if idea["spec"] != {}:
                 continue
             frozen = {"capability_id": capability, "version": 1, "spec": {}}
@@ -69,7 +73,7 @@ def register(db, ideas, *, now=None):
     return added
 
 
-def status(db, factory, release):
+def status(db, factory, release, *, depth_path=None):
     init(db)
     candidates = {(row.get("spec") or {}).get("origin_idea_id", row.get("origin_idea_id")): row
                   for row in factory.get("candidates", [])}
@@ -83,6 +87,19 @@ def status(db, factory, release):
             state = candidate.get("state", "awaiting_runner") if candidate else "awaiting_runner"
             evidence_count = candidate.get("complete_independent_events", 0) if candidate else 0
             evidence_ref = candidate.get("strategy_id") if candidate else None
+        elif capability == 'depth_replenishment_quote_v1':
+            evidence_count = 0; state = 'awaiting_runner'
+            if depth_path is not None:
+                try:
+                    with closing(sqlite3.connect(depth_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=2)) as depth_db:
+                        exists = depth_db.execute("SELECT 1 FROM sqlite_master WHERE name='depth_snapshots'").fetchone()
+                        if exists:
+                            start = datetime.fromisoformat(registered_at).timestamp()
+                            evidence_count = depth_db.execute('SELECT count(DISTINCT event_id) FROM depth_snapshots WHERE observed_at>=?', (start,)).fetchone()[0]
+                            state = 'shadow'
+                except sqlite3.Error:
+                    pass
+            evidence_ref = 'depth_snapshots:prospective_displayed_depth_not_fills'
         elif capability=='nested_threshold_spread_quote_v1':
             # Only new captures count; parent events, not contract pairs, are independent.
             exists=db.execute("SELECT 1 FROM sqlite_master WHERE name='structural_signals'").fetchone()

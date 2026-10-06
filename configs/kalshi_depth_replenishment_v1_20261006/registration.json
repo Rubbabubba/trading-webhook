@@ -1,0 +1,22 @@
+{
+  "capability_id": "depth_replenishment_quote_v1",
+  "version": 1,
+  "maximum_snapshots": 20000,
+  "maximum_transition_gap_seconds": 120,
+  "depletion_ratio": "0.20",
+  "refill_ratio": "0.80",
+  "maximum_levels_per_side": 20,
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "profitability_evidence": false,
+  "hypothesis": "Displayed depth may recover after depletion at an unchanged bid; measure prospectively before proposing execution.",
+  "required_independent_events": 50,
+  "required_depletion_episodes": 200,
+  "missing_for_execution": [
+    "trade-versus-cancel attribution",
+    "announcement exclusions",
+    "fee-verified latency replay",
+    "actual Demo fills",
+    "untouched holdout"
+  ]
+}
