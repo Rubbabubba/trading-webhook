@@ -22,6 +22,7 @@ from .kalshi_strategy_factory import (
     status as strategy_factory_status,
 )
 from .kalshi_experiment_registry import register as register_experiments, status as experiment_status
+from .kalshi_structural_execution_probe import init as init_structural_probe, capture as capture_structural_probe, status as structural_probe_status
 from .kalshi_factory_fee_probe import (
     probe_next as factory_fee_probe_next, status as factory_fee_probe_status,
 )
@@ -264,6 +265,7 @@ def parent_event_calibration_observations(markets, observed_at):
 
 
 def collect_generation(db, client, generation, markets, now):
+    init_structural_probe(db,now)
     calibration = parent_event_calibration_observations(markets, now.isoformat())
     favorite_maker = favorite_maker_observations(markets, now.isoformat())
     before = db.total_changes
@@ -309,6 +311,9 @@ def collect_generation(db, client, generation, markets, now):
                  json.dumps(signal, sort_keys=True)),
             )
             confirmed += cursor.rowcount
+            if cursor.rowcount:
+                capture_structural_probe(db,client,signal_id,signal,clock=time.time,
+                                         now=datetime.now(timezone.utc))
         except (KeyError, TypeError, ValueError):
             continue
     db.execute(
@@ -648,6 +653,7 @@ def _sports(root):
 def write_status(root, db, generation, market_count, coverage=None, mve_coverage=None,
                  error=None, weather_cycle=None, fee_probe_error=None,
                  official_release_error=None, official_release_run=None):
+    init_structural_probe(db,utcnow())
     structural_records = _records(db, "structural_signals")
     flb_records = _records(db, "calibration_parent_observations")
     structural = {"strategy_id": STRUCTURAL_ID, "execution_enabled": False,
@@ -668,6 +674,7 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
         WEATHER_ENSEMBLE_ID: weather_records,
     })
     packet["favorite_longshot_gate"] = flb
+    packet['structural_execution_probe']=structural_probe_status(db)
     packet["favorite_maker_gate"] = favorite_maker
     packet["weather_ensemble_gate"] = weather
     packet["weather_cycle"] = weather_cycle or {}

@@ -358,12 +358,26 @@ def _research_snapshot(path, *, now):
             experiments.append({key: item.get(key) for key in (
                 "idea_id", "capability_id", "version", "spec_hash", "registered_at",
                 "state", "independent_events", "evidence_ref", "orders_enabled")})
+    probe=source.get('structural_execution_probe') or {}
+    probe_summary={}
+    if probe:
+        if (not isinstance(probe,dict) or probe.get('schema')!='kalshi_structural_execution_probe_v1'
+                or probe.get('execution_enabled') is not False or probe.get('fill_assumed') is not False
+                or probe.get('promotion_ready') is not False or probe.get('actual_orders')!=0
+                or probe.get('actual_fills')!=0 or probe.get('realized_net_cents') is not None):
+            return None
+        for key in ('attempts','independent_events','quote_stress_survived','rejected_or_incomplete'):
+            if type(probe.get(key)) is not int or not 0<=probe[key]<=1_000_000: return None
+            probe_summary[key]=probe[key]
+        if probe_summary['quote_stress_survived']+probe_summary['rejected_or_incomplete']!=probe_summary['attempts']:
+            return None
     return {
         "generated_at": generated.isoformat(),
         "execution_enabled": False,
         "catalog_complete": coverage.get("coverage_complete") is True,
         "multivariate_scanned": multivariate_scanned,
         "sleeves": sleeves,
+        'structural_execution_probe':probe_summary,
         "strategy_factory": {"execution_enabled": False, "candidates": candidates, "tournament": tournament_summary},
         "experiment_registry": {"schema": "kalshi_experiment_registry_v1",
                                 "execution_enabled": False, "experiments": experiments},
