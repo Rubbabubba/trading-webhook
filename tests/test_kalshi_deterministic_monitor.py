@@ -129,6 +129,14 @@ def test_missing_evidence_cannot_pass_gate():
     assert not result["requirements"]["complete_horizons"]
 
 
+def test_compact_packet_reports_deployed_revision_without_credentials(monkeypatch):
+    monkeypatch.setenv('RENDER_GIT_COMMIT', 'a' * 40)
+    packet, _, _ = check(healthy(), {}, REGISTRATION, now=1790013601,
+                         v12_registration=V12_REGISTRATION)
+    assert packet['worker']['revision'] == 'a' * 40
+    assert packet['worker']['production_execution_enabled'] is False
+
+
 def test_compact_packet_reports_completed_market_discovery():
     status = healthy()
     status["evidence"]["market_discovery"] = {

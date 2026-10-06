@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import time
 
@@ -777,6 +778,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "schema": "kalshi_compact_review_packet_v1",
         "generated_at": _iso(now),
         "worker": {
+            "revision": os.environ.get("RENDER_GIT_COMMIT"),
             "strategy_id": status.get("strategy_id"),
             "environment": status.get("environment"),
             "phase": status.get("phase"),
