@@ -22,6 +22,8 @@ from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_fra
 from .kalshi_depth_replenishment import init as init_depth_recorder, capture as capture_depth, status as depth_status
 from .kalshi_public_trade_liquidity import init as init_trade_probe, poll as poll_trade_probe, status as trade_probe_status
 from .kalshi_targeted_trade_liquidity import init as init_targeted_trade_probe, poll as poll_targeted_trade_probe, status as targeted_trade_probe_status
+from .kalshi_targeted_trade_liquidity import candidate as targeted_trade_candidate
+from .kalshi_depth_cohort_trades import init as init_depth_trade_probe, poll as poll_depth_trade_probe, status as depth_trade_probe_status
 from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
 from .life_os_reporter import schedule as schedule_life_os_report
 from .kalshi_maker_v5 import maker_quote
@@ -524,6 +526,7 @@ class MakerState:
         init_depth_recorder(self.db)
         init_trade_probe(self.db,time.time())
         init_targeted_trade_probe(self.db,time.time())
+        init_depth_trade_probe(self.db,time.time())
         self.db.executescript("""
           CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY,detail TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS history(at REAL NOT NULL,ticker TEXT NOT NULL,mid TEXT NOT NULL);
@@ -1591,6 +1594,7 @@ def write_status(path, state, journal, **values):
     current_evidence['depth_replenishment'] = depth_status(state.db)
     current_evidence['public_trade_liquidity'] = trade_probe_status(state.db)
     current_evidence['targeted_trade_liquidity'] = targeted_trade_probe_status(state.db)
+    current_evidence['depth_cohort_trades'] = depth_trade_probe_status(state.db)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     latest_v12 = state.db.execute(
         "SELECT detail,observed_at,ticker FROM v12_shadow_signals ORDER BY id DESC LIMIT 1"
@@ -1920,6 +1924,9 @@ def run(data_root, *, cycles=None):
                 if snapshot is not None and not end_accounting['positions']:
                     poll_trade_probe(state.db,markets,time.time())
                     poll_targeted_trade_probe(state.db,markets,time.time())
+                    depth_now = time.time()
+                    poll_depth_trade_probe(state.db,markets,depth_now,
+                                           signal_candidate=targeted_trade_candidate(state.db,depth_now))
                 write_status(root / "status.json", state, journal, phase="running", errors=[],
                              demo_balance_cents=(snapshot or {}).get("balance", {}).get("balance"),
                              open_positions=len(end_accounting["positions"]), cohort_size=len(cohort))

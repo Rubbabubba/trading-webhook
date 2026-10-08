@@ -804,6 +804,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "depth_replenishment": (status.get('evidence') or {}).get('depth_replenishment'),
         "public_trade_liquidity": (status.get('evidence') or {}).get('public_trade_liquidity'),
         "targeted_trade_liquidity": (status.get('evidence') or {}).get('targeted_trade_liquidity'),
+        "depth_cohort_trades": (status.get('evidence') or {}).get('depth_cohort_trades'),
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),
         "v10_gate": gate,
         "v12_gate": v12_gate,

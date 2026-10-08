@@ -1,0 +1,17 @@
+{
+  "schema": "kalshi_depth_cohort_trades_v3",
+  "environment": "demo",
+  "hypothesis": "Rotating fresh-depth tickers finds public trade activity missed by a single all-market page.",
+  "candidate_source": "fresh_depth_ticker_when_no_fresh_v12_signal",
+  "lookback_seconds": 300,
+  "poll_interval_seconds": 60,
+  "page_limit": 100,
+  "maximum_pages_per_poll": 2,
+  "maximum_polls": 4096,
+  "maximum_trades": 20000,
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "profitability_evidence": false,
+  "global_coverage_claim": false,
+  "review_is_not_execution_approval": true
+}
