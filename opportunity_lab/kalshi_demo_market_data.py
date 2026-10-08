@@ -33,6 +33,18 @@ class DemoMarkets:
                 or not 0<=params['min_ts']<=params['max_ts']):
             raise ValueError('bounded_trade_query_required')
         return self._read('/markets/trades',params)
+    def get_targeted_trades(self,*,params):
+        required={'limit','min_ts','max_ts','ticker'}
+        if (set(params) not in (required,required|{'cursor'}) or params['limit']!=100
+                or any(type(params[k]) is not int for k in ('limit','min_ts','max_ts'))
+                or not 0<=params['min_ts']<=params['max_ts']
+                or not isinstance(params['ticker'],str)
+                or not 1<=len(params['ticker'])<=160
+                or not all(c.isascii() and (c.isupper() or c.isdigit() or c in '-_') for c in params['ticker'])
+                or ('cursor' in params and (not isinstance(params['cursor'],str)
+                    or not 1<=len(params['cursor'])<=2000))):
+            raise ValueError('bounded_targeted_trade_query_required')
+        return self._read('/markets/trades',params)
     def get_event(self,event_ticker):
         return self._read('/events/'+quote(event_ticker,safe=''))
     def get_series(self,series_ticker):
