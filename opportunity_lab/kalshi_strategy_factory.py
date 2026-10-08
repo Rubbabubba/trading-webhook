@@ -84,6 +84,16 @@ def register_ideas(db, ideas, *, now=None, parallel=False):
     slots = (tournament.MAX_AI_ACTIVE if parallel else 1) - active
     if slots <= 0:
         return None
+    # An AI batch may assign a fresh idea ID to a previously tested scope.
+    # Keep a retired scope retired within the same evaluation protocol; a new
+    # forward-fee protocol is a distinct, explicitly registered experiment.
+    tried_scopes = {
+        (spec.get("stratum"), spec.get("price_bin"), spec.get("side"),
+         spec.get("family"), spec.get("evaluation_protocol", "legacy_factory_v1"))
+        for (raw,) in db.execute("SELECT spec_json FROM strategy_factory_candidates "
+                                 "WHERE strategy_id LIKE 'kalshi_idea_%'")
+        for spec in (json.loads(raw),)
+    }
     admitted = []
     for idea in ideas:
         if parallel and db.execute("SELECT count(*) FROM strategy_tournament_protocols").fetchone()[0] >= tournament.MAX_REGISTERED:
@@ -109,6 +119,10 @@ def register_ideas(db, ideas, *, now=None, parallel=False):
             spec["evaluation_protocol"] = tournament.PROTOCOL
         if not _valid_generated_spec(spec):
             continue
+        scope = (spec["stratum"], spec["price_bin"], spec["side"],
+                 spec["family"], spec.get("evaluation_protocol", "legacy_factory_v1"))
+        if scope in tried_scopes:
+            continue
         if db.execute("SELECT 1 FROM strategy_factory_candidates WHERE json_extract(spec_json,'$.origin_idea_id')=? "
                       "AND coalesce(json_extract(spec_json,'$.evaluation_protocol'),'legacy_factory_v1')=?",
                       (idea["id"], spec.get("evaluation_protocol", "legacy_factory_v1"))).fetchone():
@@ -119,6 +133,7 @@ def register_ideas(db, ideas, *, now=None, parallel=False):
                             (strategy_id, digest, json.dumps(spec, sort_keys=True),
                              _now(now).isoformat(), "shadow", "ai_idea_prospective_registration"))
         if cursor.rowcount:
+            tried_scopes.add(scope)
             if parallel:
                 tournament.register_protocol(db, strategy_id, digest, _now(now))
             admitted.append(strategy_id)

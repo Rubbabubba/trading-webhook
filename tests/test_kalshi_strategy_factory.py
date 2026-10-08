@@ -131,3 +131,18 @@ def test_rejected_idea_does_not_block_next_queued_hypothesis():
     next_id = register_ideas(db, [first, second], now=start + timedelta(days=1))
     assert next_id is not None and next_id != registered
     assert db.execute("SELECT count(*) FROM strategy_factory_candidates WHERE strategy_id LIKE 'kalshi_idea_%'").fetchone()[0] == 2
+
+
+def test_new_idea_id_cannot_repeat_rejected_scope_under_same_protocol():
+    db = _db(); start = datetime(2026, 10, 3, tzinfo=timezone.utc)
+    cycle(db, now=start)
+    raw = {"stratum": "non_sports", "price_bin": "5-10", "side": "no", "family": "*"}
+    digest = hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    first = {"id": "12345678-1234-1234-1234-123456789abc", "spec_hash": digest, "spec": raw}
+    renamed = {**first, "id": "12345678-1234-1234-1234-123456789abd"}
+    registered = register_ideas(db, [first], now=start)
+    assert registered is not None
+    db.execute("UPDATE strategy_factory_candidates SET state='rejected',reason='negative_prospective_mean' "
+               "WHERE strategy_id=?", (registered,))
+    assert register_ideas(db, [renamed], now=start + timedelta(days=1)) is None
+    assert db.execute("SELECT count(*) FROM strategy_factory_candidates WHERE strategy_id LIKE 'kalshi_idea_%'").fetchone()[0] == 1
