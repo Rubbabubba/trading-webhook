@@ -1,0 +1,22 @@
+{
+  "environment": "demo",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "hypothesis": "Measure executed on-book transactions before designing a new fillability challenger.",
+  "lookback_seconds": 300,
+  "maximum_polls": 4096,
+  "maximum_trades": 20000,
+  "missing_for_execution": [
+    "queue position and cancellation attribution",
+    "fee-verified replay",
+    "prospective independent validation",
+    "actual owned Demo fills"
+  ],
+  "page_limit": 100,
+  "poll_interval_seconds": 300,
+  "profitability_evidence": false,
+  "required_future_trade_events_for_review": 50,
+  "required_onbook_trades_for_review": 200,
+  "review_is_not_execution_approval": true,
+  "schema": "kalshi_public_trade_liquidity_v1"
+}

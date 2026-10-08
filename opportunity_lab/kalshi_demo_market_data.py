@@ -27,6 +27,12 @@ class DemoMarkets:
         if book and ticker is None:raise ValueError('ticker_required')
         path='/markets'+('/'+quote(ticker,safe='') if ticker else '')+('/orderbook' if book else '')
         return self._read(path,params)
+    def get_trades(self,*,params):
+        if (set(params)!={'limit','min_ts','max_ts'} or params['limit']!=100
+                or any(type(params[k]) is not int for k in params)
+                or not 0<=params['min_ts']<=params['max_ts']):
+            raise ValueError('bounded_trade_query_required')
+        return self._read('/markets/trades',params)
     def get_event(self,event_ticker):
         return self._read('/events/'+quote(event_ticker,safe=''))
     def get_series(self,series_ticker):
