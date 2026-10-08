@@ -24,6 +24,7 @@ from .kalshi_public_trade_liquidity import init as init_trade_probe, poll as pol
 from .kalshi_targeted_trade_liquidity import init as init_targeted_trade_probe, poll as poll_targeted_trade_probe, status as targeted_trade_probe_status
 from .kalshi_targeted_trade_liquidity import candidate as targeted_trade_candidate
 from .kalshi_depth_cohort_trades import init as init_depth_trade_probe, poll as poll_depth_trade_probe, status as depth_trade_probe_status
+from .kalshi_trade_depth_overlap import report as trade_depth_overlap_report
 from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
 from .life_os_reporter import schedule as schedule_life_os_report
 from .kalshi_maker_v5 import maker_quote
@@ -1595,6 +1596,7 @@ def write_status(path, state, journal, **values):
     current_evidence['public_trade_liquidity'] = trade_probe_status(state.db)
     current_evidence['targeted_trade_liquidity'] = targeted_trade_probe_status(state.db)
     current_evidence['depth_cohort_trades'] = depth_trade_probe_status(state.db)
+    current_evidence['trade_depth_overlap'] = trade_depth_overlap_report(state.db)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     latest_v12 = state.db.execute(
         "SELECT detail,observed_at,ticker FROM v12_shadow_signals ORDER BY id DESC LIMIT 1"
