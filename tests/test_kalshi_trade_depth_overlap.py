@@ -34,6 +34,18 @@ class TradeDepthOverlapTests(unittest.TestCase):
         self.db.execute('DROP TABLE depth_snapshots')
         self.assertEqual(report(self.db)['missing_tables'], ['depth_snapshots'])
 
+    def test_gap_reasons_distinguish_stale_from_absent_without_lookahead(self):
+        self.db.executemany('INSERT INTO depth_cohort_trades VALUES(?,?,?)',
+                            [('old', 'A', 500), ('future', 'B', 500)])
+        self.db.executemany('INSERT INTO depth_snapshots VALUES(?,?)', [('A', 400), ('B', 501)])
+        self.db.executemany('INSERT INTO v12_shadow_signals VALUES(?,?)', [('A', 100), ('B', 501)])
+        result = report(self.db)
+        self.assertEqual(result['overlap_gap_reasons'], {
+            'no_prior_depth': 1, 'prior_depth_too_old': 1,
+            'no_prior_v12_signal': 1, 'prior_v12_signal_too_old': 1})
+        self.assertEqual(result['both_prior_observations'], 0)
+        self.assertFalse(result['execution_enabled'])
+
 
 if __name__ == '__main__':
     unittest.main()
