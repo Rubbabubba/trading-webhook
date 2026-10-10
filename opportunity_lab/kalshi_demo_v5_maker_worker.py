@@ -25,6 +25,7 @@ from .kalshi_targeted_trade_liquidity import init as init_targeted_trade_probe, 
 from .kalshi_targeted_trade_liquidity import candidate as targeted_trade_candidate
 from .kalshi_depth_cohort_trades import init as init_depth_trade_probe, poll as poll_depth_trade_probe, status as depth_trade_probe_status
 from .kalshi_trade_depth_overlap import report as trade_depth_overlap_report
+from .kalshi_scan_trade_capture import init as init_scan_trade_capture, poll as poll_scan_trade_capture, status as scan_trade_capture_status
 from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
 from .life_os_reporter import schedule as schedule_life_os_report
 from .kalshi_maker_v5 import maker_quote
@@ -528,6 +529,7 @@ class MakerState:
         init_trade_probe(self.db,time.time())
         init_targeted_trade_probe(self.db,time.time())
         init_depth_trade_probe(self.db,time.time())
+        init_scan_trade_capture(self.db,time.time())
         self.db.executescript("""
           CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY,detail TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS history(at REAL NOT NULL,ticker TEXT NOT NULL,mid TEXT NOT NULL);
@@ -1597,6 +1599,7 @@ def write_status(path, state, journal, **values):
     current_evidence['targeted_trade_liquidity'] = targeted_trade_probe_status(state.db)
     current_evidence['depth_cohort_trades'] = depth_trade_probe_status(state.db)
     current_evidence['trade_depth_overlap'] = trade_depth_overlap_report(state.db)
+    current_evidence['scan_trade_capture'] = scan_trade_capture_status(state.db)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     latest_v12 = state.db.execute(
         "SELECT detail,observed_at,ticker FROM v12_shadow_signals ORDER BY id DESC LIMIT 1"
@@ -1696,6 +1699,7 @@ def run(data_root, *, cycles=None):
         while cycles is None or cycle < cycles:
             errors = []
             try:
+                research_frame = None
                 if any(row["state"] == "uncertain" for row in journal.records()):
                     if not recover_or_report(root, state, journal, broker):
                         cycle += 1
@@ -1861,6 +1865,7 @@ def run(data_root, *, cycles=None):
                         frame, signal = scan_market_candidate(
                             state, journal, markets, market
                         )
+                        research_frame = frame
                         if frame is not None:
                             v12_signal = frame.get("v12_trial_signal")
                             independent_event = event_id(market)
@@ -1924,6 +1929,12 @@ def run(data_root, *, cycles=None):
                         snapshot["balance"]["balance"],
                     )
                 if snapshot is not None and not end_accounting['positions']:
+                    if research_frame is not None:
+                        try:
+                            poll_scan_trade_capture(state.db, markets, research_frame,
+                                                    event_id(market), time.time())
+                        except (ValueError, TypeError, ArithmeticError):
+                            state.save('scan_trade_capture_error', 'invalid_or_stale_scan_frame')
                     poll_trade_probe(state.db,markets,time.time())
                     poll_targeted_trade_probe(state.db,markets,time.time())
                     depth_now = time.time()

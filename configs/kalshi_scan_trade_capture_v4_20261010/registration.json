@@ -1,0 +1,20 @@
+{
+  "schema": "kalshi_scan_trade_capture_v4",
+  "environment": "demo",
+  "hypothesis": "Current scan quotes can retain public trade coverage after the separate frozen depth recorder reaches capacity.",
+  "candidate_source": "current_validated_scan_frame",
+  "poll_interval_seconds": 60,
+  "maximum_quote_age_seconds": 30,
+  "lookback_seconds": 300,
+  "maximum_pages_per_poll": 2,
+  "page_limit": 100,
+  "maximum_polls": 4096,
+  "maximum_trades": 20000,
+  "required_trade_events_for_review": 50,
+  "required_onbook_trades_for_review": 100,
+  "rejection_rule": "At the poll or trade cap, classify insufficient independent events or onbook trades as insufficient coverage; never infer fills or profit.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "profitability_evidence": false,
+  "global_coverage_claim": false
+}
