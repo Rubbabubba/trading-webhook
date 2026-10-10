@@ -56,3 +56,13 @@ def test_invalid_global_trade_blocks_before_quote_or_order_calls():
     poll(db,m,400)
     assert not m.calls and status(db)['latest_poll']['state']=='blocked'
     assert status(db)['public_trades']==0
+
+def test_failed_quote_selection_rotates_instead_of_monopolizing():
+    db=sqlite3.connect(':memory:',isolation_level=None);init(db,100);m=Markets();selected=[]
+    def unavailable(value):
+        selected.append(value['ticker']);raise ValueError('inactive')
+    m.quote=unavailable
+    poll(db,m,400);m.now=600;poll(db,m,600)
+    assert selected==['A','B']
+    assert status(db)['latest_poll']['failure_stage']=='quote_read'
+    assert status(db)['owned_fills']==0

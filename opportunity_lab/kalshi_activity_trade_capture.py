@@ -118,9 +118,11 @@ def poll(db, markets, now):
         return
     identifier = db.execute('INSERT INTO activity_trade_v5_polls(attempted_at,ticker,event_id,quote_json,detail) '
         'VALUES(?,?,?,?,?)', (now, '', '', '{}', encoded({'state': 'started'}))).lastrowid
+    stage='global_read'
     try:
         start = db.execute('SELECT started_at FROM activity_trade_v5_protocol WHERE id=1').fetchone()[0]
         payload, _, received = markets.get_trades(params={'limit':100,'min_ts':int(max(start,now-300)),'max_ts':int(now)})
+        stage='global_validation'
         # Reuse strict immutable trade validation in an isolated temporary DB.
         import sqlite3
         with sqlite3.connect(':memory:') as validation:
@@ -142,7 +144,12 @@ def poll(db, markets, now):
         else:
             counts=dict(db.execute('SELECT ticker,count(*) FROM activity_trade_v5_polls WHERE ticker!=? GROUP BY ticker',('',)))
             ticker=min(active,key=lambda t:(counts.get(t,0),t))
+            # Count failed selections too, preventing an inactive or malformed
+            # contract from monopolizing subsequent polls.
+            db.execute('UPDATE activity_trade_v5_polls SET ticker=? WHERE id=?',(ticker,identifier))
+            stage='quote_read'
             quote=markets.quote({'ticker':ticker})
+            stage='quote_validation'
             event=quote['market']['event_ticker']
             if not isinstance(event,str) or not 1<=len(event)<=160:
                 raise ValueError('invalid_activity_event')
@@ -152,13 +159,16 @@ def poll(db, markets, now):
             # trades can never masquerade as trades occurring after this quote.
             db.execute('UPDATE activity_trade_v5_polls SET attempted_at=?,ticker=?,event_id=?,quote_json=? WHERE id=?',
                        (quote['observed_at'],ticker,event,encoded(q),identifier))
+            stage='targeted_read'
             p,_,end=markets.get_targeted_trades(params={'ticker':ticker,'limit':100,
                 'min_ts':int(max(start,now-300)),'max_ts':int(quote['observed_at'])})
+            stage='targeted_validation'
             added,next_cursor=ingest(db,p,ticker=ticker,event_id=event,now=quote['observed_at'],received=end)
             detail={'state':'observed','new_trades':added,'ticker_window_complete':not bool(next_cursor),
                     'global_page_complete':not bool(cursor),'execution_enabled':False}
-    except Exception:
-        detail={'state':'blocked','error_code':'activity_trade_v5_capture_failed','execution_enabled':False}
+    except Exception as error:
+        detail={'state':'blocked','error_code':'activity_trade_v5_capture_failed',
+                'failure_stage':stage,'error_type':type(error).__name__,'execution_enabled':False}
     db.execute('UPDATE activity_trade_v5_polls SET detail=? WHERE id=?',(encoded(detail),identifier))
 
 
