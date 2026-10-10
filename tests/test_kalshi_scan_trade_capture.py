@@ -3,7 +3,7 @@ import sqlite3
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from opportunity_lab.kalshi_scan_trade_capture import init, poll, status, ingest, quote_summary
+from opportunity_lab.kalshi_scan_trade_capture import init, poll, status, ingest, quote_summary, prior_quote_coverage
 
 
 class ScanTradeCaptureTests(unittest.TestCase):
@@ -77,3 +77,19 @@ class ScanTradeCaptureTests(unittest.TestCase):
     def test_protocol_is_frozen(self):
         self.db.execute("UPDATE scan_trade_v4_protocol SET detail='{}'")
         with self.assertRaises(ValueError): init(self.db, 500)
+
+    def test_prior_quote_coverage_excludes_later_and_stale_quotes(self):
+        for at, observed, ticker in [(400, 399, 'M'), (500, 499, 'M'), (400, 399, 'OTHER')]:
+            self.db.execute('INSERT INTO scan_trade_v4_polls(attempted_at,ticker,event_id,quote_json,detail) VALUES(?,?,?,?,?)',
+                (at, ticker, 'E', json.dumps({'observed_at': observed}), '{}'))
+        for identity, ticker, executed in [('early', 'M', 399.5), ('match', 'M', 401),
+                                            ('stale', 'M', 450), ('absent', 'NONE', 401)]:
+            self.db.execute('INSERT INTO scan_trade_v4_trades VALUES(?,?,?,?,?,?)',
+                (identity, ticker, 'E', executed, 501, '{}'))
+        coverage = prior_quote_coverage(self.db)
+        self.assertEqual(coverage['matched_prior_quote_trades'], 1)
+        self.assertEqual(coverage['matched_prior_quote_events'], 1)
+        self.assertEqual(coverage['no_prior_quote_trades'], 2)
+        self.assertEqual(coverage['prior_quote_too_old_trades'], 1)
+        self.assertTrue(coverage['price_side_and_queue_not_assessed'])
+        self.assertEqual(status(self.db)['owned_fills'], 0)

@@ -5,6 +5,8 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from bisect import bisect_right
+from collections import defaultdict
 
 PROTOCOL = json.loads((Path(__file__).parents[1] / 'configs' /
     'kalshi_scan_trade_capture_v4_20261010/registration.json').read_text())
@@ -144,6 +146,39 @@ def poll(db, markets, frame, event_id, now):
     db.execute('UPDATE scan_trade_v4_polls SET detail=? WHERE id=?', (encoded(detail), identifier))
 
 
+def prior_quote_coverage(db):
+    """Count sampled trades with a quote already recorded before execution.
+
+    A later quote or the existence of a public trade cannot prove our fill.
+    This diagnostic changes no frozen protocol, observations or trading gates.
+    """
+    quotes = defaultdict(list)
+    for ticker, attempted, raw in db.execute(
+            'SELECT ticker,attempted_at,quote_json FROM scan_trade_v4_polls ORDER BY attempted_at LIMIT 4096'):
+        quote = json.loads(raw)
+        observed = quote.get('observed_at')
+        if (type(observed) in (int, float) and math.isfinite(observed)
+                and observed <= attempted):
+            # The quote must also have been recorded before the trade.
+            quotes[ticker].append((attempted, observed))
+    matched = absent = stale = 0
+    events = set()
+    for ticker, event, executed in db.execute(
+            'SELECT ticker,event_id,executed_at FROM scan_trade_v4_trades LIMIT 20000'):
+        rows = quotes.get(ticker, [])
+        index = bisect_right(rows, (executed, float('inf'))) - 1
+        if index < 0:
+            absent += 1
+        elif executed - rows[index][1] > 30:
+            stale += 1
+        else:
+            matched += 1
+            events.add(event)
+    return {'matched_prior_quote_trades': matched, 'matched_prior_quote_events': len(events),
+            'no_prior_quote_trades': absent, 'prior_quote_too_old_trades': stale,
+            'price_side_and_queue_not_assessed': True}
+
+
 def status(db):
     raw, start = db.execute('SELECT detail,started_at FROM scan_trade_v4_protocol WHERE id=1').fetchone()
     polls = db.execute('SELECT count(*) FROM scan_trade_v4_polls').fetchone()[0]
@@ -152,6 +187,7 @@ def status(db):
     capped = polls >= 4096 or trades >= 20000
     ready = events >= 50 and onbook >= 100
     return {'schema': PROTOCOL['schema'], 'protocol_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+            **prior_quote_coverage(db),
             'state': ('coverage_ready_for_review' if ready else
                       'capacity_insufficient_coverage' if capped else 'collecting'),
             'started_at': start, 'polls': polls, 'public_trades': trades, 'trade_events': events,
