@@ -1,0 +1,22 @@
+{
+  "schema": "kalshi_activity_trade_capture_v5",
+  "environment": "demo",
+  "hypothesis": "Recently active Demo contracts provide better sampled trade coverage than scan-order contracts.",
+  "candidate_source": "bounded_recent_global_trade_page_least_sampled_ticker",
+  "poll_interval_seconds": 180,
+  "maximum_quote_age_seconds": 30,
+  "lookback_seconds": 300,
+  "maximum_pages_per_poll": 1,
+  "page_limit": 100,
+  "maximum_polls": 4096,
+  "maximum_trades": 20000,
+  "required_trade_events_for_review": 50,
+  "required_onbook_trades_for_review": 100,
+  "rejection_rule": "At the poll or trade cap, classify insufficient independent events or onbook trades as insufficient coverage; never infer fills or profit.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "profitability_evidence": false,
+  "global_coverage_claim": false,
+  "maximum_requests_per_poll": 4,
+  "selection_bias": "Activity-conditioned sample; no global coverage or representative profitability claim."
+}

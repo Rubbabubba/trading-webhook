@@ -349,7 +349,7 @@ def _research_snapshot(path, *, now):
             if (not isinstance(item, dict) or item.get("orders_enabled") is not False
                     or item.get("capability_id") not in ("ask_to_settlement_v1", "bea_gdp_release_quote_v1", "nested_threshold_spread_quote_v1", "depth_replenishment_quote_v1")
                     or item.get("version") != 1
-                    or item.get("state") not in ("awaiting_runner", "awaiting_future_release", "shadow",
+                    or item.get("state") not in ("awaiting_runner", "awaiting_admission", "awaiting_future_release", "shadow",
                                                    "rejected", "demo_trial_candidate")
                     or not isinstance(item.get("idea_id"), str) or len(item["idea_id"]) != 36
                     or not isinstance(item.get("spec_hash"), str) or len(item["spec_hash"]) != 64
@@ -807,6 +807,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "depth_cohort_trades": (status.get('evidence') or {}).get('depth_cohort_trades'),
         "trade_depth_overlap": (status.get('evidence') or {}).get('trade_depth_overlap'),
         "scan_trade_capture": (status.get('evidence') or {}).get('scan_trade_capture'),
+        "activity_trade_capture": (status.get('evidence') or {}).get('activity_trade_capture'),
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),
         "v10_gate": gate,
         "v12_gate": v12_gate,

@@ -84,9 +84,16 @@ def status(db, factory, release, *, depth_path=None):
     ):
         if capability == "ask_to_settlement_v1":
             candidate = candidates.get(idea_id)
-            state = candidate.get("state", "awaiting_runner") if candidate else "awaiting_runner"
+            # Registration is separate from factory admission. A present,
+            # read-only factory with no matching candidate is an admission
+            # wait, not proof that its runner is missing.
+            installed = (factory.get('schema') == 'kalshi_strategy_factory_v1'
+                         and factory.get('execution_enabled') is False)
+            state = (candidate.get("state", "awaiting_runner") if candidate else
+                     'awaiting_admission' if installed else 'awaiting_runner')
             evidence_count = candidate.get("complete_independent_events", 0) if candidate else 0
-            evidence_ref = candidate.get("strategy_id") if candidate else None
+            evidence_ref = (candidate.get("strategy_id") if candidate else
+                            'factory_admission_pending_no_observations' if installed else None)
         elif capability == 'depth_replenishment_quote_v1':
             evidence_count = 0; state = 'awaiting_runner'
             if depth_path is not None:

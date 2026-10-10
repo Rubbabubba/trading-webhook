@@ -81,3 +81,16 @@ def test_nested_spread_counts_only_future_independent_depth_and_never_fills():
     assert row['state']=='shadow'
     assert row['orders_enabled'] is False
     assert 'not_filled_profit' in row['evidence_ref']
+
+def test_factory_admission_wait_does_not_claim_missing_runner_or_observations():
+    db=sqlite3.connect(':memory:');at=datetime(2026,10,5,tzinfo=timezone.utc)
+    idea=_idea();idea.update(capability_id='ask_to_settlement_v1',spec={'stratum':'non_sports','price_bin':'90-95','side':'yes','family':'KXFED'})
+    idea['spec_hash']=hashlib.sha256(json.dumps(idea['spec'],sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    assert register(db,[idea],now=at)==1
+    assert status(db,{}, {})['experiments'][0]['state']=='awaiting_runner'
+    factory={'schema':'kalshi_strategy_factory_v1','execution_enabled':False,'candidates':[]}
+    row=status(db,factory,{})['experiments'][0]
+    assert row['state']=='awaiting_admission' and row['independent_events']==0 and row['orders_enabled'] is False
+    factory['candidates']=[{'origin_idea_id':idea['id'],'state':'shadow','strategy_id':'S','complete_independent_events':3}]
+    row=status(db,factory,{})['experiments'][0]
+    assert row['state']=='shadow' and row['independent_events']==3
