@@ -66,3 +66,15 @@ def test_failed_quote_selection_rotates_instead_of_monopolizing():
     assert selected==['A','B']
     assert status(db)['latest_poll']['failure_stage']=='quote_read'
     assert status(db)['owned_fills']==0
+
+def test_targeted_demo_query_accepts_observed_decimal_threshold_ticker_only_as_query_value():
+    from opportunity_lab.kalshi_demo_market_data import DemoMarkets
+    m=DemoMarkets();calls=[];m._read=lambda path,params:(calls.append((path,params)) or ({},400,401))
+    params={'limit':100,'min_ts':100,'max_ts':400,'ticker':'KXBTCD-26OCT1017-T81249.99'}
+    m.get_targeted_trades(params=params)
+    assert calls[0][0]=='/markets/trades' and calls[0][1]['ticker']==params['ticker']
+    for ticker in ('../secret','X&limit=999','https://evil','X?A=1'):
+        try: m.get_targeted_trades(params={**params,'ticker':ticker})
+        except ValueError: pass
+        else: assert False
+    assert len(calls)==1

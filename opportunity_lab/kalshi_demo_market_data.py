@@ -40,7 +40,7 @@ class DemoMarkets:
                 or not 0<=params['min_ts']<=params['max_ts']
                 or not isinstance(params['ticker'],str)
                 or not 1<=len(params['ticker'])<=160
-                or not all(c.isascii() and (c.isupper() or c.isdigit() or c in '-_') for c in params['ticker'])
+                or not all(c.isascii() and (c.isupper() or c.isdigit() or c in '-_.') for c in params['ticker'])
                 or ('cursor' in params and (not isinstance(params['cursor'],str)
                     or not 1<=len(params['cursor'])<=2000))):
             raise ValueError('bounded_targeted_trade_query_required')
