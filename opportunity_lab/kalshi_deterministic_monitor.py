@@ -808,6 +808,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "trade_depth_overlap": (status.get('evidence') or {}).get('trade_depth_overlap'),
         "scan_trade_capture": (status.get('evidence') or {}).get('scan_trade_capture'),
         "activity_trade_capture": (status.get('evidence') or {}).get('activity_trade_capture'),
+        "postquote_trade_capture": (status.get('evidence') or {}).get('postquote_trade_capture'),
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),
         "v10_gate": gate,
         "v12_gate": v12_gate,
