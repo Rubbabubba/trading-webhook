@@ -27,6 +27,7 @@ from .kalshi_depth_cohort_trades import init as init_depth_trade_probe, poll as 
 from .kalshi_trade_depth_overlap import report as trade_depth_overlap_report
 from .kalshi_scan_trade_capture import init as init_scan_trade_capture, poll as poll_scan_trade_capture, status as scan_trade_capture_status
 from .kalshi_postquote_capture import init as init_postquote_capture, poll as poll_postquote_capture, status as postquote_capture_status
+from .kalshi_postquote_diagnostic import init as init_postquote_diagnostic, status as postquote_diagnostic_status
 from .kalshi_activity_trade_capture import init as init_activity_trade_capture, poll as poll_activity_trade_capture, status as activity_trade_capture_status
 from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
 from .life_os_reporter import schedule as schedule_life_os_report
@@ -534,6 +535,7 @@ class MakerState:
         init_scan_trade_capture(self.db,time.time())
         init_activity_trade_capture(self.db,time.time())
         init_postquote_capture(self.db,time.time())
+        init_postquote_diagnostic(self.db,time.time())
         self.db.executescript("""
           CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY,detail TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS history(at REAL NOT NULL,ticker TEXT NOT NULL,mid TEXT NOT NULL);
@@ -1606,6 +1608,7 @@ def write_status(path, state, journal, **values):
     current_evidence['scan_trade_capture'] = scan_trade_capture_status(state.db)
     current_evidence['activity_trade_capture'] = activity_trade_capture_status(state.db)
     current_evidence['postquote_trade_capture'] = postquote_capture_status(state.db)
+    current_evidence['postquote_price_diagnostic'] = postquote_diagnostic_status(state.db)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     latest_v12 = state.db.execute(
         "SELECT detail,observed_at,ticker FROM v12_shadow_signals ORDER BY id DESC LIMIT 1"

@@ -1,0 +1,19 @@
+{
+  "schema": "kalshi_postquote_diagnostic_v7",
+  "registered_at": "2026-10-11",
+  "hypothesis": "Future complete postquote windows reveal whether public prints reach prior resting bid levels; this diagnoses price accessibility only",
+  "source": "immutable postquote_v6 windows and trades; existing approved read-only Kalshi API",
+  "window_seconds": 30,
+  "maximum_windows": 4096,
+  "maximum_trades": 20000,
+  "ownership": "Earliest complete prospective quote per trade ID; no overlap duplication",
+  "prospective_start": "First deployment initialization; predeployment windows excluded",
+  "required_observation": "100 compared public prints across 30 distinct events before suggesting an execution experiment",
+  "rejection": "Incomplete pages, unknown block classification, inconsistent binary prices, missing depth and mismatched ticker excluded",
+  "fees": "Unknown; no fee-adjusted edge or profit calculated",
+  "queue": "Prior displayed size only; no aggressor side or queue-position inference",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "promotion_authority": false,
+  "success": "Diagnostic completion only; no trading qualification or evidence-gate replacement"
+}
