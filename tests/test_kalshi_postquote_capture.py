@@ -39,3 +39,12 @@ def test_registration_and_existing_windows_survive_restart():
     db=setup();m=Markets();poll(db,m,435);init(db,600);poll(db,m,601);assert len(m.calls)==1
     db.execute("UPDATE postquote_v6_protocol SET detail='{}'")
     with pytest.raises(ValueError): init(db,700)
+
+def test_side_receipt_uses_transport_receipt_and_preserves_old_observations():
+    db=setup();m=Markets();poll(db,m,435)
+    rows=[json.loads(r[0]) for r in db.execute('SELECT detail FROM trade_side_v8_receipts')]
+    assert len(rows)==2
+    assert all(r['received_at']==436 for r in rows)
+    init(db,600);poll(db,m,601)
+    assert [json.loads(r[0]) for r in db.execute('SELECT detail FROM trade_side_v8_receipts')]==rows
+    assert len(m.calls)==1

@@ -35,7 +35,10 @@ def poll(db,markets,now):
                 selected=validation.execute('SELECT id,ticker,event_id,executed_at,detail FROM activity_trade_v5_trades WHERE executed_at>? AND executed_at<=?',(at,at+30)).fetchall()
             remaining=20000-db.execute('SELECT count(*) FROM postquote_v6_trades').fetchone()[0]
             from .kalshi_trade_side_capture import capture as capture_side
-            capture_side(db,payload,selected,now)
+            # The transport validator verifies received >= request start. Record
+            # response receipt, not request start, for latency evidence. Existing
+            # immutable receipts are retained; only new receipts use this fix.
+            capture_side(db,payload,selected,received)
             for trade in selected[:remaining]:
                 prior=db.execute('SELECT detail FROM postquote_v6_trades WHERE id=?',(trade[0],)).fetchone()
                 if prior and prior[0]!=trade[4]: raise ValueError('conflicting_public_trade')
