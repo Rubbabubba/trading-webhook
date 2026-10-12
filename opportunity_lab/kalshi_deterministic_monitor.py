@@ -811,6 +811,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "postquote_trade_capture": (status.get('evidence') or {}).get('postquote_trade_capture'),
         "postquote_price_diagnostic": (status.get('evidence') or {}).get('postquote_price_diagnostic'),
         "trade_side_capture": (status.get('evidence') or {}).get('trade_side_capture'),
+        "high_edge_two_tick_shadow": (status.get('evidence') or {}).get('high_edge_two_tick_shadow'),
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),
         "v10_gate": gate,
         "v12_gate": v12_gate,

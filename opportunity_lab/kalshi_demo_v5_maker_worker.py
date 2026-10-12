@@ -29,6 +29,7 @@ from .kalshi_scan_trade_capture import init as init_scan_trade_capture, poll as 
 from .kalshi_postquote_capture import init as init_postquote_capture, poll as poll_postquote_capture, status as postquote_capture_status
 from .kalshi_postquote_diagnostic import init as init_postquote_diagnostic, status as postquote_diagnostic_status
 from .kalshi_trade_side_capture import init as init_trade_side, status as trade_side_status
+from .kalshi_high_edge_shadow import init as init_high_edge, observe as observe_high_edge, status as high_edge_status
 from .kalshi_activity_trade_capture import init as init_activity_trade_capture, poll as poll_activity_trade_capture, status as activity_trade_capture_status
 from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
 from .life_os_reporter import schedule as schedule_life_os_report
@@ -538,6 +539,7 @@ class MakerState:
         init_postquote_capture(self.db,time.time())
         init_postquote_diagnostic(self.db,time.time())
         init_trade_side(self.db,time.time())
+        init_high_edge(self.db,time.time())
         self.db.executescript("""
           CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY,detail TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS history(at REAL NOT NULL,ticker TEXT NOT NULL,mid TEXT NOT NULL);
@@ -1339,6 +1341,7 @@ def observe_frame(state, ticker, frame, independent_event=None):
     observe_v10_shadow(state, ticker, history, frame, independent_event)
     observe_v11_shadow(state, ticker, history, frame, independent_event)
     observe_v12_shadow(state, ticker, history, frame, independent_event)
+    observe_high_edge(state.db,ticker,independent_event or ticker,history,frame)
     state.db.execute("INSERT INTO history VALUES(?,?,?)",
                      (frame["received_at"], ticker, str(midpoint(frame))))
     state.db.execute("DELETE FROM history WHERE at<?", (frame["received_at"] - 300,))
@@ -1612,6 +1615,7 @@ def write_status(path, state, journal, **values):
     current_evidence['postquote_trade_capture'] = postquote_capture_status(state.db)
     current_evidence['postquote_price_diagnostic'] = postquote_diagnostic_status(state.db)
     current_evidence['trade_side_capture'] = trade_side_status(state.db)
+    current_evidence['high_edge_two_tick_shadow'] = high_edge_status(state.db)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     latest_v12 = state.db.execute(
         "SELECT detail,observed_at,ticker FROM v12_shadow_signals ORDER BY id DESC LIMIT 1"
