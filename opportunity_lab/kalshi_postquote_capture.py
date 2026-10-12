@@ -7,6 +7,8 @@ from .kalshi_activity_trade_capture import init as init_validation, ingest, enco
 PROTOCOL=json.loads((Path(__file__).parents[1]/'configs/kalshi_postquote_capture_v6_20261010/registration.json').read_text())
 
 def init(db,now):
+    from .kalshi_trade_side_capture import init as init_side
+    init_side(db,now)
     db.executescript("CREATE TABLE IF NOT EXISTS postquote_v6_protocol(id INTEGER PRIMARY KEY,detail TEXT NOT NULL,started_at REAL NOT NULL); CREATE TABLE IF NOT EXISTS postquote_v6_windows(source_id INTEGER PRIMARY KEY,at REAL NOT NULL,ticker TEXT NOT NULL,event_id TEXT NOT NULL,quote_json TEXT NOT NULL,detail TEXT NOT NULL); CREATE TABLE IF NOT EXISTS postquote_v6_trades(id TEXT PRIMARY KEY,ticker TEXT NOT NULL,event_id TEXT NOT NULL,executed_at REAL NOT NULL,detail TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS postquote_v6_no_update BEFORE UPDATE ON postquote_v6_trades BEGIN SELECT RAISE(ABORT,'append_only'); END; CREATE TRIGGER IF NOT EXISTS postquote_v6_no_delete BEFORE DELETE ON postquote_v6_trades BEGIN SELECT RAISE(ABORT,'append_only'); END;")
     db.execute('INSERT OR IGNORE INTO postquote_v6_protocol VALUES(1,?,?)',(encoded(PROTOCOL),now))
     if db.execute('SELECT detail FROM postquote_v6_protocol WHERE id=1').fetchone()[0]!=encoded(PROTOCOL): raise ValueError('postquote_protocol_changed')
@@ -32,6 +34,8 @@ def poll(db,markets,now):
                 ingest(validation,payload,ticker=ticker,event_id=event,now=now,received=received)
                 selected=validation.execute('SELECT id,ticker,event_id,executed_at,detail FROM activity_trade_v5_trades WHERE executed_at>? AND executed_at<=?',(at,at+30)).fetchall()
             remaining=20000-db.execute('SELECT count(*) FROM postquote_v6_trades').fetchone()[0]
+            from .kalshi_trade_side_capture import capture as capture_side
+            capture_side(db,payload,selected,now)
             for trade in selected[:remaining]:
                 prior=db.execute('SELECT detail FROM postquote_v6_trades WHERE id=?',(trade[0],)).fetchone()
                 if prior and prior[0]!=trade[4]: raise ValueError('conflicting_public_trade')
