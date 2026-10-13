@@ -29,7 +29,7 @@ from .kalshi_scan_trade_capture import init as init_scan_trade_capture, poll as 
 from .kalshi_postquote_capture import init as init_postquote_capture, poll as poll_postquote_capture, status as postquote_capture_status
 from .kalshi_postquote_diagnostic import init as init_postquote_diagnostic, status as postquote_diagnostic_status
 from .kalshi_trade_side_capture import init as init_trade_side, status as trade_side_status
-from .kalshi_high_edge_shadow import init as init_high_edge, observe as observe_high_edge, status as high_edge_status
+from .kalshi_high_edge_shadow import init as init_high_edge, observe as observe_high_edge, status as high_edge_status, pending_ticker as high_edge_pending
 from .kalshi_activity_trade_capture import init as init_activity_trade_capture, poll as poll_activity_trade_capture, status as activity_trade_capture_status
 from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
 from .life_os_reporter import schedule as schedule_life_os_report
@@ -1822,13 +1822,15 @@ def run(data_root, *, cycles=None):
                         price = limit_price_cents(frame, position["outcome"], "sell")
                         submit(state, journal, broker, markets, market, position["outcome"], "sell", price)
                 else:
-                    pending = pending_markout_ticker(state)
+                    pending = pending_markout_ticker(state) or high_edge_pending(state.db,time.time())
                     if pending:
                         quote = markets.quote({"ticker": pending}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
                         pending_event = state.db.execute(
                             "SELECT event_id FROM intent_meta WHERE ticker=? "
                             "ORDER BY created_at DESC LIMIT 1", (pending,)
                         ).fetchone()
+                        if pending_event is None:
+                            pending_event=state.db.execute('SELECT event FROM high_edge_v15_signals WHERE ticker=? ORDER BY at DESC LIMIT 1',(pending,)).fetchone()
                         observe_frame(state, pending, frame,
                                       pending_event[0] if pending_event else pending)
                         record_due_markouts(state, pending, frame)

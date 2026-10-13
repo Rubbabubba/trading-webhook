@@ -64,3 +64,19 @@ def status(db):
             'stressed_quote_net_cents':pnl,'event_cluster_lcb_cents':lcbs,'same_observation_benchmarks':benchmarks,
             'execution_enabled':False,'owned_fills':0,'fill_assumed':False,'promotion_ready':False,
             'markout_maximum_lateness_seconds':5}
+
+
+def pending_ticker(db,now):
+    """Reuse the existing idle quote slot for a currently due markout.
+
+    Expired windows never return a ticker and never acquire invented marks.
+    No network/order interface or registration changes occur here.
+    """
+    due=[]
+    for identity,ticker,at in db.execute('SELECT id,ticker,at FROM high_edge_v15_signals'):
+        marked={r[0] for r in db.execute('SELECT horizon FROM high_edge_v15_marks WHERE signal_id=?',(identity,))}
+        for horizon in PROTOCOL['horizons_seconds']:
+            deadline=at+horizon+PROTOCOL['maximum_markout_lateness_seconds']
+            if horizon not in marked and at+horizon<=now<=deadline:
+                due.append((deadline,identity,ticker))
+    return min(due)[2] if due else None

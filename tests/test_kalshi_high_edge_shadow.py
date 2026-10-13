@@ -1,7 +1,7 @@
 import json
 import sqlite3
 import pytest
-from opportunity_lab.kalshi_high_edge_shadow import init,observe,status
+from opportunity_lab.kalshi_high_edge_shadow import init,observe,status,pending_ticker
 
 def frame(at):
     return {'received_at':at,'orderbook_fp':{'yes_dollars':[['.40','12']], 'no_dollars':[['.52','3']]}}
@@ -30,3 +30,16 @@ def test_low_edge_does_not_chase_or_repeat_event():
     observe(db,'T','E',[],f);assert status(db)['signals']==0
     observe(db,'T','E',[],frame(101));observe(db,'T2','E',[],frame(102))
     assert status(db)['signals']==1
+
+
+def test_due_quote_slot_has_deadline_and_never_backfills_expired_marks():
+    db=sqlite3.connect(':memory:');init(db,100);observe(db,'T','E',[],frame(100))
+    assert pending_ticker(db,104) is None
+    assert pending_ticker(db,105)=='T'
+    observe(db,'T','E',[],frame(105))
+    assert pending_ticker(db,106) is None
+    assert pending_ticker(db,130)=='T'
+    assert pending_ticker(db,136) is None
+    assert pending_ticker(db,400)=='T'
+    assert pending_ticker(db,406) is None
+    assert status(db)['complete_signals']==0
