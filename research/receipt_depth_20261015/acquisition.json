@@ -1,0 +1,9 @@
+{
+  "url": "https://huggingface.co/datasets/lerchen3/kalshi-orderbook-alpha/resolve/main/data/2026/07/19/kalshi_orderbooks_20260719T022023.251189Z_ip-172-31-3-129_04de9e.jsonl.gz",
+  "captured_at": "2026-10-15T23:50:21.138787+00:00",
+  "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T022023.251189Z_ip-172-31-3-129_04de9e.jsonl.gz",
+  "bytes": 26009864,
+  "sha256": "2d95103808c22e7284f722f4edf66b1cc0194b519f363918c5199fff7df9951a",
+  "expected_sha256_verified": true,
+  "authenticated": false
+}

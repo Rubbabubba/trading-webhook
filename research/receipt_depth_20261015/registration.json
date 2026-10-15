@@ -1,0 +1,17 @@
+{
+  "id": "external_receipt_depth_momentum_v1_20261015",
+  "registered_before_price_inspection": true,
+  "source": "https://huggingface.co/datasets/lerchen3/kalshi-orderbook-alpha",
+  "selection": "First chronological listed July19 file only for initial validation, maximum40MBcompressed and1500000records; expand only on source quality and sample needs, never observed PnL. Preserve failures.",
+  "first_file": "data/2026/07/19/kalshi_orderbooks_20260719T022023.251189Z_ip-172-31-3-129_04de9e.jsonl.gz",
+  "expected_first_file_sha256": "2d95103808c22e7284f722f4edf66b1cc0194b519f363918c5199fff7df9951a",
+  "hypothesis": "Persistent displayed top-level imbalance in the direction of a recent10second2cent mid move may predict30second executable price movement exceeding spread, fees and slippage.",
+  "signal": {"decision_grid_seconds":5,"history_seconds":10,"history_tolerance_seconds":2,"minimum_mid_change_cents":2,"minimum_directional_top_level_imbalance":0.8,"maximum_spread_cents":3,"entry_price_cents":[10,90],"minimum_depth_contracts":1,"event_entry_cap":1,"total_entry_cap":100},
+  "execution": {"receipt_clock_only":true,"require_snapshot_initialized_and_unbroken_subscription_sequence":true,"maximum_decision_quote_age_seconds":1,"entry_delay_seconds":1,"maximum_delayed_entry_lateness_seconds":1,"exit_after_entry_seconds":30,"maximum_exit_lateness_seconds":5,"assumed_fee_cents_per_fill":5,"additional_slippage_cents_per_fill":1,"extra_stress_cents_per_fill":[0,2,5],"missing_exit":"unresolved; never zero or dropped"},
+  "metadata": "Official full market metadata must match ticker, binary contract, documented open/close window; all multi-leg/combo tickers excluded. Event identity must be official, never shortened guessed ticker.",
+  "gate": "No live qualification from a single selected day. At least100completeentries40independentevents5families plus positive fee/depth/latency-stressed event-cluster95%bound on unused larger data and authentic operational execution evidence required before separate Demo trial. Source provenance and fee assumptions must be independently verified. No synthetic tests satisfy these.",
+  "execution_enabled":false,
+  "fill_assumed":false,
+  "frozen_V14_V15_and_trials_unchanged":true,
+  "no_optimization_or_inversion_on_inspected_file":true
+}

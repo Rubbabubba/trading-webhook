@@ -1,0 +1,8 @@
+{
+  "id": "external_receipt_depth_initial_three_files_v1",
+  "frozen_before_outcome_evaluation": true,
+  "reason": "First file is a cold-start burst spanning only35.656seconds. It has zero observed subscription sequence defects and zero uninitialized deltas, so inspect the next two consecutive catalog files for sufficient10second history and30second exits.",
+  "files": "Chronologically first3files from retained source catalog; expected LFS hashes checked, maximum180MBcompressed total,4500000records. No file selected for profit.",
+  "strategy_parameters": "Exactly original receipt-depth-momentum-v1 registration; no changes",
+  "source_use": "Research-only private raw cache; license other unresolved, do not redistribute source files or assume production data license. Hash and aggregate audit receipts may be retained."
+}

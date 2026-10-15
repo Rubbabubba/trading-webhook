@@ -1,0 +1,9 @@
+{
+  "id":"receipt_depth_invalid_book_repair_20261015",
+  "prior_result":"preliminary-v1.json",
+  "defect":"An empty/crossed incoming book did not invalidate an earlier recent valid decision quote. This could allow a decision from a book already known invalid.",
+  "repair":"Remove cached quote and reset local momentum history on invalid/empty records. Preserve original result, rerun same source hashes into a new filename. No strategy threshold or cost change.",
+  "pending_positions":"Missing exits never become zero PnL; retain unresolved states and exclude qualification.",
+  "preliminary_cap":"At most1000preliminarytickerattempts for bounded metadata joins, then enforce original100eligible-eventattemptcap after official metadata validation. This resource cap never extends after PnL inspection.",
+  "no_positive_result_or_fill_claim":true
+}

@@ -1,0 +1,26 @@
+{
+  "captured_at": "2026-10-15T23:52:10.125731+00:00",
+  "files": [
+    {
+      "url": "https://huggingface.co/datasets/lerchen3/kalshi-orderbook-alpha/resolve/main/data/2026/07/19/kalshi_orderbooks_20260719T022023.251189Z_ip-172-31-3-129_04de9e.jsonl.gz",
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T022023.251189Z_ip-172-31-3-129_04de9e.jsonl.gz",
+      "sha256": "2d95103808c22e7284f722f4edf66b1cc0194b519f363918c5199fff7df9951a",
+      "bytes": 26009864,
+      "hash_verified": true
+    },
+    {
+      "url": "https://huggingface.co/datasets/lerchen3/kalshi-orderbook-alpha/resolve/main/data/2026/07/19/kalshi_orderbooks_20260719T022523.296675Z_ip-172-31-3-129_f9616e.jsonl.gz",
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T022523.296675Z_ip-172-31-3-129_f9616e.jsonl.gz",
+      "sha256": "bf5b66483b259275ef4de242ea94a03f098a4856dfecc3277ee8912e0bf1f314",
+      "bytes": 67944837,
+      "hash_verified": true
+    },
+    {
+      "url": "https://huggingface.co/datasets/lerchen3/kalshi-orderbook-alpha/resolve/main/data/2026/07/19/kalshi_orderbooks_20260719T022802.195407Z_ip-172-31-3-129_5460e1.jsonl.gz",
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T022802.195407Z_ip-172-31-3-129_5460e1.jsonl.gz",
+      "sha256": "50a3714759d2d7e8ca9b7e64cfd449e31e90aa6f0f667014050485fd04ad3d41",
+      "bytes": 69106452,
+      "hash_verified": true
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "id":"external_receipt_depth_tail_recovery_v1_20261015",
+  "purpose":"Complete already selected modeled exit paths using only the next chronological source file. No new signals, entries, parameter changes or selective retries.",
+  "selection":"Exactly fourth consecutive retained catalog file, maximum75MBcompressed, source LFS hash verified. Original three-file initial-sample cap remains unchanged; this is a separately registered recovery-only append.",
+  "deadline":"Original entry+30s through entry+35s only. Earlier exit_unresolved_late remains unresolved and is NEVER repaired using later quotes. Only awaiting_exit records from preliminary-v2 may update.",
+  "guards":"Reconstruct end subscription sequences from original three immutable files, require continuity into new file, same SID/shard, valid one-contract depth, original fees/slippage and official close windows unchanged.",
+  "evidence":"Retain original preliminary and review files; write new recovery result. Worst-case full principal loss remains reported for unresolved paths. No actual trades or fill claims.",
+  "execution_enabled":false
+}

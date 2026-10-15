@@ -1,0 +1,1205 @@
+{
+  "url": "https://huggingface.co/api/datasets/lerchen3/kalshi-orderbook-alpha/tree/main/data/2026/07/19?limit=100",
+  "files": [
+    {
+      "type": "file",
+      "oid": "d16ea98fe71e7980ec39d13c7300f85c951d5ac8",
+      "size": 26009864,
+      "lfs": {
+        "oid": "2d95103808c22e7284f722f4edf66b1cc0194b519f363918c5199fff7df9951a",
+        "size": 26009864,
+        "pointerSize": 133
+      },
+      "xetHash": "4e841e98653e5f3cccd000d758eb60da560e2bc0d78bc68997ba67e730129572",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T022023.251189Z_ip-172-31-3-129_04de9e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "5a8878b3350bd7b360b758deeb45ab61d22979c4",
+      "size": 67944837,
+      "lfs": {
+        "oid": "bf5b66483b259275ef4de242ea94a03f098a4856dfecc3277ee8912e0bf1f314",
+        "size": 67944837,
+        "pointerSize": 133
+      },
+      "xetHash": "9885fcd64a0bc204cbdb75686c3d5771434c766d62fd35cf3fde904bf32b872d",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T022523.296675Z_ip-172-31-3-129_f9616e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7fac51f37ee274db6b301c6bf52cfd83730e4e7d",
+      "size": 69106452,
+      "lfs": {
+        "oid": "50a3714759d2d7e8ca9b7e64cfd449e31e90aa6f0f667014050485fd04ad3d41",
+        "size": 69106452,
+        "pointerSize": 133
+      },
+      "xetHash": "634eec6ad9f2cd978552a49b24d42d0c0ce50e67cd1de3d274556ebbee705148",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T022802.195407Z_ip-172-31-3-129_5460e1.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "6d2f913338b6e39dab7c5fff2315ed8148724110",
+      "size": 69139698,
+      "lfs": {
+        "oid": "242a2f393849fa2c073a26804dc4e83e9844b610eb681bd5198dad658a0555de",
+        "size": 69139698,
+        "pointerSize": 133
+      },
+      "xetHash": "b6c5ab45677ed02256f5bc97a42c43e2cf1a7e5a1e49d59930dc25e941126645",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023018.532199Z_ip-172-31-3-129_81630c.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "181a90d9f46c6e745eb7bc70f5e3a3f76195dc86",
+      "size": 68117533,
+      "lfs": {
+        "oid": "0c1cbb33bb05287ab5932652318b338fa94367444b9fd0bd72ffdfce4eb71840",
+        "size": 68117533,
+        "pointerSize": 133
+      },
+      "xetHash": "70b799bf56143572636b85739d2c2c9a0bcd4648df7b0fcdbedb767de6cb7bb4",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023240.256013Z_ip-172-31-3-129_98b415.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7ccb23e9f5b77cc09b4f3e22ec9ce4095c6df8b0",
+      "size": 59965899,
+      "lfs": {
+        "oid": "5b1605514724e7823152008cfd70f8c86b893d6778cf466314c9036c3d6a6d3c",
+        "size": 59965899,
+        "pointerSize": 133
+      },
+      "xetHash": "2f7ff69ae844558f5381f16e14dd8a1d70bea483867509a382f15b14ed471c61",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023456.569561Z_ip-172-31-3-129_50db72.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "865ad79a494dc559fc1528ab3f4c64213deecf81",
+      "size": 68889918,
+      "lfs": {
+        "oid": "b2db6743a491d9a91a59b082cffd53add073a07e05c494b9c66e4d98882725dc",
+        "size": 68889918,
+        "pointerSize": 133
+      },
+      "xetHash": "8d77480eac4fd7374df7af52ab95cb50801583eb7a77bf78eaf88d2b99e3c358",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023643.137774Z_ip-172-31-3-129_6c297a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9bea31f43c6bc3c9e6d65fb8d7bd2bbaa5788486",
+      "size": 67241627,
+      "lfs": {
+        "oid": "6637b8ea90bc23cc9399a1d521c36927811a4ac4030efdf97bda192d1702c040",
+        "size": 67241627,
+        "pointerSize": 133
+      },
+      "xetHash": "1216cbb5ddbfbd0e785dcb67f803816aa4520e3321c36febbe8e74046e9d2f95",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023842.827028Z_ip-172-31-3-129_e1d9fc.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "da5021d1a0749af5fe7499318bfd63583b905177",
+      "size": 69186152,
+      "lfs": {
+        "oid": "ed37d8242a466e04a2dbf6ea5ea6d501e83c8292a638e43e375881f32fd82b74",
+        "size": 69186152,
+        "pointerSize": 133
+      },
+      "xetHash": "e607fbc167e9c4b83cddcf69d6e1299b0da33425d539c7c5cda97ea132ec227b",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024048.345029Z_ip-172-31-3-129_44c640.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "da510b4e5e3d84595d7b420fd955f22faccbaae0",
+      "size": 69522651,
+      "lfs": {
+        "oid": "26d45a6e16d769f3438ddeacb4021cb1ccbd88b7d54679b2f666a55f7908478c",
+        "size": 69522651,
+        "pointerSize": 133
+      },
+      "xetHash": "82e1f785b5b4e8398ae607bdcdc39abe2174b1c2c12c14068f91ca96bdd46d7e",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024249.072705Z_ip-172-31-3-129_abce9a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9a9a34257b587fa369be9e8add4f55fb681628a8",
+      "size": 67410745,
+      "lfs": {
+        "oid": "72407969ced6ff377461ca4cb1634af8088cb98c3dfb997216853f2b7229136d",
+        "size": 67410745,
+        "pointerSize": 133
+      },
+      "xetHash": "5d92bda6c7582a56e3a02d62040a5e6e0a8abafa8ae4ee56b3e8dc2e389b40df",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024448.218443Z_ip-172-31-3-129_633c3b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "3ae524c23c63664e37b2b92609f91a896ca7e8f7",
+      "size": 60218701,
+      "lfs": {
+        "oid": "f37399b6094149dca6849c493d758e96c6b6875693be43815f99ae9ddf3c9f4b",
+        "size": 60218701,
+        "pointerSize": 133
+      },
+      "xetHash": "d911150844a48908d95a10067b1c983a140d9889003bad731cafdc41e3ab0eb2",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024651.836112Z_ip-172-31-3-129_efc183.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "223b3949a0e5954a443626158cac500b98bea173",
+      "size": 68686460,
+      "lfs": {
+        "oid": "2efe7b31b8df1fb13885bbc534a72795b8d5c82abb65e2e73ee2a89b71ea8e89",
+        "size": 68686460,
+        "pointerSize": 133
+      },
+      "xetHash": "e0587b25eb238cee3d17352e0d48ab6b441c4412785fd846b1e0be8e51f646e2",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024830.888776Z_ip-172-31-3-129_bb4f2e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "d712396e97f0492c9484d58ddc6fac09de986c33",
+      "size": 68678878,
+      "lfs": {
+        "oid": "e4584bdb3290ba2757b6cceb78fc7db9351cb1fe97170dc42751bf2945c57866",
+        "size": 68678878,
+        "pointerSize": 133
+      },
+      "xetHash": "a9a250c335c9393abe9ddd93bae65cc6324ded4e01ea5f7af7af77a2b49ea855",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025023.747132Z_ip-172-31-3-129_79e323.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a0d39e7c723678eb6bbf2b455f4ec27ccfb0cdee",
+      "size": 67939864,
+      "lfs": {
+        "oid": "16dcbf5c40911e2b0a255c51c41d11388d7322a4f0164848d687bbbd60f5d704",
+        "size": 67939864,
+        "pointerSize": 133
+      },
+      "xetHash": "8fb7a3ee01873b7ca19126b88c42399963bc10c95edb2233214168fd26deb08f",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025238.694036Z_ip-172-31-3-129_92508b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a6d6f8405878b07b0e05efc4e710918569639134",
+      "size": 68370914,
+      "lfs": {
+        "oid": "fb12d7cfabfcbfbab4c815234788ae05439903abbb1c56c24b0d02e007d2002c",
+        "size": 68370914,
+        "pointerSize": 133
+      },
+      "xetHash": "6abfb62a0e42d3e66ad8526d85fc6f8f7b4c47572e4bbacaa38062178fb62d61",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025427.641378Z_ip-172-31-3-129_1955e5.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "43c4b7f27fbde0335e284163ed705f2c8c39159b",
+      "size": 66260479,
+      "lfs": {
+        "oid": "eea3c4d5e14f207863d377e669827b77ab86c99c0e8df38e87383ca88e16b04c",
+        "size": 66260479,
+        "pointerSize": 133
+      },
+      "xetHash": "7456b65189d6868af433ae40b4a55b391e8f6483de1bf48368ba4e9ca90a7613",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025621.581139Z_ip-172-31-3-129_bf9c12.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "83740725a2264daebbd258893147982121b1f758",
+      "size": 60064081,
+      "lfs": {
+        "oid": "72c5a00df0f5c6a7c66435a94084578043036de3cfb537ec6cb25b850afd95f2",
+        "size": 60064081,
+        "pointerSize": 133
+      },
+      "xetHash": "e23a17b495f52fec88a3b48ae4aae899947273a00baf38631313978da2938b57",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025834.750326Z_ip-172-31-3-129_bb3449.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "4a9dc802e64d7dc01501993c4ab14b9d257a619c",
+      "size": 70585115,
+      "lfs": {
+        "oid": "60fd367bc870b12fd25a75447a78905e053ffc902d805abca7e222171541f49c",
+        "size": 70585115,
+        "pointerSize": 133
+      },
+      "xetHash": "12443e74d1ff910a0d1a63bff6be44d98a41f9d83bc93b07dc2e23d6730e4bd1",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030024.879178Z_ip-172-31-3-129_1a9da8.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9ce191d493dccd8a989b5003eabf869cdeece2a1",
+      "size": 69375274,
+      "lfs": {
+        "oid": "3fb82aa2b195e5d9f8001f098e7034890f695fdeb12232e359cf458e8b42a7bb",
+        "size": 69375274,
+        "pointerSize": 133
+      },
+      "xetHash": "f26728e14a11d7dfd3d9c90faecb5c5f1b2693981152b9996cd957d245f35657",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030242.411151Z_ip-172-31-3-129_7e4b80.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "6a349db2dedcaeb5cbe0605f349945e574092df5",
+      "size": 68033436,
+      "lfs": {
+        "oid": "de053b1bdf27e7854b55a4ce7bd38e8485a759c32c155664bd6ee6c6e33a8234",
+        "size": 68033436,
+        "pointerSize": 133
+      },
+      "xetHash": "ab836a5d5985b589e204a93165af3799a5bdd5e18a860b40a331297db484c968",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030503.057391Z_ip-172-31-3-129_148079.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "3243e7635ddc095faf1336d6db967043d11a6c27",
+      "size": 66517961,
+      "lfs": {
+        "oid": "526c37248247f668064e4eab263e6d37746ac3ef1e2564a06b292aed5f03cedd",
+        "size": 66517961,
+        "pointerSize": 133
+      },
+      "xetHash": "49a67ff13778152edf7cb7e3a85ee3b68465ee0db6c56c9624fdbf1278e27c16",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030727.272158Z_ip-172-31-3-129_27a39a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a13ddf7bc48146af0844b969a2ba7902c95e2561",
+      "size": 59965276,
+      "lfs": {
+        "oid": "ea85185f2253e5f57886ccd915e7c8bdffb387cdcf1fe8a755768735afce7968",
+        "size": 59965276,
+        "pointerSize": 133
+      },
+      "xetHash": "ebb571de0a8853a48d1cf395e9eb334be945777373c1f068bcc66d3562b7dc76",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030954.635514Z_ip-172-31-3-129_c838ea.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "56e5a14a57eddc1c8fbcb69dab44e4ddca221f71",
+      "size": 70852818,
+      "lfs": {
+        "oid": "f937cadabed3cf1a8a742de5dce6b5f5a4cb3ac4209b14e9c8fd1efc85caa657",
+        "size": 70852818,
+        "pointerSize": 133
+      },
+      "xetHash": "e1090be484d697d2cc7697a7e28e946d5350ccef2979fba12d288e14832dc5a1",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T031131.795031Z_ip-172-31-3-129_a84e64.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "30a895a65aa017e1dc1ad0ef4048361ae89168c8",
+      "size": 69637435,
+      "lfs": {
+        "oid": "9a8a6e9895eb8598a606732142e0da029fd042100d8dac1f762fc19e8b52e4d5",
+        "size": 69637435,
+        "pointerSize": 133
+      },
+      "xetHash": "750f71d01d4b1e0973a9d39931c91ff752d6a956a523b7bea58551c02fd5ed15",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T031347.518567Z_ip-172-31-3-129_453f0d.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "5720322b96c3465f31faa2df058a01d51ca0600c",
+      "size": 68655989,
+      "lfs": {
+        "oid": "9701797ebd8c3ca6241d295329c84edbf1054b52af14292382f5ef59dd6b00c7",
+        "size": 68655989,
+        "pointerSize": 133
+      },
+      "xetHash": "93e98dc7ab2ced1b88c4ce26a44da86ca2a909eaeaa1038b2b7935728800979b",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T031606.419107Z_ip-172-31-3-129_94a4a9.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7f2a4a9754d65ac6ecc7a794c35cbfec2ce2829a",
+      "size": 67810309,
+      "lfs": {
+        "oid": "bc46980494cf8d8b90b3c10d3bb551d5d30a5e10d81ef163e21175007b6af128",
+        "size": 67810309,
+        "pointerSize": 133
+      },
+      "xetHash": "2c5edf1f3289f54dd8e2b47c51fb84d9ad8f381303e24f6cd2e1e180e3e2b3c6",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T031823.823490Z_ip-172-31-3-129_753a65.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "679a2abe3b4ed7eb30c23022b3b89db76fcd8f1f",
+      "size": 58964848,
+      "lfs": {
+        "oid": "e8a6f0cda61e2ed50923feecaf47fb42dce497fa53e5bb0c6ec337bc87b255d9",
+        "size": 58964848,
+        "pointerSize": 133
+      },
+      "xetHash": "2e83c3cecfe50ba679a21dd7d53871e94b6b2312ec7753c99f38ce26d6fcc117",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T032057.498127Z_ip-172-31-3-129_9d1f4b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "bd56c59f1cb9a18bc97cd0b1108dcccdc2c60c85",
+      "size": 65332327,
+      "lfs": {
+        "oid": "7b1c52e729d2d01d14438a94b902f3600bdca89573d87a94a4b2d0abb2ff204f",
+        "size": 65332327,
+        "pointerSize": 133
+      },
+      "xetHash": "ea50855082caf3fd7ebfefefb0790f6698d8ba4c86c36a1d2d7166fa132b589f",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T032247.941043Z_ip-172-31-3-129_bed8cb.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "1778f8758feea31c6132388cf83c0f5d5b474da2",
+      "size": 66693319,
+      "lfs": {
+        "oid": "bc4136e2f22eccb5e00c5ac34ae5ca1d65078ae342a3ba16cdf28d6e7375175e",
+        "size": 66693319,
+        "pointerSize": 133
+      },
+      "xetHash": "9f70723e20a7a59e0e24078cce7779d9e76ec43de3b4c9749d2b1b0c3288c27e",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T032507.389089Z_ip-172-31-3-129_a47771.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7edd95aaed3d983d2a73188978a75ba18c143afc",
+      "size": 66363884,
+      "lfs": {
+        "oid": "168edca8c0cfd739c6a186b4538e0d6f707fc8d84958e5ee6340289c44cdf1a4",
+        "size": 66363884,
+        "pointerSize": 133
+      },
+      "xetHash": "521bc9d355f7488ebceb8293a118f395b17017ce49e6daed95f7375eb1d0b59e",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T032747.297891Z_ip-172-31-3-129_ec8af7.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "f463708199a6ae1255329ad458c5bdf3cb1d6c8c",
+      "size": 15948404,
+      "lfs": {
+        "oid": "80dbb861bb94045474dabacc889c52e6db5bfa101afe34a8839191de8aa8d166",
+        "size": 15948404,
+        "pointerSize": 133
+      },
+      "xetHash": "e7834f6cd8908201156877a69d5d30e2f6e9f18dc4b4d6794b2250c03829b044",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T033114.190355Z_ip-172-31-3-129_3c3b35.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "e5cd3ed239a5796d2124c27cb0c5475717152bd4",
+      "size": 1651230,
+      "lfs": {
+        "oid": "0d18fb5d22d7ae10688142f81a89b69f34d96bd1a606c996da5645cbf61b3727",
+        "size": 1651230,
+        "pointerSize": 132
+      },
+      "xetHash": "cc77eec6a8c9f7965b6897f8066cbfec27d0dd90687478c9909c68e3605af926",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T033614.226016Z_ip-172-31-3-129_a82a7b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "c3a6eee4e78fc2fe8e4788abfc52564c84874cb2",
+      "size": 19122720,
+      "lfs": {
+        "oid": "66fa1932ceb52ad1c6998bacf5bb2c79dcce2ee0fcc510f2362de29a7058ab68",
+        "size": 19122720,
+        "pointerSize": 133
+      },
+      "xetHash": "6af785469f854f80f2a1697e57b82a250a097b8a9a30f474504ede27eb438183",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T033650.530314Z_ip-172-31-3-129_f61a97.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "0cc24e44e6d021a152f6197e6ea0158ff0de075f",
+      "size": 19017249,
+      "lfs": {
+        "oid": "1355da6da4ec75c05341fcdb2ec19a298b91c4b1d8ff3654ee634f8c0e8eb4a0",
+        "size": 19017249,
+        "pointerSize": 133
+      },
+      "xetHash": "9a125521d84e7cf25c10e5b55581465e73f32ab7ebd3f57c974a2be0f85f85f1",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T034150.557834Z_ip-172-31-3-129_991e94.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "49b38e973a37d0b66161afcaf441e62264d068d1",
+      "size": 26400277,
+      "lfs": {
+        "oid": "c71dacbf39e4464a05f24b2e3757a33cbf87051369034968524f7d8ffd28d65a",
+        "size": 26400277,
+        "pointerSize": 133
+      },
+      "xetHash": "5f536c5e48fe0ec3ac4c6d96a347bb04e5b28abaf2f40ff915562beaec4bd66d",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T034650.588266Z_ip-172-31-3-129_17a307.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9321f25f9b2ab60f05218526866179fbc83185e7",
+      "size": 23883574,
+      "lfs": {
+        "oid": "0d81d6810120750b6f20a3f50684be2941db57a2a3735bcfc7a431c6b77f2c31",
+        "size": 23883574,
+        "pointerSize": 133
+      },
+      "xetHash": "3eb99a5b47610d18b291087145324719abc832d19a8e47b142b9d357bdc479fa",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T035150.597919Z_ip-172-31-3-129_dfa13e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "52d00c4500b9efc7faa046e91bca883bf4985758",
+      "size": 23775930,
+      "lfs": {
+        "oid": "785f5d55fbb49fd05227a159b0effe300eb95ac2a47e4dd3924d79576fa28ce6",
+        "size": 23775930,
+        "pointerSize": 133
+      },
+      "xetHash": "c810df7d54e9f402d8a0e60be572af0bcddac3eb17bf84e9e4862ae861c5bc60",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T035650.635031Z_ip-172-31-3-129_656e3e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "bc24dec91de82d8506b6e872d683518dacd5d6f8",
+      "size": 20093369,
+      "lfs": {
+        "oid": "44a7315605008a28aeb492d4168d5b43673878896015f6e3b2d9bebed239f273",
+        "size": 20093369,
+        "pointerSize": 133
+      },
+      "xetHash": "3420c29af53ffc7e91c36b80c65f3a6f0701845d7abdba71d783535ec9dd40a5",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T040150.643112Z_ip-172-31-3-129_78089e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "683eaecd099782b18730e18a5f207f72d2f7007a",
+      "size": 22675469,
+      "lfs": {
+        "oid": "ef0246a172766fbd5d1a09ee3d931d0c1c4d27b042cf621cac7ca685dc3487ef",
+        "size": 22675469,
+        "pointerSize": 133
+      },
+      "xetHash": "98db7a699340d2c0d92342e13195fa82c9d54de290e37d00b7d17ef2b63c00d1",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T040650.678002Z_ip-172-31-3-129_e9e8aa.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "dc51591cb6fc67546c2cd5e5c41dd4867b688838",
+      "size": 23852100,
+      "lfs": {
+        "oid": "47e4ef378e3acc888e1eab736690aae2eec7e4211842004ac6b98f0c57f1a720",
+        "size": 23852100,
+        "pointerSize": 133
+      },
+      "xetHash": "f333fd8ad7b01d5814c6068f6038fa962d8e1efd42b119687bf74389cc6620ee",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T041150.689381Z_ip-172-31-3-129_12e012.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "bb88c213d6647baf8a730513f26d99dac6df90d0",
+      "size": 23678732,
+      "lfs": {
+        "oid": "49685309546bb8fa99f76372eae3249f6119d60868449e3326eb1f24efbf849b",
+        "size": 23678732,
+        "pointerSize": 133
+      },
+      "xetHash": "e240fd5e2a99a998c0fc2791d16ece6fab0e9698940d99ad9141615dc60d336e",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T041650.721660Z_ip-172-31-3-129_21bbf4.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "42589ea77b0d7166fd0dc4a95031421ffebd9555",
+      "size": 30281337,
+      "lfs": {
+        "oid": "70cc653f3d39c22a812e879fa247700f587b62ba6dcbb52009f4ce20f0628237",
+        "size": 30281337,
+        "pointerSize": 133
+      },
+      "xetHash": "1765efd2eb00265526a69de22b7b9a0324cb27d2e0f7289b82031e2e645f7710",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T042150.768328Z_ip-172-31-3-129_f17107.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "39c48003b531db90a78f1a925ba3823b883699a0",
+      "size": 20598639,
+      "lfs": {
+        "oid": "eb9d99467252e72c925ba9ce58c23dbab54f92f6b69a0791d8d4b25a8d232e97",
+        "size": 20598639,
+        "pointerSize": 133
+      },
+      "xetHash": "f700f130ac369497a6f9ad9066cead5b17b6c2797adbb6e6ab487921fe074163",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T042650.785009Z_ip-172-31-3-129_8418bc.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "cbdd35ca7f42d1cfae734a68fb0bc4d94bfd25c7",
+      "size": 24579234,
+      "lfs": {
+        "oid": "ceec39a3043cb3fbe75061cd8aed49ac807f8e299ba85d53260d13c9dc7dbc43",
+        "size": 24579234,
+        "pointerSize": 133
+      },
+      "xetHash": "2ec27c183eb73d3f34695124a57f94a7d2bfcc4f4f9c14abffae8f6746ec64c9",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T043150.795950Z_ip-172-31-3-129_89870a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "fd2213aa3f9169a6b8bc34572b1793485bd11188",
+      "size": 37487269,
+      "lfs": {
+        "oid": "ee74b842a36d488f51e7769ee37219783222bb25f44d025224b7a2d8c3d1fb85",
+        "size": 37487269,
+        "pointerSize": 133
+      },
+      "xetHash": "ac7082634a30b365bfd761c8780e52462495bd1c9b1c8498e4f98c07020adb67",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T043650.810976Z_ip-172-31-3-129_433ac9.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "4f74c1083caee3fdcb55d2f9b520bc0d317e6193",
+      "size": 36224445,
+      "lfs": {
+        "oid": "55164fd2502341ba988c89295c398561ca3f0cb5e95c2104673a0db16eb72d1a",
+        "size": 36224445,
+        "pointerSize": 133
+      },
+      "xetHash": "3d89819ab54bd9fb66dd14ce2418f0585b89c6c269b28b99f4c07afd405697fc",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T044150.829444Z_ip-172-31-3-129_8eda77.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7a64cc901aed6c1becd1c428c26d8acaf10cf90c",
+      "size": 25181211,
+      "lfs": {
+        "oid": "cc779f01bbd6f456fd51f9a181f2fb52e1626f8de29e35f3bbab650e9d2ab311",
+        "size": 25181211,
+        "pointerSize": 133
+      },
+      "xetHash": "cf377f7fd9a29dc5ff1a1d6f906d5e630ca66afd2f8cdb43f90ffb715a3dc2aa",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T044650.839324Z_ip-172-31-3-129_38a3fe.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9a8b42066793f8e3dba0347b4597678ca0f62a87",
+      "size": 30152879,
+      "lfs": {
+        "oid": "2334d488bf2901ff852b173713872ff097a8b7274a91436be1c9d542ff7ea051",
+        "size": 30152879,
+        "pointerSize": 133
+      },
+      "xetHash": "4d2e55a04e23a3b9ac48d568442f7d27d544fe21dd9acb5a6f3a037b02337a74",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T045150.847912Z_ip-172-31-3-129_62d225.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a37bd2cbc2de33514849c19228727a20140045da",
+      "size": 26384692,
+      "lfs": {
+        "oid": "459cf59e68463b6cf5c7d926b83faea88a5c2aa18b3ad6d2c4262efd94fbe1dc",
+        "size": 26384692,
+        "pointerSize": 133
+      },
+      "xetHash": "0ed353b6f288db9ca7752ab6567626769b000bf114e8d250f65b82b866c412c5",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T045650.856193Z_ip-172-31-3-129_37101a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "873e12087daaea0c398eac0d570dd5182b3673e8",
+      "size": 27083272,
+      "lfs": {
+        "oid": "39d9432f16818443163e127ce9d215ae04ca7454f50c383dbcb37255577d8263",
+        "size": 27083272,
+        "pointerSize": 133
+      },
+      "xetHash": "02bcb98105507d822a82be0d285bf2d04314396461ce70a04b95129d10c1c814",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T050150.869643Z_ip-172-31-3-129_30fa38.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "4dec6d756844c9f4c8ae7d2d6a5482d5df154136",
+      "size": 30895706,
+      "lfs": {
+        "oid": "b275531fb3f7659783dfb6e8c5bdac097975acd0ac69c8d314ad26a1f8a0d209",
+        "size": 30895706,
+        "pointerSize": 133
+      },
+      "xetHash": "11dca6725c8654e889f8adb4d5f10715116d96cb7ddd0e0d2bd66812ecd40092",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T050650.896448Z_ip-172-31-3-129_80816d.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a28a700f90703ff5a8398d864eb21b7a3d1a80b0",
+      "size": 14015171,
+      "lfs": {
+        "oid": "8102880a67ae066c2e9e22cb0385b8af70a3127c76c4cc413333e0cd431e7610",
+        "size": 14015171,
+        "pointerSize": 133
+      },
+      "xetHash": "1f283c65b6a4412e9fd0b1214ff22e020b4194b821dd7baffcce9db9331a23fd",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T051150.924135Z_ip-172-31-3-129_b6c5d4.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "df02f426c559755da0eacc74ff3f7b0127e3bd23",
+      "size": 11837361,
+      "lfs": {
+        "oid": "6f0d6073c0a9e7a2ca297015745e4e42ed04fe4e2765239e19b52b25978e7c77",
+        "size": 11837361,
+        "pointerSize": 133
+      },
+      "xetHash": "8542fd9334706192ef8253577549397486fba5189774a2864985fe8cfcc77542",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T051650.951435Z_ip-172-31-3-129_bb73b1.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "f09e0f90b6daf75c6472e8b92848c46784d45278",
+      "size": 11805461,
+      "lfs": {
+        "oid": "a77058a2114aa3fc3201ff60f670293cba0c28ac779e584d5040016a4e027106",
+        "size": 11805461,
+        "pointerSize": 133
+      },
+      "xetHash": "e1ef8c3383ca7534892ea5e32b3ef6c9290b86e3729b0ed20abc05d7b716a401",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T052150.970707Z_ip-172-31-3-129_ee5909.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "ea3a9b55cb08ecf0cd2b1412e425a7a396c83fa5",
+      "size": 18910667,
+      "lfs": {
+        "oid": "84d77906036aca8895fc2d788e8aecb9d9dab8bd5bf319e74ccadb3905b6210f",
+        "size": 18910667,
+        "pointerSize": 133
+      },
+      "xetHash": "c7d5959885220a49ffd642012b957c7d2e0b29b3d31ece59a7bba8fb9e64a3dd",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T052650.988041Z_ip-172-31-3-129_eb565b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7035e09248c47deed717dadfce5567b6368b1504",
+      "size": 13769113,
+      "lfs": {
+        "oid": "3c99a71dfe9a305dd068d4e0c02446e6d90222173aed29ff99bb5b1f5000f6c0",
+        "size": 13769113,
+        "pointerSize": 133
+      },
+      "xetHash": "0e9f242511576f92572cf9591448f6e6ee3573b6d3862dbaeb53d4d1592600a0",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T053151.018752Z_ip-172-31-3-129_e45e3b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "83408fec0a8aa85a52b748a384a06ccfb61babf5",
+      "size": 14296956,
+      "lfs": {
+        "oid": "02b925aa8b771b91cb6e91f4aaf97c2e973c2e1e0ea8898042ef0cf81e1dfb8a",
+        "size": 14296956,
+        "pointerSize": 133
+      },
+      "xetHash": "17f0c7bb498f1e87bc23d9fdb0ab72626ef4f7604fe4455a81150cb9929bf492",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T053651.040896Z_ip-172-31-3-129_fc5f55.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "0146717e8a716ff3060c384fb9d2c15cb9ffccde",
+      "size": 14989869,
+      "lfs": {
+        "oid": "b5da0a733bd49000db1c5aa57e866e1004631387a2697cf296b95e1e031bb17f",
+        "size": 14989869,
+        "pointerSize": 133
+      },
+      "xetHash": "65f7d9ffe143ca6a0b7a2eb13290dc05bf357333bd3646da3d550fc3fe08fd14",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T054151.059005Z_ip-172-31-3-129_aa0a27.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "229653d6ed93aaa3045d9da0cc991916642cb6a7",
+      "size": 21748883,
+      "lfs": {
+        "oid": "78352b7a84f2c6a0a87f2c7cabab79c85991f7b9d205373e2f1043d01c7ae59f",
+        "size": 21748883,
+        "pointerSize": 133
+      },
+      "xetHash": "4957a9bec9d05499ba32f1bc1a297307c629dc9c2d9b1cb5671b0f116d45c058",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T054651.083842Z_ip-172-31-3-129_01710e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "b65f9ae317fc8492b273c0e3855474fcad9feb26",
+      "size": 29951324,
+      "lfs": {
+        "oid": "858f80e2a6ca1d8c812323244574a1469b6a1a64121710f6d60154c3b63a08c1",
+        "size": 29951324,
+        "pointerSize": 133
+      },
+      "xetHash": "a1c12aadebfbb881cc9b06f13e51c9389c4d661163d5d5538519fb6ca0df08dd",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T055151.105758Z_ip-172-31-3-129_70756c.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "3a4e01814dc420323d88d9c2594c0633061d7916",
+      "size": 14629468,
+      "lfs": {
+        "oid": "a954408b92b3a0b8fecf3b801eafe6ca39c98b47d07d763268d5cad28f4d8f20",
+        "size": 14629468,
+        "pointerSize": 133
+      },
+      "xetHash": "a786e73445ed806097106e5d6c1901aaab73d0e29ed84f25d50afe880b532b92",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T055651.148899Z_ip-172-31-3-129_696e07.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "db0c96c2cb97647517437f4dd5695365d473044a",
+      "size": 22506492,
+      "lfs": {
+        "oid": "97635630e2bfb3a0d8b6c717c7cf1fd037ffd6767029b4cd6c74a292015b20f4",
+        "size": 22506492,
+        "pointerSize": 133
+      },
+      "xetHash": "e6017e55b144a5a5c2c531dbd030c45fa7f951b2a18f5f9dc82af3efc2e2d91b",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T060151.195612Z_ip-172-31-3-129_dd48fd.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "87bf600546507f9c7b7a8bae3497fc359e56ae0a",
+      "size": 14295270,
+      "lfs": {
+        "oid": "a5c118d76f83aa39c8888e32bbdfe29fcee2878b18d682f185bf3689add9ecb2",
+        "size": 14295270,
+        "pointerSize": 133
+      },
+      "xetHash": "3b4e7475b5e1d8fa1c891f769f6cf46220b561a4690ad485f17d104d2182e841",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T060651.212541Z_ip-172-31-3-129_e76d63.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "409f8d40507e3975f0df8c36e43dcb0b6edcd8e0",
+      "size": 19606349,
+      "lfs": {
+        "oid": "6f62f4c1896bcc508ee27663318d0f77a495683802e2bb508af3d7416a804abd",
+        "size": 19606349,
+        "pointerSize": 133
+      },
+      "xetHash": "172c29bd64f67173de4c155fff0ea5100f0a4f35b5b8c1a44815eb62e2ff2149",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T061151.250674Z_ip-172-31-3-129_6f632e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "30cc2f826a233ca3019b5051ee3c392df527b0e1",
+      "size": 10101070,
+      "lfs": {
+        "oid": "1d9c47cdb8de075e90377c16337abf5abcb53e0c5b4ab6b9bfecc803c8b51a56",
+        "size": 10101070,
+        "pointerSize": 133
+      },
+      "xetHash": "34406c4e165e73ec7bd43263d6f3451ca1b51df41acd9b1d03a12d352a59f83a",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T061651.291348Z_ip-172-31-3-129_5c53f5.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "aebb853ead944641232dd82b950ada74c1fd1ad8",
+      "size": 17154473,
+      "lfs": {
+        "oid": "cda0aad5cd7e6d0fd0c423c26055519669092aac4001a0f63415a33640804bd4",
+        "size": 17154473,
+        "pointerSize": 133
+      },
+      "xetHash": "27680fbcc15824b129ff2d582a5486d1d11d52a7505031ff57719fae45ae0d97",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T062151.312249Z_ip-172-31-3-129_fa7edf.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "2b53733756dfbabd7dafdff647173fc89a7e742b",
+      "size": 13266669,
+      "lfs": {
+        "oid": "08a98e9e227d74405280758f529a744165d9addbf0b6f42bec4bd38ffeb24046",
+        "size": 13266669,
+        "pointerSize": 133
+      },
+      "xetHash": "c2133b010066487fe7fc9fb4bd71ed91c401c1276beff7f8e37b1ec09e60cc55",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T062651.336459Z_ip-172-31-3-129_757f8f.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "b9aeaaaec2f2cbbfb7de4cb68fdd61dcbd62f65b",
+      "size": 6917760,
+      "lfs": {
+        "oid": "370acf70d19dbdea1da55e1f607fc776ada28f7db3efda5657bb2f86b68f6ba9",
+        "size": 6917760,
+        "pointerSize": 132
+      },
+      "xetHash": "b444082a10c37df82c364f21fa33a7a75ffeb6c654a825ebcd36a04ce5211723",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T063151.346314Z_ip-172-31-3-129_053fbc.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "b332d7a928d508f1a87fba1a8afbfb8cc98fdff0",
+      "size": 7122534,
+      "lfs": {
+        "oid": "71e9bc51d514db663cab24373340b2d45f5ffab71d3c28b087da7e83463cd6f3",
+        "size": 7122534,
+        "pointerSize": 132
+      },
+      "xetHash": "511658eda653dd6070be607cc43119b3f065dc11e3d788723ace11af5af1e566",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T063651.364352Z_ip-172-31-3-129_419ca4.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "11d2c287f37bc7620f224acb52d7d08cf8ca2e3d",
+      "size": 12793793,
+      "lfs": {
+        "oid": "f4c739c0ae60cef73138d02baf3aa5bc8f43347cdc9373dcc87742dd0e6331ec",
+        "size": 12793793,
+        "pointerSize": 133
+      },
+      "xetHash": "22ee5baf84f932b8ded54a4dfff6d3e01b5f352da2b55612083086d8b81fd214",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T064151.386048Z_ip-172-31-3-129_e6796e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "5793e59639082b014af182013fb577a167025eca",
+      "size": 10683674,
+      "lfs": {
+        "oid": "fa89fd07c8d0e47f8664d8248c456f95c86254c04a3ac0caed6ad11223a7f16d",
+        "size": 10683674,
+        "pointerSize": 133
+      },
+      "xetHash": "c09f19237660a28c4b15214f0e111b19f86b5e32d5e99b82c4f32766cec64c98",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T064651.397121Z_ip-172-31-3-129_5175e1.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "688a071e098e95f936ee3ffec721e23f6cfdfd97",
+      "size": 10761236,
+      "lfs": {
+        "oid": "89ce0261b469d7b634cce98beb87e2a94e9c06efa2266e2232a16df3b4314c2b",
+        "size": 10761236,
+        "pointerSize": 133
+      },
+      "xetHash": "381292c7be2ed4e46ff0e9d7015df809f30ae09fd8a8058d3e9a4896ad7f28d0",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T065151.416736Z_ip-172-31-3-129_f4f92a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "e5e403b4bc9d53a75c9bdd02daa0165c50542e28",
+      "size": 10670509,
+      "lfs": {
+        "oid": "e51d0f98569937ec3d5929e4d252725cb36768edf742807212c1deb4f6718d8f",
+        "size": 10670509,
+        "pointerSize": 133
+      },
+      "xetHash": "4e6c606adb1f20686331bcc25dfff7a02cb00643d133ae37b48c0d027ba8f8eb",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T065651.443352Z_ip-172-31-3-129_160ad7.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "121fdeaab9de8cbf901bd9faaf2c8b75f947fd44",
+      "size": 7475885,
+      "lfs": {
+        "oid": "abbaa62c6db79b076854fe9eb471a1ebbfa1fdc7093e443ec4fbc9a83b072d97",
+        "size": 7475885,
+        "pointerSize": 132
+      },
+      "xetHash": "c2a32dc52e847784fb3163a02cd1d05f452d87263ffe9049cfe08f8625f6e9eb",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T070151.453111Z_ip-172-31-3-129_746596.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7a010cce9bc6e09a69e3dc8dcbd0dcefd3ed0ca1",
+      "size": 12423309,
+      "lfs": {
+        "oid": "23ae3eba515de65189ea5700f4b730af1b3eb63c7530d780e40c553545ca569e",
+        "size": 12423309,
+        "pointerSize": 133
+      },
+      "xetHash": "1c571b7250f1882a1fc848511c5296b3abc08436002cea3a3c372e0bf2158c67",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T070651.470374Z_ip-172-31-3-129_fda2e1.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9b47453a7da94c43b52b356586de752e422b38f3",
+      "size": 9407259,
+      "lfs": {
+        "oid": "e8450efa1359291bff6eb13a8b4e46e84c0b23e3be5daa397f71eceaa1efc020",
+        "size": 9407259,
+        "pointerSize": 132
+      },
+      "xetHash": "2cfd621ba210b017fe66abede24e308ca4442ffe943af9c805c88f2968e6c870",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T071151.501897Z_ip-172-31-3-129_22b494.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "bd2193fddd8cacbfa43f2dd35385a871e1a4d937",
+      "size": 6255648,
+      "lfs": {
+        "oid": "1756b7e8b1c04cbd1d1249866ffbd6486deac831834869b639e82773c77553c8",
+        "size": 6255648,
+        "pointerSize": 132
+      },
+      "xetHash": "cd087f1f0ddc86bf23233591f53017145ef28bb71e404946d7c5e73d67f8964a",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T071651.531646Z_ip-172-31-3-129_82df55.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "49f353045412ed4b9c34bfe02f43bbe84bdbb36e",
+      "size": 6527858,
+      "lfs": {
+        "oid": "470fa2cd6fc4cfa38ff8d5cac9406346b57b3cad591f4be557f757a20d54e3e5",
+        "size": 6527858,
+        "pointerSize": 132
+      },
+      "xetHash": "e5537d5baf30dde2448ef6940cf2769ac9e66d88905b59aab77d14f235ab3c5e",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T072151.544169Z_ip-172-31-3-129_a3b08d.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "887fa9d1f6c06881d685c27ecd5ead86f27ceaf4",
+      "size": 10208170,
+      "lfs": {
+        "oid": "03033c33956a0631deb0365426c502a56df0689ec002d6fd52cd0e11dab78ff4",
+        "size": 10208170,
+        "pointerSize": 133
+      },
+      "xetHash": "87c0786c68b645b648fc396510e1dd184485ebbf17bd3cad130f3c7ed6d5d02b",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T072651.560749Z_ip-172-31-3-129_940977.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "31714c3baa42109b3af685db66510bb087bebc7e",
+      "size": 7850991,
+      "lfs": {
+        "oid": "ea87ba877ff666e9ef9c0faddfc57e531be804fe096eb4cd05aa0a10d9132191",
+        "size": 7850991,
+        "pointerSize": 132
+      },
+      "xetHash": "ae1ff35f56e6af98f2a173555eb2dcfefd57a6ee851255b9e0b4551fe942fb14",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T073151.574364Z_ip-172-31-3-129_989774.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "036faf2eaa29b59f2e8bc7dbbbcfb181c71867ea",
+      "size": 10502253,
+      "lfs": {
+        "oid": "e3437f433dabe9cb56ddabc26b57ea48ae47831ea1149b5159bf3b3bf8b81272",
+        "size": 10502253,
+        "pointerSize": 133
+      },
+      "xetHash": "3991e85a12b7efd36cf901249c9881e4e243a84a697d9c91eac10c22773365da",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T073651.583725Z_ip-172-31-3-129_06bc17.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7df0ef1e99956ef91e19e6b8b9b21a1b70105c06",
+      "size": 8136897,
+      "lfs": {
+        "oid": "fd6eb416da5de80632fcac90df06fdad1080a7c971b9300965593b811f834801",
+        "size": 8136897,
+        "pointerSize": 132
+      },
+      "xetHash": "3fd66c3f18d8382be97d5a4e13c7757d344209d2f5fab7e4462a77658cb6f3a2",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T074151.598019Z_ip-172-31-3-129_d3b3f7.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "e1c690428383edc24ef93c795c2ae3fee94396d1",
+      "size": 9655848,
+      "lfs": {
+        "oid": "3ad45f6dc910e8fbc6c05138b70fd232261fd11ff5e7d91f3bcf158e541d08b3",
+        "size": 9655848,
+        "pointerSize": 132
+      },
+      "xetHash": "7c6ddcc5794bc022669aec12e0142675f5c5501fc27447683d8c67013c4a68c7",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T074651.605059Z_ip-172-31-3-129_a772ad.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "6b83e62c5f3125bfb3c3cf9311929daeeb1a17cf",
+      "size": 14906818,
+      "lfs": {
+        "oid": "6632b5069ddcd9ab75d2bad6c2412ac90a88ade6d44ef1fa0b5fc79baaeb18bc",
+        "size": 14906818,
+        "pointerSize": 133
+      },
+      "xetHash": "07204de2e61032e5ec654d51f566373f2d272ca2fe13f040b848a27c1ae1a939",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T075151.630320Z_ip-172-31-3-129_b80a8a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "2214e51d4e129ef74f1151d1e0975f1578adcd57",
+      "size": 6645892,
+      "lfs": {
+        "oid": "222cd9de21e607e17ded6da1e593dbab0efdd8dfb90a2ac236ae5fcc727b176f",
+        "size": 6645892,
+        "pointerSize": 132
+      },
+      "xetHash": "9a9f6aa40a763c314d55d26396a6e9c353d2b5e3b5c19c031424de56c0129500",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T075651.657997Z_ip-172-31-3-129_5be091.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "bed1f2f2923cee9ea5c54b696b977d7db76c1b87",
+      "size": 4719945,
+      "lfs": {
+        "oid": "3d55d163e7788ff946c1cce5710804da5c01b9ed7c7e649b66142a2c60201cea",
+        "size": 4719945,
+        "pointerSize": 132
+      },
+      "xetHash": "853620801fa41963a59599358ff7602b34d79b70a5c7adcf4ddf5739e799d7a3",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T080151.683881Z_ip-172-31-3-129_4ada65.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7ad71415a6e540ca66e7d2fd0d5b689e43be0c81",
+      "size": 7270059,
+      "lfs": {
+        "oid": "3e8303d694c6702112abbeae38663f1702e4389ed8e7c68821a66782dc22249c",
+        "size": 7270059,
+        "pointerSize": 132
+      },
+      "xetHash": "5717c9a626827d1193dc852be00b543a78c5ba6fd7c10295b606c389f2435430",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T080651.697726Z_ip-172-31-3-129_ebde78.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "512032079755cc074b78e2309b89cfd8f158e441",
+      "size": 7313489,
+      "lfs": {
+        "oid": "0d3af14ad5987fca01f789fd4427c847a72207a65c03757451f2273d3d1c6d84",
+        "size": 7313489,
+        "pointerSize": 132
+      },
+      "xetHash": "6209d0f5eac705c106ec482708fd15f6b105b8b595861f3f4acf12218459953f",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T081151.714368Z_ip-172-31-3-129_df4643.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "b6beaff5eec79cfc8665223e0fcd832dd94af7fb",
+      "size": 2147199,
+      "lfs": {
+        "oid": "2e89048f58af8b31fad7ed93a0a5efef250f33fe62e95bb444d6106ac8f7d99f",
+        "size": 2147199,
+        "pointerSize": 132
+      },
+      "xetHash": "f5e15eaf821edb11a2a4d2b1e29499e363d1ddbc4766a0afbe02667580a17268",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T081651.729055Z_ip-172-31-3-129_f0993a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "5bbd37edd8be103d09d58fb8a5f670ed6716630c",
+      "size": 7090735,
+      "lfs": {
+        "oid": "a71eadae7d99d78f7fb8f036b3d4a77d3b87a08c0fd8b913f90be9fc73633374",
+        "size": 7090735,
+        "pointerSize": 132
+      },
+      "xetHash": "2eca12b2f787f18e60bd1cf96abf17e33ff86dac8bfe3d1b0c25e553518ead38",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T082151.744577Z_ip-172-31-3-129_b1ef24.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "b12dbe70d16e0a009b0a85d7de0c39837526c77c",
+      "size": 4032642,
+      "lfs": {
+        "oid": "1b26c89a84c2d62c7e98581adb222c28458a36241b6c210bd002b321e4369017",
+        "size": 4032642,
+        "pointerSize": 132
+      },
+      "xetHash": "e6db81046c56655a87416ce040e657752d45f5df6052d8c36e5bb7c5b9e8b3a8",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T082651.761668Z_ip-172-31-3-129_e85afa.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "93d39aeb7bc9f36185cd597dbdf6090413e82652",
+      "size": 3027721,
+      "lfs": {
+        "oid": "ef5655e288cfe78ff88d62c7a0b0dfe175e5ef570755830000bc443acaad3120",
+        "size": 3027721,
+        "pointerSize": 132
+      },
+      "xetHash": "a9cc9711e738b78498da5f992391a22a5e368567c36e81d91765dfa2aa96fc2d",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T083151.780486Z_ip-172-31-3-129_eace39.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "c37f038ed6a3a0b3e10381dfde1845340268e854",
+      "size": 2560789,
+      "lfs": {
+        "oid": "a0bc0f237cfbf2224dd0667f5e3a0461df28f2aa42e77aaf37eefc83b53e8810",
+        "size": 2560789,
+        "pointerSize": 132
+      },
+      "xetHash": "1fdb375f90e9788a96b298eb0915f988b6712b1269700078475623957d0e9e8e",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T083651.797523Z_ip-172-31-3-129_143e6c.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "87d0809c6f2fdd5a8b99d634e69800683f7377aa",
+      "size": 5169313,
+      "lfs": {
+        "oid": "b688d34a7b18a00c85369316c38e5c6d0eea4b62c45fea07cb78a5014a32f461",
+        "size": 5169313,
+        "pointerSize": 132
+      },
+      "xetHash": "e7adbe0d72bf4f30e3bb5cb1981f97bef17a45fa79e7c82040978eee0103d16d",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T084151.816482Z_ip-172-31-3-129_466857.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "d2a5b7782f32aa4757be49ba50d925444a7cf3a2",
+      "size": 3504158,
+      "lfs": {
+        "oid": "5f3724f68a8cb644fcf187b28e29fe87c01180a75d4eb18a3dd280369e55d051",
+        "size": 3504158,
+        "pointerSize": 132
+      },
+      "xetHash": "d3e3181cdab9d76b2f03757fb4bbb3e585de381b975d3ef388f1d29a8a62e21d",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T084651.917258Z_ip-172-31-3-129_7c6c90.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "4c7f0da6d23358f0f633035387c39e9a5c63b9cd",
+      "size": 7136009,
+      "lfs": {
+        "oid": "556c0386ac21ff621d93d642717a4477159883399e85f10318360e2f5a0cb939",
+        "size": 7136009,
+        "pointerSize": 132
+      },
+      "xetHash": "4df85a51d65643eb6c855ebadb861433e5651afdeb26bd031a0e153e8a6219c5",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T085151.971582Z_ip-172-31-3-129_1120fd.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "73ecb3b2aa916f113ebdc7ceb5230b4a01e02f75",
+      "size": 2725234,
+      "lfs": {
+        "oid": "a22b5fdf2fc49eddaa5b543a633b30eaad1adabb6f7fd03f17fb5d9f1bfa30e9",
+        "size": 2725234,
+        "pointerSize": 132
+      },
+      "xetHash": "c5b593276f52f722701155e6fd7ef518a68de6c2a301afdb7bb926c4349eee34",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T085651.989298Z_ip-172-31-3-129_aff914.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "f69bb8fc26b8d557641bffda003c174d8eb4856b",
+      "size": 1951684,
+      "lfs": {
+        "oid": "57894aa53fcf678d0dc390d370d5537a0c2a19d7064158d23e52b565559a3436",
+        "size": 1951684,
+        "pointerSize": 132
+      },
+      "xetHash": "e2b771fa6b19ddd94bb3c31bdbe9a6f4ccbe7d16320989d3dac1e82b23b3f368",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T090151.999989Z_ip-172-31-3-129_75cb01.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "be32d2b893a4b9bf2f3c176103d0a93b2b129a33",
+      "size": 2673854,
+      "lfs": {
+        "oid": "5a65d6c6051fd2b669c8f0d7ada23f0d44c24dfdc06f59050b8c048240c685af",
+        "size": 2673854,
+        "pointerSize": 132
+      },
+      "xetHash": "4c692cba48225a49aae928285913679008ddaca5fddac3e480f1466c861e529d",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T090652.009608Z_ip-172-31-3-129_369b7e.jsonl.gz"
+    }
+  ]
+}
