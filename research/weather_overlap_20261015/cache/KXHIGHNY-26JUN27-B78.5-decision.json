@@ -1,0 +1,12 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXHIGHNY-26JUN27-B78.5/candlesticks?start_ts=1782503940&end_ts=1782504000&period_interval=1",
+  "captured_at": "2026-10-15T23:07:44.350669+00:00",
+  "authenticated": false,
+  "method": "GET",
+  "status": 200,
+  "payload": {
+    "candlesticks": [],
+    "ticker": "KXHIGHNY-26JUN27-B78.5"
+  },
+  "body_sha256": "dd882ccc5295b54ebdaa46d7472c7e8094d1dc6b53173625ca65737deedfd302"
+}

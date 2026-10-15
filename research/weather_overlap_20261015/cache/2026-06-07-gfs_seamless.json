@@ -1,0 +1,8 @@
+{
+  "url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=40.7794&longitude=-73.9692&models=gfs_seamless&run=2026-06-06T00%3A00&daily=temperature_2m_max&temperature_unit=fahrenheit&timezone=America%2FNew_York&forecast_days=3",
+  "captured_at": "2026-10-15T23:05:45.743395+00:00",
+  "authenticated": false,
+  "method": "GET",
+  "status": 400,
+  "error": "{\"error\":true,\"reason\":\"Parameter 'daily' is only supported for single-runs-api if 'run' starts at 00:00 in the requested timezone\"}"
+}

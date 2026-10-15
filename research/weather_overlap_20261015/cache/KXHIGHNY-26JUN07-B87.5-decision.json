@@ -1,0 +1,38 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXHIGHNY-26JUN07-B87.5/candlesticks?start_ts=1780775940&end_ts=1780776000&period_interval=1",
+  "captured_at": "2026-10-15T23:05:47.388507+00:00",
+  "authenticated": false,
+  "method": "GET",
+  "status": 200,
+  "payload": {
+    "candlesticks": [
+      {
+        "end_period_ts": 1780776000,
+        "open_interest": "750.62",
+        "price": {
+          "close": null,
+          "high": null,
+          "low": null,
+          "mean": null,
+          "open": null,
+          "previous": "0.1300"
+        },
+        "volume": "0.00",
+        "yes_ask": {
+          "close": "0.1000",
+          "high": "0.1000",
+          "low": "0.0900",
+          "open": "0.0900"
+        },
+        "yes_bid": {
+          "close": "0.0800",
+          "high": "0.0800",
+          "low": "0.0800",
+          "open": "0.0800"
+        }
+      }
+    ],
+    "ticker": "KXHIGHNY-26JUN07-B87.5"
+  },
+  "body_sha256": "df7107e5040b3503be4388ff359b08689d80fb217e037b64f9d5ae8922d73360"
+}

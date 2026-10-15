@@ -1,0 +1,19 @@
+{
+  "id": "historical_weather_point_forecast_overlap_v1_20261015",
+  "role": "separate exploratory diagnostic, not frozen V14 and never execution authority",
+  "execution_enabled": false,
+  "frozen_before_new_prices_or_forecasts": true,
+  "target_dates": ["2026-06-01", "2026-06-30"],
+  "city": "KNYC / New York Central Park / KXHIGHNY",
+  "coordinates": [40.7794, -73.9692],
+  "decision": "20:00 UTC on preceding calendar date; prior-date 00UTC individual forecast runs only; require run+8h<=decision. Eight hours is conservative assumed dissemination lag, not verified historical receipt time.",
+  "models": ["ecmwf_ifs", "gfs_seamless"],
+  "forecast": "Native daily temperature_2m_max in Fahrenheit, America/New_York; target-date value from exact individual run. Neither reanalysis, best-match seamless history, hindcast nor today's forecast may substitute.",
+  "probability_proxy": "Each point forecast defines normal(mu,4F), no fitted bias or variance. Binary bucket bounds use integer rounding edges from exact official contract rules. Average two model probabilities; difference in model centers at most3F; both model families must prefer same side with raw edge at least0.12 each.",
+  "market_quotes": "Exact preceding completed1minute candle ending at decision; valid YES bid<=ask within0to1, spread<=0.10. NO ask=1-YES bid. Never last trade, final quote or midpoint as entry. Candle close ask is only an indicative accounting proxy with unknown depth/update age.",
+  "selection": "At most one best raw-edge candidate per city-day; price0.10to0.90; raw edge minus rounded one-contract historical taker fee minus0.02 model/cost stress positive; ties ticker/side lexical. Parameters fixed, no optimization/inversion on this window.",
+  "metrics": "Report coverage and all exclusions, binary Brier difference versus contemporaneous midpoint by city-day, conditional one-contract settlement accounting plus additional2c/5c stress. Zero signals or missing data never a positive result. Actual fills never assumed.",
+  "caps": {"calendar_days":30,"network_requests":300,"per_response_bytes":3000000,"event_contracts_max":12},
+  "rejection": "Any missing source remains missing. Stop affected transport/access on401403429; never bypass. No live qualification regardless of favorable small-window totals: only1city/season, assumed forecast availability, uncalibrated probability proxy, incomplete orderbook/execution and unused larger validation absent.",
+  "preserve": "Frozen V14 ensemble distributions,300city-day6city2season gates and all evidence unchanged. This point-forecast proxy cannot satisfy them. No broker credentials, orders, paid service, model calls or new schedule. Reuse immutable cache."
+}

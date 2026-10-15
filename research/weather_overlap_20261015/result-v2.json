@@ -1,0 +1,2078 @@
+{
+  "schema": "weather_point_forecast_overlap_v2_result",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "actual_fills": 0,
+  "live_qualified": false,
+  "profitability_proven": false,
+  "registration_sha256": "5c7cbcb4d1147cfde6f3084af55d7b19ab30307ebbdf94b109e1d26fcb14035e",
+  "hourly_v2_registration_sha256": "d70e0129c2e1cb49cca7e449ea918fd980737f60e747d4f8013d61f9d3473e58",
+  "implementation_sha256": "cc79e834f6d27334b75f82f6c31683bb3ae3fbfafbd178b33779defeb50e861d",
+  "files": {
+    "2026-06-01-ecmwf_ifs-hourly-v2.json": "e46c635efa9d9f0833d720f4117f5b7f3bbfe1b5d391d1ffb3371d01b6ac70f0",
+    "2026-06-01-ecmwf_ifs.json": "f31c798363f84efae6634bc766c03b1fac3bc32d17ac23239ddc6101b2961c8a",
+    "2026-06-01-gfs_seamless-hourly-v2.json": "a5f357d2890d92310ff0f7eece0be521fb7da13dce62bd4d718cbd0f4d75d775",
+    "2026-06-01-gfs_seamless.json": "c868fd03e2bb4e28d49ea6ca1a8309eea6ab48ce4e46c853ed3cd1039ef8beb2",
+    "2026-06-02-ecmwf_ifs-hourly-v2.json": "a9da32d320d37d491babe6cde88c20a69c0881b1a8a30903e1710f6c6ae8d167",
+    "2026-06-02-ecmwf_ifs.json": "60a0c1f503277468d22ff11818714df14216212a03697c5fbe91942d4de6e3e0",
+    "2026-06-02-gfs_seamless-hourly-v2.json": "1516e6087616a4355a8bc50cba8a48fa04f7487f75768db3fec4c2e10531e65d",
+    "2026-06-02-gfs_seamless.json": "807f72783679e8229e3910b6039cc869e6c0c69450302756bdd8eeca69d89854",
+    "2026-06-03-ecmwf_ifs-hourly-v2.json": "06ca5cdb8b8559d835eea601e8e81489a6a8bccf062a777d50973a5b6ffe668c",
+    "2026-06-03-ecmwf_ifs.json": "72f767d60b6522bbbb2c1eaaff4269abdfeee818f35cbcfe7532c75aedd8f968",
+    "2026-06-03-gfs_seamless-hourly-v2.json": "cfb339f15f7fe64ab527ec865b0614ce82c7246a86c222cc67bce688ef7504fa",
+    "2026-06-03-gfs_seamless.json": "21003e2d8d3af3f948baebd716d8f74157000badb3331a62ba03c0cc625bd293",
+    "2026-06-04-ecmwf_ifs-hourly-v2.json": "5e4ff1a229dbe2fb4f543717955d522d5ad4ff369841da4d05cc14f16a482059",
+    "2026-06-04-ecmwf_ifs.json": "6eaa1b9c658643eb1a9b7e4f43f531031bc763cffd56bda8a467e2f7a5e1794c",
+    "2026-06-04-gfs_seamless-hourly-v2.json": "4f5be7f60c7da5bf68f4a485f7a12ec34951c921c5fe0d9b0d908f4bd68d68bf",
+    "2026-06-04-gfs_seamless.json": "fccf277959ab55f99106445c11772aaad46168e549e71617659236197451ec39",
+    "2026-06-05-ecmwf_ifs-hourly-v2.json": "fb75242bcc0de928fe82476b39349cb91fe4f92a6851afdb8d541116f3fd0ab0",
+    "2026-06-05-ecmwf_ifs.json": "a4e331f06e55a648f941f7d11003057eb061cf5029cbe986c4d3930a6713f7b3",
+    "2026-06-05-gfs_seamless-hourly-v2.json": "e35fbe09f4f76cb3e76bc6fc85ea04c386e5a512ccaad53a6ce04f321662a8d3",
+    "2026-06-05-gfs_seamless.json": "d148f1540ee09313206b8d0adb77ddae3aa1e1d8b97e35ad32f9d793d359ca4b",
+    "2026-06-06-ecmwf_ifs-hourly-v2.json": "466ef5fe7db82c3c09ecabd973751fda9933b6aa575c9777a4caf4c2965f0d7e",
+    "2026-06-06-ecmwf_ifs.json": "0a03bbc34430cdc7c17e8e9f67dd342f68bbbe7d6579fc74fefcf4a8a6b3c772",
+    "2026-06-06-gfs_seamless-hourly-v2.json": "5834b0f4c050f50da3b11ae7771f551a52d4afceeb420c3ba1493a326bcec2ec",
+    "2026-06-06-gfs_seamless.json": "6c742dcc96a940ac800a46bd7ec7572fdfad3b51f48ca25df7dfa10729808de6",
+    "2026-06-07-ecmwf_ifs-hourly-v2.json": "c5ed5435829b9dbfc34e335d3279d8962562c0d968d4787cf43abed15a8a45f8",
+    "2026-06-07-ecmwf_ifs.json": "8b73464daf0c3540713eb6dac69b4bfbcc682cff942b956903f2da04c3005bf4",
+    "2026-06-07-gfs_seamless-hourly-v2.json": "5ee71ed804884bf3b52661eb3f767f8bf319104956e35a60d389a70a058485d9",
+    "2026-06-07-gfs_seamless.json": "16d062a1d9264d6a50c5ec1985b14b562af90997abbecd3b8f6c22fd01395c56",
+    "2026-06-08-ecmwf_ifs-hourly-v2.json": "818d9eaa4b6ba6049ff8eb29dd661476e752d79f87dacf651d389cf59191a9e4",
+    "2026-06-08-gfs_seamless-hourly-v2.json": "11e3a3d6b2d1e39c7b967340ad93f24e36a18e15380148c000301c66868a7240",
+    "2026-06-09-ecmwf_ifs-hourly-v2.json": "4f6d7c8f6ebed3d5f8fe93ae7991f86c6cef8f57b84addf7445738aadabc8374",
+    "2026-06-09-gfs_seamless-hourly-v2.json": "ade4b7fc4b08a23f6899fcae4527b4e9feec62a23c66e3290882488cee7921aa",
+    "2026-06-10-ecmwf_ifs-hourly-v2.json": "dc3d474bd7a8022beac41ee629f9b294649f0b12339c2b6becc79bcb57547b10",
+    "2026-06-10-gfs_seamless-hourly-v2.json": "3e0b8ee7eb7b58f71db489be4a55814f17b0093fec1742bbf9cb0a76147561d6",
+    "2026-06-11-ecmwf_ifs-hourly-v2.json": "221b57940190676f7a4b20b9ababdd49a8f961d5ccdc20e08615450cf848e5f0",
+    "2026-06-11-gfs_seamless-hourly-v2.json": "0186e57afb4234020d9553ece36989f2cbf9ead0db32ef0c4323da3d5c3e00f7",
+    "2026-06-12-ecmwf_ifs-hourly-v2.json": "5d58baafdc45a334b06ae8a916fc3c3d5763c671c12bdad68594a3fdc1f7277d",
+    "2026-06-12-gfs_seamless-hourly-v2.json": "bfc505c1aa31b09213a7c477b2fe75b3bfeb86ef2712ffbb4cbde89386509b2c",
+    "2026-06-13-ecmwf_ifs-hourly-v2.json": "48287484d741afcda8f9854ab9de7e2ae6a93f7d3b1c1d42e807e4947096c1f3",
+    "2026-06-13-gfs_seamless-hourly-v2.json": "307b752d11e8d68dd6939eaca0fe498c157788ff0d1cf32400ae8e3e8f62eb2e",
+    "2026-06-14-ecmwf_ifs-hourly-v2.json": "ddee93166c196aaf228dfe6cc72e7776427ffe35f3bb82590e83cf24098bf187",
+    "2026-06-14-gfs_seamless-hourly-v2.json": "a50beb6cf6aea1345ad010d39b558a1e21c1aa98b108dd8a69db8c245ba019be",
+    "2026-06-15-ecmwf_ifs-hourly-v2.json": "ccbe1773254b0e5c4be4248bf092dd31017869f4e7ab2fa697e40ed870814db0",
+    "2026-06-15-gfs_seamless-hourly-v2.json": "6ae3884beed90ac2fa819421f772031fee9ed5120d25e7620f7bce6f8a5ec824",
+    "2026-06-16-ecmwf_ifs-hourly-v2.json": "c2c28d41a57c838f91e2d1b09e0246187e34a68100723650995a4647f94bdfab",
+    "2026-06-16-gfs_seamless-hourly-v2.json": "6701b715a66c3f12666f4a755422acba3f2f4b70c314924c78bb9992410ecfdf",
+    "2026-06-17-ecmwf_ifs-hourly-v2.json": "5ce7227ab9d99290c279b0d4f95395dd5aa0a902a158af5e403f177efdcbb357",
+    "2026-06-17-gfs_seamless-hourly-v2.json": "82ff2477ea9541c8be84ca354efce9d7b5216c87011a0b4510bcb7d61136f2eb",
+    "2026-06-18-ecmwf_ifs-hourly-v2.json": "d96dcf28c977b569258465058cfdf781c32a472b6bb3f45248c13bda52a2548b",
+    "2026-06-18-gfs_seamless-hourly-v2.json": "afcc8a6c8876ddb35fc02f4bab86943748b9cd08fbb879e0189ba7b7a2fb00e2",
+    "2026-06-19-ecmwf_ifs-hourly-v2.json": "afd336138b9dc3e4d06e450f96150c2cbd1bc33f2c5488fc4b17c189ce00108b",
+    "2026-06-19-gfs_seamless-hourly-v2.json": "9f99d29582dc8cd0bafbfb7f01d47439b89c1d932481f641c166127f608afe5a",
+    "2026-06-20-ecmwf_ifs-hourly-v2.json": "d1f4d0afcb2b11416e7f9544bb22a490e75591dc070e970b2062fa4b0035f816",
+    "2026-06-20-gfs_seamless-hourly-v2.json": "7613d57cbb5656df7af5b98dcf24d8a8e0ac74d4d76d38a7cb6c61f627fea3d5",
+    "2026-06-21-ecmwf_ifs-hourly-v2.json": "6b4f5f677c5ddf72dfc92bbf2abfa229a0e6baf8143014c46bd66165426a2560",
+    "2026-06-21-gfs_seamless-hourly-v2.json": "c43d3d2578ef7d0a9a04cee71991af2c329dd5471f3038bd3f74729ea432c7f2",
+    "2026-06-22-ecmwf_ifs-hourly-v2.json": "8c79c7cb4d5af383aa66273f5e87d8f413507a2fd19acbad4ad8d8744bd161db",
+    "2026-06-22-gfs_seamless-hourly-v2.json": "33c62266a484051acc90e72dcf4dc2f6b79e55d468f6dbdff0f7181e08197169",
+    "2026-06-23-ecmwf_ifs-hourly-v2.json": "ab22e2b7aa7c19d858d9505b73730d73b4c42debd99537be14fcfd99fd656165",
+    "2026-06-23-gfs_seamless-hourly-v2.json": "2b130dd89db37aafe3737b0648e0036a213999186bf957e0288ae9312350a9db",
+    "2026-06-24-ecmwf_ifs-hourly-v2.json": "5eb88522aa6816d191e316881252c9d82005fe2435f548dbb3ce84b757a7c20e",
+    "2026-06-24-gfs_seamless-hourly-v2.json": "96c4b2953f410627055c4066ab2247750d9e56d1856ab9bf5a80875b20a9fca1",
+    "2026-06-25-ecmwf_ifs-hourly-v2.json": "edc2a168f5d0f32107dd66060a8011b3f7cf4dfe63a0672607f59fe0ccb764fa",
+    "2026-06-25-gfs_seamless-hourly-v2.json": "dd0093edcb38d11967c3d674f612ec42400e6bfcfab6a76209ea4d39bfe40351",
+    "2026-06-26-ecmwf_ifs-hourly-v2.json": "36b278ff66d28e609780ae9b42dd618320d88fa9922ea288639e4810e385be4f",
+    "2026-06-26-gfs_seamless-hourly-v2.json": "56cd1c8af46886263358e618ce96444948f62e2f29a9b87c4d2043b0b9eefd1d",
+    "2026-06-27-ecmwf_ifs-hourly-v2.json": "afb1fd23011fcd113c86845786cceb100fc0740308126ba302218a6c89785e18",
+    "2026-06-27-gfs_seamless-hourly-v2.json": "31fce599492ef1c058585385fda0e67a205ef3e267534dcccc2c090843feb57f",
+    "2026-06-28-ecmwf_ifs-hourly-v2.json": "4ec4a05e25676c38823d730ab614a0541fc2f310fe7206a2226f4f0ce029cb3f",
+    "2026-06-28-gfs_seamless-hourly-v2.json": "41ba4aafd9c246080ccab5329df443c6a1bfeac0b106e801648dbd54f805f554",
+    "2026-06-29-ecmwf_ifs-hourly-v2.json": "7123e02df35e6176d07f7114b7abfb020d69d9c6f0bc339f5315328c2de6b9cc",
+    "2026-06-29-gfs_seamless-hourly-v2.json": "dc98475f04d7f9d9662cddd4c9cf6203417f71dd05404bf32b89716b1793e0ff",
+    "2026-06-30-ecmwf_ifs-hourly-v2.json": "cb89161c27c6283cfdfbce6d2ec9237e54bf4a4a2a343b2788b5168128691909",
+    "2026-06-30-gfs_seamless-hourly-v2.json": "d376070d99b463de1cdd3bbecd8e0bea8e656f60766e744b7f20e69f5e8e1484",
+    "KXHIGHNY-26JUN01-B70.5-decision.json": "739567cd4d892b23712e1aaf387f53745343b59f55599686e5d294a503e963a4",
+    "KXHIGHNY-26JUN01-B72.5-decision.json": "08fc8124de8805394cbab7b345d00f73ad0e64ea30773873dd06c531ae7228f2",
+    "KXHIGHNY-26JUN01-B74.5-decision.json": "343b32cc910e0c2bb9fb2dcbe7a45f20fb437c5c83b9da83ff43938c761b13a6",
+    "KXHIGHNY-26JUN01-B76.5-decision.json": "eb43f15403ee80d8279b6600763f576e73482dafd0258fe374153ee8fd636c6b",
+    "KXHIGHNY-26JUN01-T70-decision.json": "49650140ec28ae0e27a56e052270ba10cf02878634106a053f2890159c3e0ad7",
+    "KXHIGHNY-26JUN01-T77-decision.json": "f4a04d73388ace7e7e45042abebb36200e703766b2d292843814e31c813eee75",
+    "KXHIGHNY-26JUN01.json": "5640b1fb976ea05ced09a25d16a568f400f9d20a11a5bb2f80be15ecb753a77c",
+    "KXHIGHNY-26JUN02-B73.5-decision.json": "28595f06b48851b4e381553b9d05cee539aa10b7745396ff734181a2107c69cd",
+    "KXHIGHNY-26JUN02-B75.5-decision.json": "521e3a1588370d50567c74bd3378cdb795796dbe54c052b34699ad0075766479",
+    "KXHIGHNY-26JUN02-B77.5-decision.json": "9814c9a7626a51524ad938072bc4817b6cabe03f962368f521bfe7024d5b8239",
+    "KXHIGHNY-26JUN02-B79.5-decision.json": "7d7780918a9d22c1ee3098333cb72203917deb198e893daecae0d74e14efbabb",
+    "KXHIGHNY-26JUN02-T73-decision.json": "7eccbac08da4edfd4fc7717061ad1f8db75b7ff7c1e3f28f3a54feaecad6a21e",
+    "KXHIGHNY-26JUN02-T80-decision.json": "f75283cfb98be0b7007ceb4d7ee97c5946a90076fb1297437947e10f106fe709",
+    "KXHIGHNY-26JUN02.json": "dafa6f9d04e69d7204a65ab270d47db736a5c610df02bea1ba86b5b273d74af1",
+    "KXHIGHNY-26JUN03-B76.5-decision.json": "d58bfe5ffde6be476fcfcf5508edad1621d4abdc37e52fc3020a5966a63a89b0",
+    "KXHIGHNY-26JUN03-B78.5-decision.json": "85f69fb26b902c79e42150bf4aa63ad241accff9d4dfd51d7adca24a041e30d4",
+    "KXHIGHNY-26JUN03-B80.5-decision.json": "8ca33a7ece9d45e416aa2cd70fda7b6bf21d57faba6faed27016d122ee71e8b3",
+    "KXHIGHNY-26JUN03-B82.5-decision.json": "dba252c8dfcd50878431eb23b25145314f8b5d51d600c26c83171883a71fbe6d",
+    "KXHIGHNY-26JUN03-T76-decision.json": "20cb0b82a5ae3275ba983c8733c04d915638324edd94c0b712c19a1411dee8bb",
+    "KXHIGHNY-26JUN03-T83-decision.json": "2301adf39b33c0e9f66283dddeb1a7d25fc1a1b5f801af9af9ad8213aa330c07",
+    "KXHIGHNY-26JUN03.json": "36cad7506c0a84b7968b5dee4cd1f0211d3c7e5752766d5d08e8d2b43a348016",
+    "KXHIGHNY-26JUN04-B82.5-decision.json": "eba259adf1c38150ef50a7d9ebcc5f58dbcb2926de31c3dbac1c1724168af412",
+    "KXHIGHNY-26JUN04-B84.5-decision.json": "3a2cc45870bd028ba8020a753dc058c5f623f463a809b1027dcfdf454cdce81f",
+    "KXHIGHNY-26JUN04-B86.5-decision.json": "3cf7f6def9161e6ef4ba0e9b66d96bb3655251e8576205cbc11591011c06d856",
+    "KXHIGHNY-26JUN04-B88.5-decision.json": "7af6ef37e30a7dccb2bd6302ee8f9456ef50d2a021ba29ab1739d7aba4fcb265",
+    "KXHIGHNY-26JUN04-T82-decision.json": "efbc351017a38e847ca3f61f253c07eaad7347b655ea27f5418ac98be092ccf5",
+    "KXHIGHNY-26JUN04-T89-decision.json": "dcb28bf04c800db6b59ecab9676a40a8434d3eac6ffc61d8f9c58050b79bcae3",
+    "KXHIGHNY-26JUN04.json": "6cd8ad96ae992e295845caa305c01dc52cfa3f65a475d350786adceeef142eb7",
+    "KXHIGHNY-26JUN05-B85.5-decision.json": "f323c826e62cd315d54a88ef9331c7880146e359e426e196dc8ea5c3c31ccb27",
+    "KXHIGHNY-26JUN05-B87.5-decision.json": "7ad426ed40bbc028a0ac93fff54296647b5c4924a7ab2a438bddefb5a0babb32",
+    "KXHIGHNY-26JUN05-B89.5-decision.json": "da1fb67d2e7489f46c83ea2ddfdf44970565eb47d7b0303df0a38057176185e3",
+    "KXHIGHNY-26JUN05-B91.5-decision.json": "d8236305ee4a3f3459a346be081f4ab0b818c27f31e95a6f9e9b4d344c36523f",
+    "KXHIGHNY-26JUN05-T85-decision.json": "c8b1c7a89eef9943ae145ddbf0fa774cc1bf2eb77630f126f9cacf4bc9f44369",
+    "KXHIGHNY-26JUN05-T92-decision.json": "eb49d892f521a798255bdeaa59a387d6a7166d485b1777ffc0985ba952854f49",
+    "KXHIGHNY-26JUN05.json": "5d094c08a06c9e7a8b5cb3a6906910d60a02dd6ab319431c61d4d29147bfb46b",
+    "KXHIGHNY-26JUN06-B87.5-decision.json": "bdc9975d8fd255a14bc946431395dde29a9c2219641364e193892cfcdec6a8b0",
+    "KXHIGHNY-26JUN06-B89.5-decision.json": "11d0802fb70396a506793d7b16332a9d651a769f9afa7420e2d5f6869082c8f7",
+    "KXHIGHNY-26JUN06-B91.5-decision.json": "bf576e3fb38535a0d153166b3f00fc97257c0ef5b75bf9e962fe554de83bf877",
+    "KXHIGHNY-26JUN06-B93.5-decision.json": "4405f66ff06147379f23d98c72d1a2ec5c035ca407a2c2c9cc5c600851d8037e",
+    "KXHIGHNY-26JUN06-T87-decision.json": "1773c5114a18cd7196f3e65034ac1d6cc763ddf3b5fc9cf99adeed510bebfd02",
+    "KXHIGHNY-26JUN06-T94-decision.json": "856d04275cb33346aa24dfea8b0f0c1a6e48344a54ecd295fbf317c6cab698e4",
+    "KXHIGHNY-26JUN06.json": "3c7ced92a74836eb6ad09993dabc0a3348584e1073f5efc16ffbc2cc43e70746",
+    "KXHIGHNY-26JUN07-B87.5-decision.json": "330f605054480fdaaebff346bc6c157291ea8c9ddd9120559ac6a14f38ebdf59",
+    "KXHIGHNY-26JUN07-B89.5-decision.json": "f1154a9527503122f9f5aac68bb0fd7093649a7f5ad63d86ed79035043c46a2c",
+    "KXHIGHNY-26JUN07-B91.5-decision.json": "7284667bf8f71e1cbdfe2b73ec295bb0c6e9ed08e6f8eefcec491a85c0d3801a",
+    "KXHIGHNY-26JUN07-B93.5-decision.json": "5291d73199d0b36de18d5c21707d7d77d7dcad350bb3543228651297ed176e18",
+    "KXHIGHNY-26JUN07-T87-decision.json": "1e102fb366d271bd6b1ede5f0bbf1061cedba3d6be74305636de6e3193763e18",
+    "KXHIGHNY-26JUN07-T94-decision.json": "bb5d5ee876e7edf7e3ef46f7611f3b2ca94d5ae25190efc111d525c8a92dca4b",
+    "KXHIGHNY-26JUN07.json": "59b7d9fee9e91dc66b47829823b6da863bae07bd76e2a3c11037f6b66e5879f3",
+    "KXHIGHNY-26JUN08-B72.5-decision.json": "6d28bdfbfc46b60e7e39d63b8f90db55efafe7060f12989a13fee5d3758da152",
+    "KXHIGHNY-26JUN08-B74.5-decision.json": "840e06bb18b7aad34e0e1bec90b4df1290be98b4173d5169e7c8285584f996a2",
+    "KXHIGHNY-26JUN08-B76.5-decision.json": "3be69544d99d16213a1218aec346a01a8efaf531e2c3f67dc310e54489c608f2",
+    "KXHIGHNY-26JUN08-B78.5-decision.json": "16bd361ceebff94d8c12f3b121adfd8f6ed4bf55addb006f17ad87fbd61c1f71",
+    "KXHIGHNY-26JUN08-T72-decision.json": "78d0a2686258c16fbf65b235d756845046f68fd98d3d4b5c879b9a0069df04cd",
+    "KXHIGHNY-26JUN08-T79-decision.json": "902c73c8e6109e157ec230298025c0c507555ef3f73aec1278f3e567c10751ce",
+    "KXHIGHNY-26JUN08.json": "502a6c4d2680444f0d6cb41ff5d4fe8de0eab35c32111578301e8444c71a6649",
+    "KXHIGHNY-26JUN09-B78.5-decision.json": "8a13717703b62c15162aa817f36532e8e7e6c258e02673dcefdf39f1939b5076",
+    "KXHIGHNY-26JUN09-B80.5-decision.json": "c775198c8f08046ee59fa7d4fb754e2eca81f1f9e9c52c8dbd6941b330852186",
+    "KXHIGHNY-26JUN09-B82.5-decision.json": "3f4a2d3dc6f7ff100dd1ec7646207030312f5d5c0b7d0bf86530c1531a4a3f31",
+    "KXHIGHNY-26JUN09-B84.5-decision.json": "c71d59bfc3dfd8bfecafab2e718b0e8334ca067adc69397bd9f594bcec328206",
+    "KXHIGHNY-26JUN09-T78-decision.json": "931f5abb0b80cdbc8cadd855ca9374e33cfda66559ec4923e30dac928c5c6c6e",
+    "KXHIGHNY-26JUN09-T85-decision.json": "099d35bc48a9b77d9c00b514a85e3e194cd140fd2b1b9cd732c2b46086cab73d",
+    "KXHIGHNY-26JUN09.json": "f0dcdb0caff8165fbcc15f73ab744fe8182732c23fdf69402e60fcf24424185c",
+    "KXHIGHNY-26JUN10-B75.5-decision.json": "60a3120944bb33cb080468c62f35db1d5b9506ecacbfd62440bd4ae1efbbb472",
+    "KXHIGHNY-26JUN10-B77.5-decision.json": "39526d9334cadf6b5f450dd7c0d9b4ec22d5504156bdb4b766d010758077495e",
+    "KXHIGHNY-26JUN10-B79.5-decision.json": "8dbf1237f17e28d7c8a8850627e9d73aa6a83d0c8fd917175468a65cf17805db",
+    "KXHIGHNY-26JUN10-B81.5-decision.json": "894e7a8f1ccdb683644633e2cc4ae65421c7213d3b4626108eacda83287af745",
+    "KXHIGHNY-26JUN10-T75-decision.json": "03c094f4560103a4560711059ac6764a28f7ad6e5b02a81ac770263ba9ac0488",
+    "KXHIGHNY-26JUN10-T82-decision.json": "35c9287d206ca8a495ced67de32900841c299e953a94732436f599a657f81430",
+    "KXHIGHNY-26JUN10.json": "bde3da42a772615149b76b11dbae2dd9c80b1f9f7d5152ddece8742765749f40",
+    "KXHIGHNY-26JUN11-B88.5-decision.json": "19394cc761bdd7494973567114824d3a0d5856ea04fafe00b284ce2b2518a41b",
+    "KXHIGHNY-26JUN11-B90.5-decision.json": "d385d17fe1b0a55a37e8d4e57a8cdad82c9521848c1cda3fcabe1c2efd37ab33",
+    "KXHIGHNY-26JUN11-B92.5-decision.json": "0580a04b8c73a660da5ff0df542f2b9fc78187ec1b8f95f65c48e4cc9e627bd8",
+    "KXHIGHNY-26JUN11-B94.5-decision.json": "66c8ac72be3c6a2fb0862e2dd8b3837aca98934f66fcf42b8e50a8b8d646d0cf",
+    "KXHIGHNY-26JUN11-T88-decision.json": "057b0130f5110cc165e66c7eaf93e21f57432cf8346143b4c18f16592c4c7d38",
+    "KXHIGHNY-26JUN11-T95-decision.json": "dd4681186032b3f8dd7287c3d1859f60eb37ca4582cf4a153be411ce71f1270d",
+    "KXHIGHNY-26JUN11.json": "65207c9d74173808ec17d8b05baffa7f29c565e752081f92dc162af3cd4e2cce",
+    "KXHIGHNY-26JUN12-B90.5-decision.json": "da42c2ced1dc4c63116eaf96c3e5fe826955a26de70788986842c9e3e4d6c843",
+    "KXHIGHNY-26JUN12-B92.5-decision.json": "af75d066acf186f3f26afea4fc9db230c92a679ba61c1f4b74e1f936a9cdff8b",
+    "KXHIGHNY-26JUN12-B94.5-decision.json": "50e47ca495a98d426dc7781109bd46f5505397f0f6379f01fc862c9afe89a7a5",
+    "KXHIGHNY-26JUN12-B96.5-decision.json": "22cf89b3aa066cc58868654f18a26d09a07a02de3901e7a5845be959b3673ec8",
+    "KXHIGHNY-26JUN12-T90-decision.json": "2179512df10c91ed6d451b55812d6a483adf23cc598c1b34dfcff54a68855023",
+    "KXHIGHNY-26JUN12-T97-decision.json": "659044053811f65426e33ce14ae5566374f84460cc36b400de73a0260cc6771b",
+    "KXHIGHNY-26JUN12.json": "2b142f3aa030d6515c6faeeaa8bd5f7c60b008f798406d650b21dd0fa3e96430",
+    "KXHIGHNY-26JUN13-B87.5-decision.json": "a937db7999496a4e5bd56f396a9cb31ec05125b91d3da6aa0f6e2eb2097ef5dd",
+    "KXHIGHNY-26JUN13-B89.5-decision.json": "fb2ccae41357a2d15cd231b7d904550e2c17bc5f84f1dfb28f94201660b1a4b1",
+    "KXHIGHNY-26JUN13-B91.5-decision.json": "c72a21813de44721b64dc3cef3f828963ba06964560948a7aaae7f661835bf4e",
+    "KXHIGHNY-26JUN13-B93.5-decision.json": "cfe6353c61c0e6e1d0e0b43dfa01ca14d9838c2631383f974e3c970436cad338",
+    "KXHIGHNY-26JUN13-T87-decision.json": "0026fe1956d50d931b6ef8dc86a8c6ecd94d8e1d7ed2dc790e1e3ad86a246117",
+    "KXHIGHNY-26JUN13-T94-decision.json": "fdbd9e992d9345d13d97663cf2cdde3cbf15aeb85e998a68183ea9ae1980d54e",
+    "KXHIGHNY-26JUN13.json": "5b37df1908a45664091f9b680583fc35935a9a1c998480834005b3bf325fb385",
+    "KXHIGHNY-26JUN14-B85.5-decision.json": "c55ffaa8f45be30ec190d23c27da9815301bb7a873bca1ef070e6938fb3158d0",
+    "KXHIGHNY-26JUN14-B87.5-decision.json": "88db665efdc32ee4ff2532949b75df022197fb4ec587a88a8535c030708f9507",
+    "KXHIGHNY-26JUN14-B89.5-decision.json": "7c2624f561a60b2c2e066095fce29be337fb81beaf641e927d194f437e7c5c5c",
+    "KXHIGHNY-26JUN14-B91.5-decision.json": "03808b672ffb06d86a9a0d492dde9f75827243b232592d9f93ca87394df4312b",
+    "KXHIGHNY-26JUN14-T85-decision.json": "12d5c22f29bdc3652657c189a76644601bd3ed71fe7a911bcdaee3f5a9f4d56d",
+    "KXHIGHNY-26JUN14-T92-decision.json": "1091d68b0f78c5bdfe790d64b94a51a9bc86846b7d6a1ec8ba735b3dc3f4c087",
+    "KXHIGHNY-26JUN14.json": "eb36594b2e02bd765f52d37684e1c01d3714ab2021d8b0bafa9097aad7918326",
+    "KXHIGHNY-26JUN15-B78.5-decision.json": "34c9c46344fdcfe2f7a1dfd80137ce1b659210ff77306943ce39f7e37e89edb2",
+    "KXHIGHNY-26JUN15-B80.5-decision.json": "f3a9ed8923c1f28490fcaa2e154a30f8836d091c506dd06055a8587b01498a44",
+    "KXHIGHNY-26JUN15-B82.5-decision.json": "fd08527ef23b881a125420228f83e80fea7d80cc42adb10f58a4ad1be17c3737",
+    "KXHIGHNY-26JUN15-B84.5-decision.json": "112f8ed61e99a4c5a024f9c8d2e51db3989a49e6f3fe81d53b0161417691fb3e",
+    "KXHIGHNY-26JUN15-T78-decision.json": "9a46f0c966059afbf867a3363b1e771e1fd657f235b74aa607db5c30664de992",
+    "KXHIGHNY-26JUN15-T85-decision.json": "c8be3aae16c3948900e20539fc654000a5b04f059cc843e495e9458915bf1ecb",
+    "KXHIGHNY-26JUN15.json": "8445ef3f968a61f9fb51bb6d22b7c711c1ee9362de2144a1e554652bf865c8f9",
+    "KXHIGHNY-26JUN16-B75.5-decision.json": "6760b2779834496db340026c66b39833de3254f79e30fc22abc6cb00ed26c294",
+    "KXHIGHNY-26JUN16-B77.5-decision.json": "bfbb7b91febd7b6eb75823309e6c827b8dbd1c2567f553b42df0ff83273eea5c",
+    "KXHIGHNY-26JUN16-B79.5-decision.json": "b6aea8101c901a1c1c5772ee42181e1988272c3a42045ca35464859165f95f24",
+    "KXHIGHNY-26JUN16-B81.5-decision.json": "95a2ce0a64c4d203155d898de116fb46186224e69f2082f61476d68e686a8d0c",
+    "KXHIGHNY-26JUN16-T75-decision.json": "acd11f215b3d196b482e3b19c65f62337ef245d4ef7cc4fe7e5191c8ae8b8c39",
+    "KXHIGHNY-26JUN16-T82-decision.json": "f1ae6857ebfa271c45b80a624314aae80d677cace0750d62567ff30ba4037bf1",
+    "KXHIGHNY-26JUN16.json": "32a75f760f52f47ca732b005a1cd3cf69d113451446c86971535a5c6e03b64d8",
+    "KXHIGHNY-26JUN17-B74.5-decision.json": "3bdaba9912c563134c10d02484914021decd4236dd3ab621a58d04716d6ca23f",
+    "KXHIGHNY-26JUN17-B76.5-decision.json": "de22a6f816702a322edc889ce8c11517f7f6c7c183006612931721b3dd8a0415",
+    "KXHIGHNY-26JUN17-B78.5-decision.json": "9ba25d6c84c00098f0c377309049b121385ff9a19efcfd4aedf47af89fd4857c",
+    "KXHIGHNY-26JUN17-B80.5-decision.json": "b4489a23e09f49acd2a201b7851efff1c058f2a7066cbaeb636b171b82557e84",
+    "KXHIGHNY-26JUN17-T74-decision.json": "0e2695c88ddd3c31f1e4e861d34214ef825224cc50b2e1a15a81ba0dcc102213",
+    "KXHIGHNY-26JUN17-T81-decision.json": "90fce0c9a322f3d4c39fc90e3e8f95afc5a4c5efb5e97ab941d146d4d00b5bd4",
+    "KXHIGHNY-26JUN17.json": "0ab5f1061d502669ca8075fa6818de673ee5d7183c169a0f3483504ac01da9d8",
+    "KXHIGHNY-26JUN18-B83.5-decision.json": "26fe17878514f90231634ff1f634ca7dbf3fe50d56c9d31a45375818e177c13c",
+    "KXHIGHNY-26JUN18-B85.5-decision.json": "228b448094e7fe91959df4ebf1a141e3edcd2d23e4c4511d8af1890c111c4a29",
+    "KXHIGHNY-26JUN18-B87.5-decision.json": "78b9af1d1be04aae1497a7e5aa284fcc8f5f9a2f690245b07bd9be396b0e1352",
+    "KXHIGHNY-26JUN18-B89.5-decision.json": "0e19e690e845341ae03c842bb443b065ceafafe5989e2d0f59b33cc56983cec7",
+    "KXHIGHNY-26JUN18-T83-decision.json": "b3d0bd81506e0ac2699283d1bc94a0f9bca3c87c20094b3f63ec20acca072ea1",
+    "KXHIGHNY-26JUN18-T90-decision.json": "68414161bf235313e831ef384d5d3d4262e421513b67bef56fb54a4cd486a608",
+    "KXHIGHNY-26JUN18.json": "0c157e7b3a81fef254460bc282297987911b2e6c93c7d6816d4217503288a892",
+    "KXHIGHNY-26JUN19-B81.5-decision.json": "223a29ab10b87531dba0905f773bccd546bbbbb434d43e016d9ad76f31abe4a0",
+    "KXHIGHNY-26JUN19-B83.5-decision.json": "ac8ca3b67f447f0c6e70b578e0d3c4cbabba1738c3b63504249cdcf5257a0534",
+    "KXHIGHNY-26JUN19-B85.5-decision.json": "c33863ffd74b90859be70d6c22125ff9e6039651c083f46aca2f0e5e0593fdc3",
+    "KXHIGHNY-26JUN19-B87.5-decision.json": "9dd82559592944c45b33f82ce502ad21e47a28056fc244f32986f8ec0ff4778b",
+    "KXHIGHNY-26JUN19-T81-decision.json": "af00bd59d451d756bed6d0684fd1a69cde5cd472f4247bc922b4469512ebdaf7",
+    "KXHIGHNY-26JUN19-T88-decision.json": "c29fe4fd31c80199fb1be6deabb22eb4a6a4bdb23d09e5c93ee40401f8ac8f9d",
+    "KXHIGHNY-26JUN19.json": "02990b5418fe9b3c4553a021f9fe1a911863191212e9690c1f324c3f2847218e",
+    "KXHIGHNY-26JUN20-B82.5-decision.json": "89d1caff3babaefcb2c569e9b663bd558a01f343fed32d02c3f7411aacbfed05",
+    "KXHIGHNY-26JUN20-B84.5-decision.json": "ad30a091660c76c6f75379da8f8bb156b0c8197db975a1afe703c4554f1033b8",
+    "KXHIGHNY-26JUN20-B86.5-decision.json": "78845f9f3bd5802099ba13f5b647ccfe0e3eae63ff338b24adf18ac2ce0a8946",
+    "KXHIGHNY-26JUN20-B88.5-decision.json": "48156f8a4d0abc2e67a49d85aeb52bfb5911ff721dede6437b99f652e40124c0",
+    "KXHIGHNY-26JUN20-T82-decision.json": "63406c0e103d7d2dfff693c6292d95df99b8f14c6421b00abb68877990d7ba45",
+    "KXHIGHNY-26JUN20-T89-decision.json": "071e2fd310100272074a05568844c333ec5c4c0f059cbc6f6d82c4e589a8ce82",
+    "KXHIGHNY-26JUN20.json": "abd30433cc934e73122cbd2e7a2f1cedc98e8daa7006b49d91a08f72ba34569b",
+    "KXHIGHNY-26JUN21-B80.5-decision.json": "6883f6e50f764f2fcf2a51d3c3f8e7b4fd3497da6b303507963b71a56de6fb48",
+    "KXHIGHNY-26JUN21-B82.5-decision.json": "075b30d2f3737a9f8374cdf9bb570156b19731d56667516d823e741acff4ae98",
+    "KXHIGHNY-26JUN21-B84.5-decision.json": "12c6addc38938164e822da0582d5e4a14ef55ba01ad9528c97823d565c7f2f52",
+    "KXHIGHNY-26JUN21-B86.5-decision.json": "a295758dad615ae874894ef2035abccfe60c43c531c99afdb22d7b2196f7c194",
+    "KXHIGHNY-26JUN21-T80-decision.json": "135bf3d5a3518e9cc718a12877b3b137fa71f006c1313f71d6e913b9235e7872",
+    "KXHIGHNY-26JUN21-T87-decision.json": "87831d6750358318f0dcd82276abc959bafc1b08f0ecb5866d9d950ff8d98fe5",
+    "KXHIGHNY-26JUN21.json": "7ce780cdf2fd562baf6c8dd77e02537a0f867311f0a3cbbc6dec0fdf55112495",
+    "KXHIGHNY-26JUN22-B72.5-decision.json": "34d0817ceb950b788cb35536c38287c4b8d8ff75eb4f44aafa215432e619d8cb",
+    "KXHIGHNY-26JUN22-B74.5-decision.json": "8eb07682342fc64ed80e54b4749c838246f3f2a99d517ef588cf8185a283e78c",
+    "KXHIGHNY-26JUN22-B76.5-decision.json": "905f645b0ae1e1de4d183a30c2cc37688a9d1ad7bf6945b60a2b3dbb537490b2",
+    "KXHIGHNY-26JUN22-B78.5-decision.json": "8631dad52943e9bc314ed2cee0f47f10d83e846c002c4dfd523cb80fb975d1b3",
+    "KXHIGHNY-26JUN22-T72-decision.json": "2921155eb8fb17e9ccc093582d1483fa36401b465c97b7a547abb562bc428248",
+    "KXHIGHNY-26JUN22-T79-decision.json": "b48ffb9b24ff48a79d6e9409bcd8d79f55bfbc191a1d5a348f71cbd7ad068524",
+    "KXHIGHNY-26JUN22.json": "3c35b5e3edea60c28dce58e77d63cba6c7dab0d4a1a2f10f15ff07c9639f080a",
+    "KXHIGHNY-26JUN23-B78.5-decision.json": "01ca5d795d78438ffd4e666ab4f90905c69fd2d9f3356b170d545460d9c3db21",
+    "KXHIGHNY-26JUN23-B80.5-decision.json": "9b6d563b916f9f09e757a09e4ad752f7fc9a70a895aa883f32453e67e7f16386",
+    "KXHIGHNY-26JUN23-B82.5-decision.json": "eb59f7bde123aea34599dc20378f8c25bce40840acad4f9bf98b6ac21c2d9ce6",
+    "KXHIGHNY-26JUN23-B84.5-decision.json": "5c1634444f30c3db63749cc64cd424b4e961e5d9ab5aaf0a1407ef2b9f72b0da",
+    "KXHIGHNY-26JUN23-T78-decision.json": "6fa926c72860708b7bca4faab6ddb32f25d6bcebea28bb5dccff9d0c5a9da05a",
+    "KXHIGHNY-26JUN23-T85-decision.json": "aa72a9f07224101230648d30bed8f55506c2a472e11a019d9ddafdfa055c5769",
+    "KXHIGHNY-26JUN23.json": "3571e879696bcb9f9166c36055244a78f2ce66e20c141666a5702b8d53bdf44a",
+    "KXHIGHNY-26JUN24-B82.5-decision.json": "5a0047cbccc728662b858e2d5634e1d6bb43420d05c27f05715abe7caae2e588",
+    "KXHIGHNY-26JUN24-B84.5-decision.json": "8e85870f85f744c936143f157b9305698ef240925ef3729ef3e65d82bf22463f",
+    "KXHIGHNY-26JUN24-B86.5-decision.json": "2a90114af18ce879840bdd56a0b663b1e81c877a00c5a3424f50a9e7c0ada4c8",
+    "KXHIGHNY-26JUN24-B88.5-decision.json": "9e12da3f4135b7b89431d89eb197ea11961f1a5491b91de45c71f758e73f39a8",
+    "KXHIGHNY-26JUN24-T82-decision.json": "1be08f0262ecb5c6bf56c29242196d464f8a010bae249f453c0deec2be13dad2",
+    "KXHIGHNY-26JUN24-T89-decision.json": "aa80a843c33bb57b54abcf34719803b333a5ffacf003ea1bae5c4f776c9269d5",
+    "KXHIGHNY-26JUN24.json": "c50f9bfe0648eff137ad980a9845aa1a373986b06dbf367d6797af7e4f4cdd62",
+    "KXHIGHNY-26JUN25-B79.5-decision.json": "c652f95130d9bf916a76481570b02d41740fd69e2b644f36bc39cee6cc393a7e",
+    "KXHIGHNY-26JUN25-B81.5-decision.json": "17ee98a6566f329992eaa16b6bf9a2fd3e12a525b5252b49b6c1292372c42e40",
+    "KXHIGHNY-26JUN25-B83.5-decision.json": "ae8f7d9d789fbd8970d6e214c75c727c3f1d5e8db4c0c7e1ec442b774b620ca9",
+    "KXHIGHNY-26JUN25-B85.5-decision.json": "160dd91e245e5805c3316aad8ff2c4e5ce0ceea4e19fd996eccd6e36badfca38",
+    "KXHIGHNY-26JUN25-T79-decision.json": "99e11a19e4830fa6543ee2f226b505e9c8477fb1833adfadc1d04b3baad9099d",
+    "KXHIGHNY-26JUN25-T86-decision.json": "c39fc12f72cecd591e749b34cddd01e99d6653f9637016df63031e8d6e32531a",
+    "KXHIGHNY-26JUN25.json": "73a8118eaa374a7e259cb30e71c9ea937c9acca2c6af2722e42d55e516e82ba9",
+    "KXHIGHNY-26JUN26-B81.5-decision.json": "187b28684dd1415c10a2452cd9d6f8dd2c551ac204b1b2a1ff32ac5ca2d169c3",
+    "KXHIGHNY-26JUN26-B83.5-decision.json": "534bf8ac557175d859de26aa93247c14aa4489752a4531dab3afe41c0742d853",
+    "KXHIGHNY-26JUN26-B85.5-decision.json": "96bdb36a3c93fb4896e873b6a16911b61b63face813fa27ffe85112bdbbd40aa",
+    "KXHIGHNY-26JUN26-B87.5-decision.json": "ba8f46f5f9eac9aa35e8c330ea77e18189f3188b1163800d10c956e3efe456b1",
+    "KXHIGHNY-26JUN26-T81-decision.json": "fedd962bec609607d86d910f3f9748dfb0dc633024f4b6262b8ffd3fcf3c2da5",
+    "KXHIGHNY-26JUN26-T88-decision.json": "153c7348892edb775ac7b943762a504b03c798594bdd0b494807c5342dd67328",
+    "KXHIGHNY-26JUN26.json": "6eb97a878a6819fead6b72583b81dc549fd061f2b8b09e02867d1f0c6ec5321c",
+    "KXHIGHNY-26JUN27-B76.5-decision.json": "fb8448036f2fcd0954f67e8d316d4390e16b4ce35c4b0372c4f2a13c03db52ed",
+    "KXHIGHNY-26JUN27-B78.5-decision.json": "ad589044a77365758bf291f3bb12113acf3c670b5891936f43c2e88d6c26744d",
+    "KXHIGHNY-26JUN27-B80.5-decision.json": "cfca61827359c360f476dc3d05df9c1375fdce7761d4e09bf8dd11ffb4b739a3",
+    "KXHIGHNY-26JUN27-B82.5-decision.json": "8f0ce308779a05ac59f13d8a1b0ab504050fb7d8f6aa67634070439ea26dde10",
+    "KXHIGHNY-26JUN27-T76-decision.json": "bf30bfc4d864982869d39b1c97face7905c67914499a5cbcf2088df4bdf88a2d",
+    "KXHIGHNY-26JUN27-T83-decision.json": "e490b110ff755147e642a80cc7973b0968adf3f26c5a9c0ca228b528ec8db0b4",
+    "KXHIGHNY-26JUN27.json": "08cf928314e9bb372aeb75fa0b54334f9f0e87a96becda092b9096d209b4e497",
+    "KXHIGHNY-26JUN28-B77.5-decision.json": "b331e31a61de7d1c8ff77ca66c741fd67fc6fb9a1ca0b3b35f7663a4b945c4cd",
+    "KXHIGHNY-26JUN28-B79.5-decision.json": "db427b458dbc096490c2b4e626735c12fad2da2e592e54ef9fc3dd8c5b4e3a4a",
+    "KXHIGHNY-26JUN28-B81.5-decision.json": "08072bab058bdb6611a55577ece19f8aef98b38c6f2c5d5d225761ebddd2f2e8",
+    "KXHIGHNY-26JUN28-B83.5-decision.json": "528a585a39b65ca54820f0d60d5015d831985999fc2fcb281924ccb06d74576c",
+    "KXHIGHNY-26JUN28-T77-decision.json": "52211c3e56991df95dc6442f5eecb020e48b95feca43f62a2e228efcd40c35e2",
+    "KXHIGHNY-26JUN28-T84-decision.json": "772488be65640ca1d71b18a5c3b02a76eb9fc5e0a772fd858bdfcc77778084f4",
+    "KXHIGHNY-26JUN28.json": "711d68c9df0a89233b29babaaf06a07d82d3438f55f3a45a60150affcd035716",
+    "KXHIGHNY-26JUN29-B79.5-decision.json": "bde0cd11fca80cca551278a9102063b4c19bab0144c1095d34fab5c518a111c7",
+    "KXHIGHNY-26JUN29-B81.5-decision.json": "e84b6fee096b13d450a0eb060f0859cddc4c50ef0c1e384a39f871488411ffd3",
+    "KXHIGHNY-26JUN29-B83.5-decision.json": "f490fd89e0f75f0df228ef0bbb3a0063364f2e02675b5b186a9259a0098935b7",
+    "KXHIGHNY-26JUN29-B85.5-decision.json": "464c285b21d2fc2befd30610b173b00325f9c5170ae21cc2f4d9bde7741d8f7e",
+    "KXHIGHNY-26JUN29-T79-decision.json": "ecc70686168f64854853de1069de5d8dac6c23dc739faca05f1447b66b621d30",
+    "KXHIGHNY-26JUN29-T86-decision.json": "86b272172062d616d84070a744a844fc8bdb135001d0c59d37545ebc6478d275",
+    "KXHIGHNY-26JUN29.json": "146b97bc987be70d40f43a68bbef9aad8febcf3a6d9e3d312878a9dbbf917a43",
+    "KXHIGHNY-26JUN30-B83.5-decision.json": "46a4e3caa1868076e0a98cd3cef8d2d09aa3d5b2b9accb98e0c0f4f4574598bc",
+    "KXHIGHNY-26JUN30-B85.5-decision.json": "ba79ca29896e84a40384bbed238c13975cfbee6aa75a08c084d4c35be8d9a236",
+    "KXHIGHNY-26JUN30-B87.5-decision.json": "768d66d7ab52b3f7e0fbac06113f09ee5035e44b900173aefe6b603420d19091",
+    "KXHIGHNY-26JUN30-B89.5-decision.json": "7683cb6d7a84f18e5886bed95e6b79b97cecf80909fb5d2bb42a51b2dd0ca9f0",
+    "KXHIGHNY-26JUN30-T83-decision.json": "be336a0ff84c602d3500fb390da108211c288b8fb2572029cea2731cd82919c8",
+    "KXHIGHNY-26JUN30-T90-decision.json": "c1a82544d1d5d76e489f6df2c5f83f77057c9d16fd434630b2d6f019359c8e29",
+    "KXHIGHNY-26JUN30.json": "bf47652372d32a72f18e50dc7e1a1199c489056352ea8f8458adef1a6d3bba96"
+  },
+  "days": [
+    {
+      "date": "2026-06-01",
+      "event": "KXHIGHNY-26JUN01",
+      "decision_utc": "2026-05-31T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 2
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN01-B72.5",
+          "bounds": [
+            71.5,
+            73.5
+          ],
+          "bid": 0.43,
+          "ask": 0.45,
+          "model_probabilities": [
+            0.17877663833782403,
+            0.19524957888735317
+          ],
+          "forecast_yes": 0.1870131086125886,
+          "market_yes": 0.44,
+          "side": "no",
+          "entry_price_proxy": 0.5700000000000001,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.24298689138741136,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": 39.0,
+            "2": 37.0,
+            "5": 34.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN01-T70",
+          "bounds": [
+            null,
+            69.5
+          ],
+          "bid": 0.02,
+          "ask": 0.03,
+          "model_probabilities": [
+            0.11506967022170844,
+            0.2742531177500731
+          ],
+          "forecast_yes": 0.19466139398589077,
+          "market_yes": 0.025,
+          "outcome_yes": 0,
+          "brier_delta": 0.037268058308530194
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN01-B76.5",
+          "bounds": [
+            75.5,
+            77.5
+          ],
+          "bid": 0.02,
+          "ask": 0.06,
+          "model_probabilities": [
+            0.17023317922765058,
+            0.10330346611298857
+          ],
+          "forecast_yes": 0.13676832267031958,
+          "market_yes": 0.04,
+          "outcome_yes": 0,
+          "brier_delta": 0.01710557408605265
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN01-B72.5",
+          "bounds": [
+            71.5,
+            73.5
+          ],
+          "bid": 0.43,
+          "ask": 0.45,
+          "model_probabilities": [
+            0.17877663833782403,
+            0.19524957888735317
+          ],
+          "forecast_yes": 0.1870131086125886,
+          "market_yes": 0.44,
+          "outcome_yes": 0,
+          "brier_delta": -0.15862609720705612
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN01-B70.5",
+          "bounds": [
+            69.5,
+            71.5
+          ],
+          "bid": 0.34,
+          "ask": 0.35,
+          "model_probabilities": [
+            0.12689398200136476,
+            0.18591904497289735
+          ],
+          "forecast_yes": 0.15640651348713105,
+          "market_yes": 0.345,
+          "outcome_yes": 1,
+          "brier_delta": 0.28262497048693785
+        }
+      ],
+      "forecast_maxima_f": [
+        74.3,
+        71.9
+      ],
+      "city_day_mean_brier_delta": 0.044593126418616146
+    },
+    {
+      "date": "2026-06-02",
+      "event": "KXHIGHNY-26JUN02",
+      "decision_utc": "2026-06-01T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 4
+      },
+      "selected": [],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN02-T73",
+          "bounds": [
+            null,
+            72.5
+          ],
+          "bid": 0.01,
+          "ask": 0.02,
+          "model_probabilities": [
+            0.11028761025285105,
+            0.25784611080586517
+          ],
+          "forecast_yes": 0.1840668605293581,
+          "market_yes": 0.015,
+          "outcome_yes": 0,
+          "brier_delta": 0.03365560914513417
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN02-B73.5",
+          "bounds": [
+            72.5,
+            74.5
+          ],
+          "bid": 0.16,
+          "ask": 0.17,
+          "model_probabilities": [
+            0.12393840495984343,
+            0.18253619682389288
+          ],
+          "forecast_yes": 0.15323730089186816,
+          "market_yes": 0.165,
+          "outcome_yes": 0,
+          "brier_delta": -0.003743329615375067
+        }
+      ],
+      "forecast_maxima_f": [
+        77.4,
+        75.1
+      ],
+      "city_day_mean_brier_delta": 0.014956139764879552
+    },
+    {
+      "date": "2026-06-03",
+      "event": "KXHIGHNY-26JUN03",
+      "decision_utc": "2026-06-02T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 4
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN03-T83",
+          "bounds": [
+            83.5,
+            null
+          ],
+          "bid": 0.1,
+          "ask": 0.11,
+          "model_probabilities": [
+            0.4800611941616273,
+            0.3916581191536057
+          ],
+          "forecast_yes": 0.4358596566576165,
+          "market_yes": 0.10500000000000001,
+          "side": "yes",
+          "entry_price_proxy": 0.11,
+          "entry_fee_cents": 1,
+          "raw_edge": 0.3258596566576165,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": -14.0,
+            "2": -16.0,
+            "5": -19.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN03-T83",
+          "bounds": [
+            83.5,
+            null
+          ],
+          "bid": 0.1,
+          "ask": 0.11,
+          "model_probabilities": [
+            0.4800611941616273,
+            0.3916581191536057
+          ],
+          "forecast_yes": 0.4358596566576165,
+          "market_yes": 0.10500000000000001,
+          "outcome_yes": 0,
+          "brier_delta": 0.17894864030169533
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN03-T76",
+          "bounds": [
+            null,
+            75.5
+          ],
+          "bid": 0.01,
+          "ask": 0.02,
+          "model_probabilities": [
+            0.025588059521638618,
+            0.04226373625795238
+          ],
+          "forecast_yes": 0.0339258978897955,
+          "market_yes": 0.015,
+          "outcome_yes": 0,
+          "brier_delta": 0.0009259665476288306
+        }
+      ],
+      "forecast_maxima_f": [
+        83.3,
+        82.4
+      ],
+      "city_day_mean_brier_delta": 0.08993730342466208
+    },
+    {
+      "date": "2026-06-04",
+      "event": "KXHIGHNY-26JUN04",
+      "decision_utc": "2026-06-03T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 4
+      },
+      "selected": [],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN04-B84.5",
+          "bounds": [
+            83.5,
+            85.5
+          ],
+          "bid": 0.21,
+          "ask": 0.22,
+          "model_probabilities": [
+            0.12393840495984343,
+            0.08628829837383689
+          ],
+          "forecast_yes": 0.10511335166684016,
+          "market_yes": 0.215,
+          "outcome_yes": 0,
+          "brier_delta": -0.035176183301363184
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN04-B82.5",
+          "bounds": [
+            81.5,
+            83.5
+          ],
+          "bid": 0.01,
+          "ask": 0.03,
+          "model_probabilities": [
+            0.06802387399489868,
+            0.04038854259635455
+          ],
+          "forecast_yes": 0.05420620829562661,
+          "market_yes": 0.02,
+          "outcome_yes": 0,
+          "brier_delta": 0.0025383130177888593
+        }
+      ],
+      "forecast_maxima_f": [
+        88.4,
+        89.7
+      ],
+      "city_day_mean_brier_delta": -0.01631893514178716
+    },
+    {
+      "date": "2026-06-05",
+      "event": "KXHIGHNY-26JUN05",
+      "decision_utc": "2026-06-04T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 2
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN05-B89.5",
+          "bounds": [
+            88.5,
+            90.5
+          ],
+          "bid": 0.48,
+          "ask": 0.5,
+          "model_probabilities": [
+            0.10622123050117482,
+            0.07560046760350231
+          ],
+          "forecast_yes": 0.09091084905233857,
+          "market_yes": 0.49,
+          "side": "no",
+          "entry_price_proxy": 0.52,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.38908915094766144,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": 44.0,
+            "2": 42.0,
+            "5": 39.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN05-T92",
+          "bounds": [
+            92.5,
+            null
+          ],
+          "bid": 0.07,
+          "ask": 0.08,
+          "model_probabilities": [
+            0.6461697666727237,
+            0.7421538891941348
+          ],
+          "forecast_yes": 0.6941618279334293,
+          "market_yes": 0.07500000000000001,
+          "outcome_yes": 0,
+          "brier_delta": 0.4762356433598799
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN05-B91.5",
+          "bounds": [
+            90.5,
+            92.5
+          ],
+          "bid": 0.33,
+          "ask": 0.34,
+          "model_probabilities": [
+            0.16304328047476563,
+            0.13277417516871465
+          ],
+          "forecast_yes": 0.14790872782174014,
+          "market_yes": 0.335,
+          "outcome_yes": 0,
+          "brier_delta": -0.09034800823415441
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN05-B89.5",
+          "bounds": [
+            88.5,
+            90.5
+          ],
+          "bid": 0.48,
+          "ask": 0.5,
+          "model_probabilities": [
+            0.10622123050117482,
+            0.07560046760350231
+          ],
+          "forecast_yes": 0.09091084905233857,
+          "market_yes": 0.49,
+          "outcome_yes": 0,
+          "brier_delta": -0.2318352175245829
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN05-B87.5",
+          "bounds": [
+            86.5,
+            88.5
+          ],
+          "bid": 0.12,
+          "ask": 0.14,
+          "model_probabilities": [
+            0.05416936058607441,
+            0.03369386064255764
+          ],
+          "forecast_yes": 0.043931610614316025,
+          "market_yes": 0.13,
+          "outcome_yes": 1,
+          "brier_delta": 0.1571667651825358
+        }
+      ],
+      "forecast_maxima_f": [
+        94.0,
+        95.1
+      ],
+      "city_day_mean_brier_delta": 0.0778047956959196
+    },
+    {
+      "date": "2026-06-06",
+      "event": "KXHIGHNY-26JUN06",
+      "decision_utc": "2026-06-05T20:00:00+00:00",
+      "rejections": {},
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        97.4,
+        94.3
+      ],
+      "day_blocker": "model_center_disagreement"
+    },
+    {
+      "date": "2026-06-07",
+      "event": "KXHIGHNY-26JUN07",
+      "decision_utc": "2026-06-06T20:00:00+00:00",
+      "rejections": {},
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        84.9,
+        88.1
+      ],
+      "day_blocker": "model_center_disagreement"
+    },
+    {
+      "date": "2026-06-08",
+      "event": "KXHIGHNY-26JUN08",
+      "decision_utc": "2026-06-07T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 1
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN08-B76.5",
+          "bounds": [
+            75.5,
+            77.5
+          ],
+          "bid": 0.43,
+          "ask": 0.44,
+          "model_probabilities": [
+            0.14711000163558563,
+            0.18070193432054926
+          ],
+          "forecast_yes": 0.16390596797806745,
+          "market_yes": 0.435,
+          "side": "no",
+          "entry_price_proxy": 0.5700000000000001,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.2660940320219325,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": 39.0,
+            "2": 37.0,
+            "5": 34.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN08-T79",
+          "bounds": [
+            79.5,
+            null
+          ],
+          "bid": 0.02,
+          "ask": 0.03,
+          "model_probabilities": [
+            0.5099725181952375,
+            0.3725905358467163
+          ],
+          "forecast_yes": 0.4412815270209769,
+          "market_yes": 0.025,
+          "outcome_yes": 0,
+          "brier_delta": 0.19410438608996516
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN08-B78.5",
+          "bounds": [
+            77.5,
+            79.5
+          ],
+          "bid": 0.17,
+          "ask": 0.18,
+          "model_probabilities": [
+            0.19023588633606614,
+            0.19686964736095763
+          ],
+          "forecast_yes": 0.1935527668485119,
+          "market_yes": 0.175,
+          "outcome_yes": 0,
+          "brier_delta": 0.006837673554714405
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN08-B76.5",
+          "bounds": [
+            75.5,
+            77.5
+          ],
+          "bid": 0.43,
+          "ask": 0.44,
+          "model_probabilities": [
+            0.14711000163558563,
+            0.18070193432054926
+          ],
+          "forecast_yes": 0.16390596797806745,
+          "market_yes": 0.435,
+          "outcome_yes": 0,
+          "brier_delta": -0.16235983366117274
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN08-B74.5",
+          "bounds": [
+            73.5,
+            75.5
+          ],
+          "bid": 0.3,
+          "ask": 0.32,
+          "model_probabilities": [
+            0.08905204500407793,
+            0.12984052457276446
+          ],
+          "forecast_yes": 0.1094462847884212,
+          "market_yes": 0.31,
+          "outcome_yes": 1,
+          "brier_delta": 0.3169859196771459
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN08-B72.5",
+          "bounds": [
+            71.5,
+            73.5
+          ],
+          "bid": 0.07,
+          "ask": 0.11,
+          "model_probabilities": [
+            0.04219586671487985,
+            0.07303024206826653
+          ],
+          "forecast_yes": 0.05761305439157319,
+          "market_yes": 0.09,
+          "outcome_yes": 0,
+          "brier_delta": -0.004780735963673629
+        }
+      ],
+      "forecast_maxima_f": [
+        79.6,
+        78.2
+      ],
+      "city_day_mean_brier_delta": 0.07015748193939582
+    },
+    {
+      "date": "2026-06-09",
+      "event": "KXHIGHNY-26JUN09",
+      "decision_utc": "2026-06-08T20:00:00+00:00",
+      "rejections": {},
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        84.5,
+        79.4
+      ],
+      "day_blocker": "model_center_disagreement"
+    },
+    {
+      "date": "2026-06-10",
+      "event": "KXHIGHNY-26JUN10",
+      "decision_utc": "2026-06-09T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 3
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN10-B77.5",
+          "bounds": [
+            76.5,
+            78.5
+          ],
+          "bid": 0.32,
+          "ask": 0.34,
+          "model_probabilities": [
+            0.04597219770649835,
+            0.04597219770649835
+          ],
+          "forecast_yes": 0.04597219770649835,
+          "market_yes": 0.33,
+          "side": "no",
+          "entry_price_proxy": 0.6799999999999999,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.27402780229350165,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": 28.0,
+            "2": 26.0,
+            "5": 23.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN10-B81.5",
+          "bounds": [
+            80.5,
+            82.5
+          ],
+          "bid": 0.12,
+          "ask": 0.13,
+          "model_probabilities": [
+            0.1526133566609485,
+            0.1526133566609485
+          ],
+          "forecast_yes": 0.1526133566609485,
+          "market_yes": 0.125,
+          "outcome_yes": 1,
+          "brier_delta": -0.04756087669057507
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN10-B79.5",
+          "bounds": [
+            78.5,
+            80.5
+          ],
+          "bid": 0.35,
+          "ask": 0.36,
+          "model_probabilities": [
+            0.09467385826908703,
+            0.09467385826908703
+          ],
+          "forecast_yes": 0.09467385826908703,
+          "market_yes": 0.355,
+          "outcome_yes": 0,
+          "brier_delta": -0.11706186056044482
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN10-B77.5",
+          "bounds": [
+            76.5,
+            78.5
+          ],
+          "bid": 0.32,
+          "ask": 0.34,
+          "model_probabilities": [
+            0.04597219770649835,
+            0.04597219770649835
+          ],
+          "forecast_yes": 0.04597219770649835,
+          "market_yes": 0.33,
+          "outcome_yes": 0,
+          "brier_delta": -0.10678655703803464
+        }
+      ],
+      "forecast_maxima_f": [
+        84.4,
+        84.4
+      ],
+      "city_day_mean_brier_delta": -0.09046976476301817
+    },
+    {
+      "date": "2026-06-11",
+      "event": "KXHIGHNY-26JUN11",
+      "decision_utc": "2026-06-10T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 4
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN11-B90.5",
+          "bounds": [
+            89.5,
+            91.5
+          ],
+          "bid": 0.25,
+          "ask": 0.26,
+          "model_probabilities": [
+            0.06320567740189692,
+            0.07050420746316527
+          ],
+          "forecast_yes": 0.0668549424325311,
+          "market_yes": 0.255,
+          "side": "no",
+          "entry_price_proxy": 0.75,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.1831450575674689,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": -79.0,
+            "2": -81.0,
+            "5": -84.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN11-B94.5",
+          "bounds": [
+            93.5,
+            95.5
+          ],
+          "bid": 0.23,
+          "ask": 0.25,
+          "model_probabilities": [
+            0.17248828936022786,
+            0.17877663833782403
+          ],
+          "forecast_yes": 0.17563246384902595,
+          "market_yes": 0.24,
+          "outcome_yes": 0,
+          "brier_delta": -0.02675323764232059
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN11-B90.5",
+          "bounds": [
+            89.5,
+            91.5
+          ],
+          "bid": 0.25,
+          "ask": 0.26,
+          "model_probabilities": [
+            0.06320567740189692,
+            0.07050420746316527
+          ],
+          "forecast_yes": 0.0668549424325311,
+          "market_yes": 0.255,
+          "outcome_yes": 1,
+          "brier_delta": 0.31573469846259483
+        }
+      ],
+      "forecast_maxima_f": [
+        96.6,
+        96.3
+      ],
+      "city_day_mean_brier_delta": 0.14449073041013713
+    },
+    {
+      "date": "2026-06-12",
+      "event": "KXHIGHNY-26JUN12",
+      "decision_utc": "2026-06-11T20:00:00+00:00",
+      "rejections": {},
+      "selected": [],
+      "inputs": [],
+      "day_blocker": "nonfinite_target_day"
+    },
+    {
+      "date": "2026-06-13",
+      "event": "KXHIGHNY-26JUN13",
+      "decision_utc": "2026-06-12T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 3
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN13-B87.5",
+          "bounds": [
+            86.5,
+            88.5
+          ],
+          "bid": 0.43,
+          "ask": 0.44,
+          "model_probabilities": [
+            0.1746663219402081,
+            0.19447430668272525
+          ],
+          "forecast_yes": 0.18457031431146667,
+          "market_yes": 0.435,
+          "side": "no",
+          "entry_price_proxy": 0.5700000000000001,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.2454296856885333,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": 39.0,
+            "2": 37.0,
+            "5": 34.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN13-T87",
+          "bounds": [
+            null,
+            86.5
+          ],
+          "bid": 0.2,
+          "ask": 0.22,
+          "model_probabilities": [
+            0.2266273523768682,
+            0.33541833737016924
+          ],
+          "forecast_yes": 0.2810228448735187,
+          "market_yes": 0.21000000000000002,
+          "outcome_yes": 1,
+          "brier_delta": -0.10717185040623178
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN13-B89.5",
+          "bounds": [
+            88.5,
+            90.5
+          ],
+          "bid": 0.25,
+          "ask": 0.26,
+          "model_probabilities": [
+            0.1974126513658474,
+            0.18746170744990465
+          ],
+          "forecast_yes": 0.19243717940787602,
+          "market_yes": 0.255,
+          "outcome_yes": 0,
+          "brier_delta": -0.027992931981540937
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN13-B87.5",
+          "bounds": [
+            86.5,
+            88.5
+          ],
+          "bid": 0.43,
+          "ask": 0.44,
+          "model_probabilities": [
+            0.1746663219402081,
+            0.19447430668272525
+          ],
+          "forecast_yes": 0.18457031431146667,
+          "market_yes": 0.435,
+          "outcome_yes": 0,
+          "brier_delta": -0.1551587990749664
+        }
+      ],
+      "forecast_maxima_f": [
+        89.5,
+        88.2
+      ],
+      "city_day_mean_brier_delta": -0.09677452715424638
+    },
+    {
+      "date": "2026-06-14",
+      "event": "KXHIGHNY-26JUN14",
+      "decision_utc": "2026-06-13T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 1
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN14-B87.5",
+          "bounds": [
+            86.5,
+            88.5
+          ],
+          "bid": 0.36,
+          "ask": 0.37,
+          "model_probabilities": [
+            0.04794120008800984,
+            0.12393840495984343
+          ],
+          "forecast_yes": 0.08593980252392663,
+          "market_yes": 0.365,
+          "side": "no",
+          "entry_price_proxy": 0.64,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.27406019747607335,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": -68.0,
+            "2": -70.0,
+            "5": -73.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN14-T85",
+          "bounds": [
+            null,
+            84.5
+          ],
+          "bid": 0.12,
+          "ask": 0.15,
+          "model_probabilities": [
+            0.007142810735271454,
+            0.04226373625795238
+          ],
+          "forecast_yes": 0.024703273496611916,
+          "market_yes": 0.135,
+          "outcome_yes": 0,
+          "brier_delta": -0.017614748278551595
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN14-B91.5",
+          "bounds": [
+            90.5,
+            92.5
+          ],
+          "bid": 0.05,
+          "ask": 0.06,
+          "model_probabilities": [
+            0.1552990939794383,
+            0.19735224371512444
+          ],
+          "forecast_yes": 0.17632566884728137,
+          "market_yes": 0.055,
+          "outcome_yes": 0,
+          "brier_delta": 0.028065741494441132
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN14-B89.5",
+          "bounds": [
+            88.5,
+            90.5
+          ],
+          "bid": 0.09,
+          "ask": 0.1,
+          "model_probabilities": [
+            0.09752686669883354,
+            0.17676362191857536
+          ],
+          "forecast_yes": 0.13714524430870445,
+          "market_yes": 0.095,
+          "outcome_yes": 0,
+          "brier_delta": 0.00978381803649423
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN14-B87.5",
+          "bounds": [
+            86.5,
+            88.5
+          ],
+          "bid": 0.36,
+          "ask": 0.37,
+          "model_probabilities": [
+            0.04794120008800984,
+            0.12393840495984343
+          ],
+          "forecast_yes": 0.08593980252392663,
+          "market_yes": 0.365,
+          "outcome_yes": 1,
+          "brier_delta": 0.4322810446099982
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN14-B85.5",
+          "bounds": [
+            84.5,
+            86.5
+          ],
+          "bid": 0.29,
+          "ask": 0.3,
+          "model_probabilities": [
+            0.018445248786367163,
+            0.06802387399489868
+          ],
+          "forecast_yes": 0.04323456139063292,
+          "market_yes": 0.295,
+          "outcome_yes": 0,
+          "brier_delta": -0.08515577270135959
+        }
+      ],
+      "forecast_maxima_f": [
+        94.3,
+        91.4
+      ],
+      "city_day_mean_brier_delta": 0.07347201663220448
+    },
+    {
+      "date": "2026-06-15",
+      "event": "KXHIGHNY-26JUN15",
+      "decision_utc": "2026-06-14T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 4
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN15-B78.5",
+          "bounds": [
+            77.5,
+            79.5
+          ],
+          "bid": 0.35,
+          "ask": 0.38,
+          "model_probabilities": [
+            0.18427624612118654,
+            0.19257903155397893
+          ],
+          "forecast_yes": 0.18842763883758273,
+          "market_yes": 0.365,
+          "side": "no",
+          "entry_price_proxy": 0.65,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.16157236116241724,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": 31.0,
+            "2": 29.0,
+            "5": 26.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN15-B80.5",
+          "bounds": [
+            79.5,
+            81.5
+          ],
+          "bid": 0.19,
+          "ask": 0.2,
+          "model_probabilities": [
+            0.19590799150283666,
+            0.15261335666094855
+          ],
+          "forecast_yes": 0.1742606740818926,
+          "market_yes": 0.195,
+          "outcome_yes": 0,
+          "brier_delta": -0.007658217468524405
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN15-B78.5",
+          "bounds": [
+            77.5,
+            79.5
+          ],
+          "bid": 0.35,
+          "ask": 0.38,
+          "model_probabilities": [
+            0.18427624612118654,
+            0.19257903155397893
+          ],
+          "forecast_yes": 0.18842763883758273,
+          "market_yes": 0.365,
+          "outcome_yes": 0,
+          "brier_delta": -0.09772002492209347
+        }
+      ],
+      "forecast_maxima_f": [
+        80.0,
+        77.6
+      ],
+      "city_day_mean_brier_delta": -0.05268912119530894
+    },
+    {
+      "date": "2026-06-16",
+      "event": "KXHIGHNY-26JUN16",
+      "decision_utc": "2026-06-15T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 6
+      },
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        76.9,
+        79.4
+      ],
+      "city_day_mean_brier_delta": null
+    },
+    {
+      "date": "2026-06-17",
+      "event": "KXHIGHNY-26JUN17",
+      "decision_utc": "2026-06-16T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 3
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN17-B76.5",
+          "bounds": [
+            75.5,
+            77.5
+          ],
+          "bid": 0.36,
+          "ask": 0.43,
+          "model_probabilities": [
+            0.19146246127401306,
+            0.18253619682389288
+          ],
+          "forecast_yes": 0.18699932904895297,
+          "market_yes": 0.395,
+          "side": "no",
+          "entry_price_proxy": 0.64,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.17300067095104704,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": 32.0,
+            "2": 30.0,
+            "5": 27.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN17-T74",
+          "bounds": [
+            null,
+            73.5
+          ],
+          "bid": 0.07,
+          "ask": 0.1,
+          "model_probabilities": [
+            0.15865525393145713,
+            0.36316934882438046
+          ],
+          "forecast_yes": 0.26091230137791876,
+          "market_yes": 0.085,
+          "outcome_yes": 0,
+          "brier_delta": 0.06085022901032191
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN17-B78.5",
+          "bounds": [
+            77.5,
+            79.5
+          ],
+          "bid": 0.18,
+          "ask": 0.21,
+          "model_probabilities": [
+            0.191462461274013,
+            0.1327741751687146
+          ],
+          "forecast_yes": 0.1621183182213638,
+          "market_yes": 0.195,
+          "outcome_yes": 1,
+          "brier_delta": 0.054020712660195924
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN17-B76.5",
+          "bounds": [
+            75.5,
+            77.5
+          ],
+          "bid": 0.36,
+          "ask": 0.43,
+          "model_probabilities": [
+            0.19146246127401306,
+            0.18253619682389288
+          ],
+          "forecast_yes": 0.18699932904895297,
+          "market_yes": 0.395,
+          "outcome_yes": 0,
+          "brier_delta": -0.12105625093524144
+        }
+      ],
+      "forecast_maxima_f": [
+        77.5,
+        74.9
+      ],
+      "city_day_mean_brier_delta": -0.0020617697549078703
+    },
+    {
+      "date": "2026-06-18",
+      "event": "KXHIGHNY-26JUN18",
+      "decision_utc": "2026-06-17T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 4
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN18-B87.5",
+          "bounds": [
+            86.5,
+            88.5
+          ],
+          "bid": 0.35,
+          "ask": 0.36,
+          "model_probabilities": [
+            0.15793538364693716,
+            0.07560046760350231
+          ],
+          "forecast_yes": 0.11676792562521973,
+          "market_yes": 0.355,
+          "side": "no",
+          "entry_price_proxy": 0.65,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.23323207437478027,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": 31.0,
+            "2": 29.0,
+            "5": 26.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN18-B87.5",
+          "bounds": [
+            86.5,
+            88.5
+          ],
+          "bid": 0.35,
+          "ask": 0.36,
+          "model_probabilities": [
+            0.15793538364693716,
+            0.07560046760350231
+          ],
+          "forecast_yes": 0.11676792562521973,
+          "market_yes": 0.355,
+          "outcome_yes": 0,
+          "brier_delta": -0.11239025154518315
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN18-B85.5",
+          "bounds": [
+            84.5,
+            86.5
+          ],
+          "bid": 0.25,
+          "ask": 0.26,
+          "model_probabilities": [
+            0.10040435317116025,
+            0.03369386064255764
+          ],
+          "forecast_yes": 0.06704910690685895,
+          "market_yes": 0.255,
+          "outcome_yes": 1,
+          "brier_delta": 0.31537236892328957
+        }
+      ],
+      "forecast_maxima_f": [
+        90.2,
+        93.1
+      ],
+      "city_day_mean_brier_delta": 0.10149105868905321
+    },
+    {
+      "date": "2026-06-19",
+      "event": "KXHIGHNY-26JUN19",
+      "decision_utc": "2026-06-18T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 5
+      },
+      "selected": [],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN19-T81",
+          "bounds": [
+            null,
+            80.5
+          ],
+          "bid": 0.36,
+          "ask": 0.37,
+          "model_probabilities": [
+            0.26598552904870054,
+            0.3916581191536057
+          ],
+          "forecast_yes": 0.3288218241011531,
+          "market_yes": 0.365,
+          "outcome_yes": 0,
+          "brier_delta": -0.025101207994790292
+        }
+      ],
+      "forecast_maxima_f": [
+        83.0,
+        81.6
+      ],
+      "city_day_mean_brier_delta": -0.025101207994790292
+    },
+    {
+      "date": "2026-06-20",
+      "event": "KXHIGHNY-26JUN20",
+      "decision_utc": "2026-06-19T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 1
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN20-T82",
+          "bounds": [
+            null,
+            81.5
+          ],
+          "bid": 0.56,
+          "ask": 0.58,
+          "model_probabilities": [
+            0.21185539858339653,
+            0.30853753872598694
+          ],
+          "forecast_yes": 0.2601964686546917,
+          "market_yes": 0.5700000000000001,
+          "side": "no",
+          "entry_price_proxy": 0.43999999999999995,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.2998035313453083,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": -48.0,
+            "2": -50.0,
+            "5": -53.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN20-T89",
+          "bounds": [
+            89.5,
+            null
+          ],
+          "bid": 0.0,
+          "ask": 0.01,
+          "model_probabilities": [
+            0.11506967022170844,
+            0.06680720126885809
+          ],
+          "forecast_yes": 0.09093843574528326,
+          "market_yes": 0.005,
+          "outcome_yes": 0,
+          "brier_delta": 0.008244799095799012
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN20-T82",
+          "bounds": [
+            null,
+            81.5
+          ],
+          "bid": 0.56,
+          "ask": 0.58,
+          "model_probabilities": [
+            0.21185539858339653,
+            0.30853753872598694
+          ],
+          "forecast_yes": 0.2601964686546917,
+          "market_yes": 0.5700000000000001,
+          "outcome_yes": 1,
+          "brier_delta": 0.3624092649909886
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN20-B88.5",
+          "bounds": [
+            87.5,
+            89.5
+          ],
+          "bid": 0.0,
+          "ask": 0.01,
+          "model_probabilities": [
+            0.1268939820013648,
+            0.0918480526625991
+          ],
+          "forecast_yes": 0.10937101733198196,
+          "market_yes": 0.005,
+          "outcome_yes": 0,
+          "brier_delta": 0.011937019432232698
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN20-B86.5",
+          "bounds": [
+            85.5,
+            87.5
+          ],
+          "bid": 0.01,
+          "ask": 0.02,
+          "model_probabilities": [
+            0.17877663833782398,
+            0.1498822847945298
+          ],
+          "forecast_yes": 0.1643294615661769,
+          "market_yes": 0.015,
+          "outcome_yes": 0,
+          "brier_delta": 0.02677917193862961
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN20-B82.5",
+          "bounds": [
+            81.5,
+            83.5
+          ],
+          "bid": 0.31,
+          "ask": 0.32,
+          "model_probabilities": [
+            0.17023317922765058,
+            0.19146246127401306
+          ],
+          "forecast_yes": 0.18084782025083182,
+          "market_yes": 0.315,
+          "outcome_yes": 0,
+          "brier_delta": -0.06651906591052284
+        }
+      ],
+      "forecast_maxima_f": [
+        84.7,
+        83.5
+      ],
+      "city_day_mean_brier_delta": 0.06857023790942542
+    },
+    {
+      "date": "2026-06-21",
+      "event": "KXHIGHNY-26JUN21",
+      "decision_utc": "2026-06-20T20:00:00+00:00",
+      "rejections": {},
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        85.5,
+        81.6
+      ],
+      "day_blocker": "model_center_disagreement"
+    },
+    {
+      "date": "2026-06-22",
+      "event": "KXHIGHNY-26JUN22",
+      "decision_utc": "2026-06-21T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 1
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN22-B76.5",
+          "bounds": [
+            75.5,
+            77.5
+          ],
+          "bid": 0.36,
+          "ask": 0.38,
+          "model_probabilities": [
+            0.13858705680369066,
+            0.17676362191857536
+          ],
+          "forecast_yes": 0.157675339361133,
+          "market_yes": 0.37,
+          "side": "no",
+          "entry_price_proxy": 0.64,
+          "entry_fee_cents": 2,
+          "raw_edge": 0.202324660638867,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": 32.0,
+            "2": 30.0,
+            "5": 27.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN22-T79",
+          "bounds": [
+            79.5,
+            null
+          ],
+          "bid": 0.03,
+          "ask": 0.04,
+          "model_probabilities": [
+            0.5398278372770295,
+            0.3916581191536057
+          ],
+          "forecast_yes": 0.4657429782153176,
+          "market_yes": 0.035,
+          "outcome_yes": 0,
+          "brier_delta": 0.21569152175687384
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN22-B78.5",
+          "bounds": [
+            77.5,
+            79.5
+          ],
+          "bid": 0.05,
+          "ask": 0.06,
+          "model_probabilities": [
+            0.18591904497289735,
+            0.19735224371512444
+          ],
+          "forecast_yes": 0.1916356443440109,
+          "market_yes": 0.055,
+          "outcome_yes": 0,
+          "brier_delta": 0.03369922018314424
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN22-B76.5",
+          "bounds": [
+            75.5,
+            77.5
+          ],
+          "bid": 0.36,
+          "ask": 0.38,
+          "model_probabilities": [
+            0.13858705680369066,
+            0.17676362191857536
+          ],
+          "forecast_yes": 0.157675339361133,
+          "market_yes": 0.37,
+          "outcome_yes": 0,
+          "brier_delta": -0.11203848735735153
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN22-B74.5",
+          "bounds": [
+            73.5,
+            75.5
+          ],
+          "bid": 0.29,
+          "ask": 0.33,
+          "model_probabilities": [
+            0.08086676924682457,
+            0.12393840495984343
+          ],
+          "forecast_yes": 0.102402587103334,
+          "market_yes": 0.31,
+          "outcome_yes": 0,
+          "brier_delta": -0.0856137101545441
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN22-B72.5",
+          "bounds": [
+            71.5,
+            73.5
+          ],
+          "bid": 0.17,
+          "ask": 0.2,
+          "model_probabilities": [
+            0.03693487113674143,
+            0.06802387399489868
+          ],
+          "forecast_yes": 0.052479372565820054,
+          "market_yes": 0.185,
+          "outcome_yes": 1,
+          "brier_delta": 0.2335703394132621
+        }
+      ],
+      "forecast_maxima_f": [
+        79.9,
+        78.4
+      ],
+      "city_day_mean_brier_delta": 0.05706177676827691
+    },
+    {
+      "date": "2026-06-23",
+      "event": "KXHIGHNY-26JUN23",
+      "decision_utc": "2026-06-22T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 1
+      },
+      "selected": [
+        {
+          "ticker": "KXHIGHNY-26JUN23-T78",
+          "bounds": [
+            null,
+            77.5
+          ],
+          "bid": 0.89,
+          "ask": 0.9,
+          "model_probabilities": [
+            0.41098963713126985,
+            0.5792597094391028
+          ],
+          "forecast_yes": 0.4951246732851863,
+          "market_yes": 0.895,
+          "side": "no",
+          "entry_price_proxy": 0.10999999999999999,
+          "entry_fee_cents": 1,
+          "raw_edge": 0.39487532671481373,
+          "fill_assumed": false,
+          "outcome_complete": true,
+          "conditional_net_cents_by_extra_stress": {
+            "0": -14.0,
+            "2": -16.0,
+            "5": -19.0
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "ticker": "KXHIGHNY-26JUN23-T85",
+          "bounds": [
+            85.5,
+            null
+          ],
+          "bid": 0.0,
+          "ask": 0.02,
+          "model_probabilities": [
+            0.03794894359368928,
+            0.013903447513498701
+          ],
+          "forecast_yes": 0.02592619555359399,
+          "market_yes": 0.01,
+          "outcome_yes": 0,
+          "brier_delta": 0.0005721676158831967
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN23-T78",
+          "bounds": [
+            null,
+            77.5
+          ],
+          "bid": 0.89,
+          "ask": 0.9,
+          "model_probabilities": [
+            0.41098963713126985,
+            0.5792597094391028
+          ],
+          "forecast_yes": 0.4951246732851863,
+          "market_yes": 0.895,
+          "outcome_yes": 1,
+          "brier_delta": 0.2438740955253899
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN23-B84.5",
+          "bounds": [
+            83.5,
+            85.5
+          ],
+          "bid": 0.0,
+          "ask": 0.02,
+          "model_probabilities": [
+            0.06320567740189686,
+            0.030662015245044527
+          ],
+          "forecast_yes": 0.046933846323470696,
+          "market_yes": 0.01,
+          "outcome_yes": 0,
+          "brier_delta": 0.002102785930715164
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN23-B82.5",
+          "bounds": [
+            81.5,
+            83.5
+          ],
+          "bid": 0.01,
+          "ask": 0.02,
+          "model_probabilities": [
+            0.1180152087977917,
+            0.07050420746316521
+          ],
+          "forecast_yes": 0.09425970813047846,
+          "market_yes": 0.015,
+          "outcome_yes": 0,
+          "brier_delta": 0.008659892576842987
+        },
+        {
+          "ticker": "KXHIGHNY-26JUN23-B78.5",
+          "bounds": [
+            77.5,
+            79.5
+          ],
+          "bid": 0.07,
+          "ask": 0.08,
+          "model_probabilities": [
+            0.19735224371512444,
+            0.17877663833782398
+          ],
+          "forecast_yes": 0.1880644410264742,
+          "market_yes": 0.07500000000000001,
+          "outcome_yes": 0,
+          "brier_delta": 0.02974323397860019
+        }
+      ],
+      "forecast_maxima_f": [
+        78.4,
+        76.7
+      ],
+      "city_day_mean_brier_delta": 0.05699043512548629
+    },
+    {
+      "date": "2026-06-24",
+      "event": "KXHIGHNY-26JUN24",
+      "decision_utc": "2026-06-23T20:00:00+00:00",
+      "rejections": {},
+      "selected": [],
+      "inputs": [],
+      "day_blocker": "nonfinite_target_day"
+    },
+    {
+      "date": "2026-06-25",
+      "event": "KXHIGHNY-26JUN25",
+      "decision_utc": "2026-06-24T20:00:00+00:00",
+      "rejections": {},
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        80.7,
+        85.3
+      ],
+      "day_blocker": "model_center_disagreement"
+    },
+    {
+      "date": "2026-06-26",
+      "event": "KXHIGHNY-26JUN26",
+      "decision_utc": "2026-06-25T20:00:00+00:00",
+      "rejections": {},
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        89.6,
+        85.2
+      ],
+      "day_blocker": "model_center_disagreement"
+    },
+    {
+      "date": "2026-06-27",
+      "event": "KXHIGHNY-26JUN27",
+      "decision_utc": "2026-06-26T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 6
+      },
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        73.6,
+        76.6
+      ],
+      "city_day_mean_brier_delta": null
+    },
+    {
+      "date": "2026-06-28",
+      "event": "KXHIGHNY-26JUN28",
+      "decision_utc": "2026-06-27T20:00:00+00:00",
+      "rejections": {},
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        82.9,
+        78.9
+      ],
+      "day_blocker": "model_center_disagreement"
+    },
+    {
+      "date": "2026-06-29",
+      "event": "KXHIGHNY-26JUN29",
+      "decision_utc": "2026-06-28T20:00:00+00:00",
+      "rejections": {},
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        84.3,
+        87.4
+      ],
+      "day_blocker": "model_center_disagreement"
+    },
+    {
+      "date": "2026-06-30",
+      "event": "KXHIGHNY-26JUN30",
+      "decision_utc": "2026-06-29T20:00:00+00:00",
+      "rejections": {
+        "missing_exact_completed_candle": 6
+      },
+      "selected": [],
+      "inputs": [],
+      "forecast_maxima_f": [
+        91.1,
+        91.5
+      ],
+      "city_day_mean_brier_delta": null
+    }
+  ],
+  "limitations": [
+    "Indicative minute closing quotes lack depth, verified quote age or execution latency",
+    "Run initialization+8h is assumed, not historical receipt evidence",
+    "Hourly point forecast maxima with fixed4Fnormal proxy, not calibrated ensembles or station continuous maxima",
+    "Only one city and season;30dates are not frozenV14 evidence",
+    "Retrospective API metadata may differ from original vintages",
+    "Even positive conditional accounting never authorizes a Demo/live order trial"
+  ],
+  "summary": {
+    "calendar_days": 30,
+    "days_with_both_forecasts": 28,
+    "days_with_comparable_quotes": 17,
+    "complete_binary_inputs": 55,
+    "selected_city_days": 14,
+    "complete_conditional_outcomes": 14,
+    "mean_city_day_brier_delta": 0.030359398633764578,
+    "conditional_net_cents_by_extra_stress": {
+      "0": 92.0,
+      "2": 64.0,
+      "5": 22.0
+    },
+    "city_day_normal_95_lcb_cents": -16.03399487584994,
+    "actual_executable_signals": 0,
+    "historical_receipt_verified": false,
+    "held_out_live_qualification": false
+  },
+  "decision": "research_only_no_order_qualification"
+}

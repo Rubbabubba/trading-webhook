@@ -1,0 +1,12 @@
+{
+  "id": "historical_weather_point_forecast_overlap_v2_hourly_20261015",
+  "supersedes": "historical_weather_point_forecast_overlap_v1_20261015 for new forecast collection only",
+  "registered_before_hourly_forecast_retrieval": true,
+  "reason": "Provider rejects daily aggregation when 00UTC run is not midnight in America/New_York. Preserve original400receipts and original registration; do not move initialization time or substitute later forecasts.",
+  "change": "Request hourly temperature_2m from exact same model run, same Fahrenheit units and timezone. Require exactly24 unique hourly values for target local date, take their maximum. This is an hourly-maximum proxy, not the native daily maximum nor continuous station maximum.",
+  "unchanged": "June1through30NYC,prior00UTCrun,prior20UTCdecision,4Fsigma,twofixedmodels,rawedge0.12,spread0.10,fee/modelstress,onecandidatepercityday,nooptimizationandallnograntrestrictions",
+  "new_cache_suffix": "hourly-v2",
+  "execution_enabled": false,
+  "separate_V14": true,
+  "availability_and_fill_proof": "Run initialization is not a dissemination timestamp; 8h availability assumption remains explicitly unverified. Historical candles never fill evidence."
+}

@@ -1,0 +1,63 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXHIGHNY-26JUN01-B72.5/candlesticks?start_ts=1780257540&end_ts=1780257600&period_interval=1",
+  "captured_at": "2026-10-15T23:05:21.009188+00:00",
+  "authenticated": false,
+  "method": "GET",
+  "status": 200,
+  "payload": {
+    "candlesticks": [
+      {
+        "end_period_ts": 1780257540,
+        "open_interest": "533.38",
+        "price": {
+          "close": "0.4500",
+          "high": "0.4500",
+          "low": "0.4500",
+          "mean": "0.4500",
+          "open": "0.4500",
+          "previous": "0.4500"
+        },
+        "volume": "100.00",
+        "yes_ask": {
+          "close": "0.4500",
+          "high": "0.4500",
+          "low": "0.4500",
+          "open": "0.4500"
+        },
+        "yes_bid": {
+          "close": "0.4300",
+          "high": "0.4300",
+          "low": "0.4300",
+          "open": "0.4300"
+        }
+      },
+      {
+        "end_period_ts": 1780257600,
+        "open_interest": "533.38",
+        "price": {
+          "close": null,
+          "high": null,
+          "low": null,
+          "mean": null,
+          "open": null,
+          "previous": "0.4500"
+        },
+        "volume": "0.00",
+        "yes_ask": {
+          "close": "0.4500",
+          "high": "0.4500",
+          "low": "0.4500",
+          "open": "0.4500"
+        },
+        "yes_bid": {
+          "close": "0.4300",
+          "high": "0.4400",
+          "low": "0.4300",
+          "open": "0.4300"
+        }
+      }
+    ],
+    "ticker": "KXHIGHNY-26JUN01-B72.5"
+  },
+  "body_sha256": "cc28ffe1edcc67e0965b5f38aaa51fca2e141ea4dcd154e88028bffdd97a3d18"
+}
