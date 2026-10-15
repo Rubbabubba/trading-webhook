@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import gc
 import hashlib
 import json
+import math
 from pathlib import Path
 import sqlite3
 import time
@@ -90,6 +91,8 @@ def open_db(path):
       CREATE TABLE IF NOT EXISTS weather_observations(
         observation_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,decision_bucket INTEGER NOT NULL,
         observed_at TEXT NOT NULL,detail TEXT NOT NULL,resolution TEXT);
+      CREATE TABLE IF NOT EXISTS weather_settlement_markets(
+        ticker TEXT PRIMARY KEY,checked_at TEXT NOT NULL,detail TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS scans(
         generation INTEGER PRIMARY KEY,observed_at TEXT NOT NULL,market_count INTEGER NOT NULL,
         calibration_observations INTEGER NOT NULL,indicative_candidates INTEGER NOT NULL,
@@ -409,14 +412,39 @@ def collect_weather_one_station(db, markets, now, *, fetcher=fetch_ensemble):
 
 
 def resolve_one_weather(db, client, now):
-    for observation_id, detail in db.execute(
+    # A missing expiration_value on one finalized Demo market must not starve
+    # every later city-day. Rotate through retained rows without SQL JSON
+    # functions (legacy bucket endpoints include Python Infinity values).
+    cursor = _coverage_load(db, "weather_resolution_cursor", "")
+    rows = db.execute(
+        "SELECT observation_id,detail FROM weather_observations "
+        "WHERE resolution IS NULL AND observation_id>? ORDER BY observation_id LIMIT 20",
+        (cursor,)).fetchall()
+    if not rows:
+        rows = db.execute(
             "SELECT observation_id,detail FROM weather_observations "
-            "WHERE resolution IS NULL ORDER BY observed_at LIMIT 20"):
-        row = json.loads(detail)
+            "WHERE resolution IS NULL ORDER BY observation_id LIMIT 20").fetchall()
+    fetched = 0
+    progress = {"checked_at": now.isoformat(), "rows_scanned": len(rows),
+                "market_requests": 0, "scored": 0, "unscored": 0,
+                "malformed": 0, "waiting": 0}
+    for observation_id, detail in rows:
+        _coverage_save(db, "weather_resolution_cursor", observation_id)
+        try:
+            row = json.loads(detail)
+            if not isinstance(row, dict):
+                raise ValueError("non_object_observation")
+        except (TypeError, ValueError):
+            progress["malformed"] += 1
+            continue
         expiry = row.get("expiration_time")
         try:
             expires = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
         except (TypeError, ValueError):
+            progress["malformed"] += 1
+            continue
+        if expires.tzinfo is None:
+            progress["malformed"] += 1
             continue
         if expires > now:
             continue
@@ -426,18 +454,59 @@ def resolve_one_weather(db, client, now):
                        (json.dumps({"resolved_at": now.isoformat(),
                                     "unscored_reason": row.get("classification")}, sort_keys=True),
                         observation_id))
-            return
+            progress["unscored"] += 1
+            continue
+        markets = []
+        for contract in contracts:
+            ticker = contract.get("ticker")
+            cached = db.execute(
+                "SELECT checked_at,detail FROM weather_settlement_markets WHERE ticker=?",
+                (ticker,)).fetchone()
+            market = json.loads(cached[1]) if cached else {}
+            terminal = market.get("status") == "finalized" and (
+                market.get("result") in ("yes", "no"))
+            retry_due = not cached or (
+                now - datetime.fromisoformat(cached[0])).total_seconds() >= 1800
+            if not terminal and retry_due and fetched == 0 and ticker:
+                # Preserve the former one-request-per-cycle budget. Store only
+                # settlement evidence, never current quotes as historical fills.
+                fetched += 1
+                progress["market_requests"] += 1
+                payload, _, _ = client.get(ticker)
+                supplied = payload.get("market") or {}
+                market = {key: supplied.get(key) for key in (
+                    "ticker", "status", "result", "expiration_value", "settlement_ts")}
+                if market.get("ticker") != ticker:
+                    market = {"error": "settlement_ticker_mismatch"}
+                db.execute("INSERT OR REPLACE INTO weather_settlement_markets VALUES(?,?,?)",
+                           (ticker, now.isoformat(), json.dumps(market, sort_keys=True)))
+            markets.append(market)
+        if any(market.get("status") != "finalized" for market in markets):
+            progress["waiting"] += 1
+            continue
         try:
-            payload, _, _ = client.get(contracts[0]["ticker"])
-            market = payload["market"]
-            expiration_value = float(market["expiration_value"])
-        except (KeyError, TypeError, ValueError):
-            return
-        resolution = score_resolution(row, expiration_value)
+            value = float(markets[0].get("expiration_value"))
+            if not math.isfinite(value):
+                value = None
+        except (TypeError, ValueError):
+            value = None
+        results = {market.get("ticker"): market.get("result") for market in markets}
+        try:
+            # Finalized per-contract outcomes score the same frozen probabilities
+            # without inventing a temperature when the API leaves it blank.
+            resolution = score_resolution(row, value, contract_results=results)
+        except (KeyError, TypeError, ValueError, StopIteration) as exc:
+            progress["waiting"] += 1
+            progress["last_scoring_error"] = str(exc)
+            continue
+        resolution["settlement_evidence"] = markets
+        resolution["outcome_source"] = "kalshi_finalized_contract_results"
         resolution["resolved_at"] = now.isoformat()
         db.execute("UPDATE weather_observations SET resolution=? WHERE observation_id=?",
                    (json.dumps(resolution, sort_keys=True), observation_id))
-        return
+        progress["scored"] += 1
+    _coverage_save(db, "weather_resolution_progress", progress)
+    return progress
 
 
 def _resolve_one_table(db, client, now, table, price_key, *, parent_event_only=False):
@@ -607,6 +676,7 @@ def _weather_summary(db):
             "forecast_vintages": vintages, "observations": observations,
             "candidate_observations": candidates, "independent_events": independent,
             "malformed_observations_excluded": malformed,
+            "resolution_progress": _coverage_load(db, "weather_resolution_progress", {}),
             "complete_observations": complete, "complete_signal_observations": signals_complete,
             "cost_stressed_net_cents": net if signals_complete else None,
             "event_clustered_95pct_lower_bound_cents": lcb,

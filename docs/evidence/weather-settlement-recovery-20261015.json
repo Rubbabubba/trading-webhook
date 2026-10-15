@@ -1,0 +1,30 @@
+{
+  "schema": "weather_settlement_runner_repair_v1",
+  "date": "2026-10-15",
+  "environment": "demo",
+  "source_revision_before": "4da5517499fb76f0255d6b686e22f8f8d5ce7695",
+  "authentic_diagnostic": {
+    "observations": 12338,
+    "rows_with_resolution_including_unscored": 10,
+    "oldest_blocking_ticker": "KXHIGHPHIL-26OCT01-B84.5",
+    "status": "finalized",
+    "result": "no",
+    "expiration_value": "",
+    "settlement_ts": "2026-10-02T11:59:12.878498Z",
+    "sqlite_json_valid_due_rows": 2874,
+    "sqlite_json_invalid_rows": 7187,
+    "json_caveat": "SQLite rejects nonstandard Infinity bucket endpoints accepted by Python. This is not a count of corrupt observations. Original records are preserved."
+  },
+  "defect": "Resolver returned on first blank expiration_value, starving later observations. It scanned the same oldest 20 rows every cycle.",
+  "repair": "Durable rotating 20-row scan and finalized contract-result cache. At most one market GET per cycle. Nonfinal or mismatched markets never score; missing outcomes remain pending. Scores use original frozen probabilities and stress. No temperature is fabricated.",
+  "tests": {
+    "synthetic_only": true,
+    "passed": 16,
+    "scope": ["weather settlement recovery", "weather ensemble", "external sleeves worker"],
+    "first_attempt": "7 passed; 8 fixture setup errors from inaccessible default Windows pytest temp directory. Explicit writable unique basetemp resolved the environment failure."
+  },
+  "strategy_registration_changed": false,
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "qualification": "No profitability or live qualification follows from repairing settlement accounting. Deployment and authentic post-deployment scoring require separate verification."
+}

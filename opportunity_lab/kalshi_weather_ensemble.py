@@ -318,12 +318,18 @@ def fetch_ensemble(spec: WeatherSeries, start: date, end: date, *, opener=urlope
                     "start_date": start.isoformat(), "end_date": end.isoformat()}
 
 
-def score_resolution(observation: dict, expiration_value: float) -> dict:
+def score_resolution(observation: dict, expiration_value: float | None, *,
+                     contract_results: dict[str, str] | None = None) -> dict:
     contracts = list(observation.get("contracts") or [])
     if not contracts:
         raise ValueError("missing_contracts")
-    outcomes = [int(float(row["bucket"][0]) <= expiration_value < float(row["bucket"][1]))
-                for row in contracts]
+    if contract_results is not None:
+        if any(contract_results.get(row["ticker"]) not in ("yes", "no") for row in contracts):
+            raise ValueError("incomplete_contract_results")
+        outcomes = [int(contract_results[row["ticker"]] == "yes") for row in contracts]
+    else:
+        outcomes = [int(float(row["bucket"][0]) <= expiration_value < float(row["bucket"][1]))
+                    for row in contracts]
     structure = observation.get("event_structure", "bucket_ladder")
     if structure == "bucket_ladder" and sum(outcomes) != 1:
         raise ValueError("nonunique_winning_bucket")
