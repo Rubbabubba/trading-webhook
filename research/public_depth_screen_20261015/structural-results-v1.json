@@ -1,0 +1,21 @@
+{
+  "registration_sha256": "289447ea6565e90d285ff5ad76f89050b03cc37fa2cdab13631e11ecbb9e54d0",
+  "implementation_sha256": "378278953dcf5c9069ad56a94d5ba29e861d4ffcee07c394d98540fd63c48e27",
+  "input_sha256": "892053c3d1630900b768c70544731a50d2e0e7bb6c52b8f9c9ff8563dee1f87f",
+  "counts": {
+    "pair_decisions": 113597,
+    "missing_or_invalid_decision_book": 112636,
+    "no_stressed_price_surplus": 961,
+    "delayed_leg_unfilled": 0,
+    "surplus_lost_at_delay": 0
+  },
+  "conditional_candidates": [],
+  "candidate_count": 0,
+  "qualified_opportunities": 0,
+  "actual_fills": 0,
+  "profitability_proven": false,
+  "live_qualified": false,
+  "execution_enabled": false,
+  "independent_source_events": 1,
+  "limitation": "Suffix does not establish exact nested settlement rules. Multi-leg snapshot execution is conditional and cannot establish atomic fills. No live or historical profitability pass."
+}

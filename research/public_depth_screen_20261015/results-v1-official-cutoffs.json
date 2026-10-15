@@ -1,0 +1,688 @@
+{
+  "registration_sha256": "2b3bc0b95058c86a215a4f499d96eee4282f0b67c044a17cfb821a596bc8c4bf",
+  "source_revision": "611d66941717310858683278940df21c33c406f2",
+  "files": {
+    "KXBTCD-26JAN2017\\metadata.json": "2a59d0c692f7cbbf2e2829744f6e5647e63b89458fb59b48f8d07e95cc484e85",
+    "KXBTCD-26JAN2017\\orderbook.parquet": "892053c3d1630900b768c70544731a50d2e0e7bb6c52b8f9c9ff8563dee1f87f",
+    "KXBTCD-26JAN2017\\settlement.json": "6b236abf3285b59bb7834ba2265228315ef37210f3935f65e687e1ebc08ecfeb",
+    "KXBTCD-26JAN2017\\trades.parquet": "a300989e1d068c025eee370d8e86b394403a6df61d446ced37ac71b51d6ebaee",
+    "KXHIGHNY-26JAN20\\metadata.json": "fa0e0c9cf2ae6d9a14cbd0719d1200473de17735678753fe7ae7f381be593dc5",
+    "KXHIGHNY-26JAN20\\orderbook.parquet": "c9f1e405ac6a39db4fac1c9478542b0dcb7e9778bbd3ac51a6d931c9139d02ef",
+    "KXHIGHNY-26JAN20\\settlement.json": "b20de8855d7fa7507f848ef472a10f49143b8fae9b30b4eee6fc108f6e7417f8",
+    "KXHIGHNY-26JAN20\\trades.parquet": "bf9f4ad011b4c2b1a202d7e1aa7de1cf9f29a817e27f37edd869223a12628d18",
+    "KXNCAAF-26\\metadata.json": "a8bec319a7f69b68c9769b8e492a87298cbcedcd21bf418ac245d9acef83a98c",
+    "KXNCAAF-26\\orderbook.parquet": "283dd56b3443f227f09e2ae8276db117fb35f91ab33931f106953a4a8e08b773",
+    "KXNCAAF-26\\settlement.json": "5399fa7086a402fab16e166c5d7354d49ed88ee1f23fcae220be9a82f110eb93",
+    "KXNCAAF-26\\trades.parquet": "3e16fcc4d566a78671ec09aa0cea5728bc02f04d32d6b9568f7dbfd595bb3979",
+    "KXNFLGAME-26JAN11BUFJAC\\metadata.json": "873f945b30af27a3ce521de26b7e5fab62e03830a1ec183b1347110d432df62d",
+    "KXNFLGAME-26JAN11BUFJAC\\orderbook.parquet": "1b19d38ab37d91c93ddf74a17ebe96cd99cf33ab3a5cf2bc73c55de827bd9c3c",
+    "KXNFLGAME-26JAN11BUFJAC\\settlement.json": "828f94ecee67ee6a875c8e1954230f957bf5cbee5ff412b636cf38e1e273790f",
+    "KXNFLGAME-26JAN11BUFJAC\\trades.parquet": "69010e3f63a7bc16b159e1bde4cba01979eecc5df41b6870bc8ecda81f9d24e1"
+  },
+  "episodes": [
+    {
+      "event": "KXBTCD-26JAN2017",
+      "rows": 311929,
+      "source_rows": 311998,
+      "excluded_outside_trading_window": 69,
+      "official_checks": {
+        "KXBTCD-26JAN2017-T93749.99": {
+          "metadata_sha256": "a94dabf16e49aabdc2ec45cd31ad9d50784e32f4574656ad64208b5eee996b2d",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T96249.99": {
+          "metadata_sha256": "6407558ad3584a9fd776c7924b68e221afcb13e5a1be2fee98505ceda5586152",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T92249.99": {
+          "metadata_sha256": "59519f65d9bca6e4564fa20b1f160d8860bd1152734820814dddc619fd684fe6",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T91749.99": {
+          "metadata_sha256": "30853f7b75c9e6cbfe7243b410425456e64a5100dd995ac9ca76e4aab2b28e1b",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T96749.99": {
+          "metadata_sha256": "66d38815031bde9ea391fb268930724cb1c96b955a34584a570344e68140d2f1",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T94249.99": {
+          "metadata_sha256": "447da3601cb7be3e7c780d700a0900b0deb784fc8aeb96fbf7ec2f5fcbde7bf1",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T92749.99": {
+          "metadata_sha256": "66667ebb9a8f01d446cda7aca7e0cb63341570c912585c8cde1d6362c0eefbfb",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T90249.99": {
+          "metadata_sha256": "e96f3fc94e48822a2c0da5ba36875c92d01d9bfc6075d29fe162b7fc1ffdc6be",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T98249.99": {
+          "metadata_sha256": "2cf0155733447d1ea00be41628accc9c2a11640650d7b630b90fd562a2438659",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T89749.99": {
+          "metadata_sha256": "1464b7f7dcc801e1d18125102f5a0404843ffc1d08a9517ca07912bf3feba64d",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T95749.99": {
+          "metadata_sha256": "fe3c32400a60600d3de46a059e208c43883a5ffb3cc1ecfc81693a55fa2d8969",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T93249.99": {
+          "metadata_sha256": "71b1d00f6a109b7de04611fe42c9045a0f983c487b24a9f24bda7d988162bf42",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T97749.99": {
+          "metadata_sha256": "8bc37abfcdde907704a41ba6082df181c6d1c009b9110414c2bfafad9c02b7c0",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T94749.99": {
+          "metadata_sha256": "c0f64a43ed7feb9e82980a10adc173d672cd75111a1104b66dfa3734b0063cb0",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T95249.99": {
+          "metadata_sha256": "524b800a4f8cfb25b7b6631202e875682d677fbd0239ed1243618387dd2a6249",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T85249.99": {
+          "metadata_sha256": "a07a1e9d8a9bfa6355c1a3f423d952882698fa5c7e23a8413f12a82d4d8c374d",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T88749.99": {
+          "metadata_sha256": "b5ac93e91dab391173686764b895be8a0e927273465a88572ad1968b527358f0",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T97249.99": {
+          "metadata_sha256": "17c6043fa6165d0bca7032a7f8ff37e09f47fc5bbde72d1383a76a1dc952c408",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T90749.99": {
+          "metadata_sha256": "7e2ad08ff6cce2c2c6a95021831dec7e77fd89b70e00e345278e0f8eedf6922b",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T91249.99": {
+          "metadata_sha256": "c43e6b3a6263fa3e9e52088a9698b07e5cf1bbd67ba75f1ff7efd7ab09b78494",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T88249.99": {
+          "metadata_sha256": "e5b135b2aec5cc5f8a519a406b93c450b5366ab8bff19a9b6fcf4c495537e897",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T89249.99": {
+          "metadata_sha256": "4bfdbc5143286dc4a4e2453a98e0697c44b7a6a6388dc8968f79a40c5e99321e",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXBTCD-26JAN2017-T100749.99": {
+          "metadata_sha256": "63b73f47153831fc75a41b9a271edf8bc6263e61bf0044249d4d028b3d2cd8af",
+          "cutoff": "2026-01-20T22:00:00+00:00",
+          "settlement_label_matches": true
+        }
+      },
+      "tickers": 23,
+      "tracks": {
+        "bollinger_taker": {
+          "trades": [],
+          "rejections": {
+            "stale_or_missing_decision_quote": 4828,
+            "invalid_or_empty_book": 19
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        },
+        "favorite_taker": {
+          "trades": [
+            {
+              "ticker": "KXBTCD-26JAN2017-T93749.99",
+              "side": "no",
+              "decision_at": 1768890000,
+              "entry_at": 1768890002.690757,
+              "entry_price": 94.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 5.0,
+              "stressed_net_cents": {
+                "0": 5.0,
+                "2": 3.0,
+                "5": 0.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T92249.99",
+              "side": "no",
+              "decision_at": 1768918800,
+              "entry_at": 1768918802.15068,
+              "entry_price": 90.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 9.0,
+              "stressed_net_cents": {
+                "0": 9.0,
+                "2": 7.0,
+                "5": 4.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T92749.99",
+              "side": "no",
+              "decision_at": 1768911600,
+              "entry_at": 1768911601.983012,
+              "entry_price": 91.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 8.0,
+              "stressed_net_cents": {
+                "0": 8.0,
+                "2": 6.0,
+                "5": 3.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T90249.99",
+              "side": "yes",
+              "decision_at": 1768874400,
+              "entry_at": 1768874402.544873,
+              "entry_price": 92.0,
+              "entry_fee": 1,
+              "exit_price": 0,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": -93.0,
+              "stressed_net_cents": {
+                "0": -93.0,
+                "2": -95.0,
+                "5": -98.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T89749.99",
+              "side": "no",
+              "decision_at": 1768945200,
+              "entry_at": 1768945204.814971,
+              "entry_price": 93.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 6.0,
+              "stressed_net_cents": {
+                "0": 6.0,
+                "2": 4.0,
+                "5": 1.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T93249.99",
+              "side": "no",
+              "decision_at": 1768919700,
+              "entry_at": 1768919701.939124,
+              "entry_price": 95.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 4.0,
+              "stressed_net_cents": {
+                "0": 4.0,
+                "2": 2.0,
+                "5": -1.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T94749.99",
+              "side": "no",
+              "decision_at": 1768872900,
+              "entry_at": 1768872902.16068,
+              "entry_price": 91.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 8.0,
+              "stressed_net_cents": {
+                "0": 8.0,
+                "2": 6.0,
+                "5": 3.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T95249.99",
+              "side": "no",
+              "decision_at": 1768886100,
+              "entry_at": 1768886101.823886,
+              "entry_price": 98.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 1.0,
+              "stressed_net_cents": {
+                "0": 1.0,
+                "2": -1.0,
+                "5": -4.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T88749.99",
+              "side": "yes",
+              "decision_at": 1768886400,
+              "entry_at": 1768886403.309007,
+              "entry_price": 92.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 7.0,
+              "stressed_net_cents": {
+                "0": 7.0,
+                "2": 5.0,
+                "5": 2.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T90749.99",
+              "side": "no",
+              "decision_at": 1768934700,
+              "entry_at": 1768934705.517538,
+              "entry_price": 96.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 3.0,
+              "stressed_net_cents": {
+                "0": 3.0,
+                "2": 1.0,
+                "5": -2.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T91249.99",
+              "side": "no",
+              "decision_at": 1768930500,
+              "entry_at": 1768930501.006098,
+              "entry_price": 92.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 7.0,
+              "stressed_net_cents": {
+                "0": 7.0,
+                "2": 5.0,
+                "5": 2.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T88249.99",
+              "side": "yes",
+              "decision_at": 1768891500,
+              "entry_at": 1768891501.310005,
+              "entry_price": 92.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 7.0,
+              "stressed_net_cents": {
+                "0": 7.0,
+                "2": 5.0,
+                "5": 2.0
+              }
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T89249.99",
+              "side": "yes",
+              "decision_at": 1768909800,
+              "entry_at": 1768909804.50329,
+              "entry_price": 94.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-20T22:00:00+00:00",
+              "complete": true,
+              "net_cents": 5.0,
+              "stressed_net_cents": {
+                "0": 5.0,
+                "2": 3.0,
+                "5": 0.0
+              }
+            }
+          ],
+          "rejections": {
+            "stale_or_missing_decision_quote": 4828,
+            "invalid_or_empty_book": 19,
+            "entry_unfilled_or_price_guard": 25
+          },
+          "complete": 13,
+          "net_cents_by_stress": {
+            "0": -23.0,
+            "2": -49.0,
+            "5": -88.0
+          }
+        }
+      }
+    },
+    {
+      "event": "KXHIGHNY-26JAN20",
+      "rows": 50213,
+      "source_rows": 50231,
+      "excluded_outside_trading_window": 18,
+      "official_checks": {
+        "KXHIGHNY-26JAN20-B26.5": {
+          "metadata_sha256": "45e279263351272374ff6b4d5e4bd18559cbd5a8008770bee7c6251879d7fd20",
+          "cutoff": "2026-01-21T04:59:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXHIGHNY-26JAN20-B22.5": {
+          "metadata_sha256": "72222f8a9ec3239f38dbe3a1f5e4fb791ae81b6c1e255db385920fd20665ceb6",
+          "cutoff": "2026-01-21T04:59:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXHIGHNY-26JAN20-T22": {
+          "metadata_sha256": "385203ab4fe03eb60345adb3611ebb3c4788e4dcefe247755d7c0e13f15ebb0b",
+          "cutoff": "2026-01-21T04:59:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXHIGHNY-26JAN20-B24.5": {
+          "metadata_sha256": "901c388b88bcf0a116684477ff8e03af43d0defefdcdf0b9a59726f202e880d0",
+          "cutoff": "2026-01-21T04:59:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXHIGHNY-26JAN20-T29": {
+          "metadata_sha256": "0b261c8f572b98791276739a10dede29bc24fedcda92d2d742d724b83dace5a2",
+          "cutoff": "2026-01-21T04:59:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXHIGHNY-26JAN20-B28.5": {
+          "metadata_sha256": "2c017e1a2cc6a140203f163eca0fc0f5e0ed664a184981e265f318fc400fccf4",
+          "cutoff": "2026-01-21T04:59:00+00:00",
+          "settlement_label_matches": true
+        }
+      },
+      "tickers": 6,
+      "tracks": {
+        "bollinger_taker": {
+          "trades": [],
+          "rejections": {
+            "stale_or_missing_decision_quote": 824,
+            "invalid_or_empty_book": 4
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        },
+        "favorite_taker": {
+          "trades": [
+            {
+              "ticker": "KXHIGHNY-26JAN20-B26.5",
+              "side": "yes",
+              "decision_at": 1768940100,
+              "entry_at": 1768940101.257518,
+              "entry_price": 93.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-21T04:59:00+00:00",
+              "complete": true,
+              "net_cents": 6.0,
+              "stressed_net_cents": {
+                "0": 6.0,
+                "2": 4.0,
+                "5": 1.0
+              }
+            },
+            {
+              "ticker": "KXHIGHNY-26JAN20-B22.5",
+              "side": "no",
+              "decision_at": 1768874400,
+              "entry_at": 1768874401.468625,
+              "entry_price": 91.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-21T04:59:00+00:00",
+              "complete": true,
+              "net_cents": 8.0,
+              "stressed_net_cents": {
+                "0": 8.0,
+                "2": 6.0,
+                "5": 3.0
+              }
+            },
+            {
+              "ticker": "KXHIGHNY-26JAN20-T29",
+              "side": "no",
+              "decision_at": 1768877100,
+              "entry_at": 1768877102.866238,
+              "entry_price": 96.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-21T04:59:00+00:00",
+              "complete": true,
+              "net_cents": 3.0,
+              "stressed_net_cents": {
+                "0": 3.0,
+                "2": 1.0,
+                "5": -2.0
+              }
+            },
+            {
+              "ticker": "KXHIGHNY-26JAN20-B28.5",
+              "side": "no",
+              "decision_at": 1768882200,
+              "entry_at": 1768882201.451626,
+              "entry_price": 97.0,
+              "entry_fee": 1,
+              "exit_price": 100,
+              "exit_fee": 0,
+              "exit_reason": "settlement",
+              "exit_at": "2026-01-21T04:59:00+00:00",
+              "complete": true,
+              "net_cents": 2.0,
+              "stressed_net_cents": {
+                "0": 2.0,
+                "2": 0.0,
+                "5": -3.0
+              }
+            }
+          ],
+          "rejections": {
+            "stale_or_missing_decision_quote": 824,
+            "entry_unfilled_or_price_guard": 5,
+            "invalid_or_empty_book": 4
+          },
+          "complete": 4,
+          "net_cents_by_stress": {
+            "0": 19.0,
+            "2": 11.0,
+            "5": -1.0
+          }
+        }
+      }
+    },
+    {
+      "event": "KXNCAAF-26",
+      "rows": 0,
+      "source_rows": 8320,
+      "excluded_outside_trading_window": 8320,
+      "official_checks": {
+        "KXNCAAF-26-MIA": {
+          "metadata_sha256": "c1ec56b71de4e54294d3dccfa3e599ce7c92c66ee0983f83815f44cca16efab0",
+          "cutoff": "2026-01-19T15:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXNCAAF-26-IND": {
+          "metadata_sha256": "18647c087d75c2e949cd26fad5e141e46ea1747a96f3a2899fbf91b3bb194059",
+          "cutoff": "2026-01-19T15:00:00+00:00",
+          "settlement_label_matches": true
+        }
+      },
+      "tickers": 0,
+      "tracks": {
+        "bollinger_taker": {
+          "trades": [],
+          "rejections": {},
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        },
+        "favorite_taker": {
+          "trades": [],
+          "rejections": {},
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        }
+      }
+    },
+    {
+      "event": "KXNFLGAME-26JAN11BUFJAC",
+      "rows": 7404,
+      "source_rows": 8047,
+      "excluded_outside_trading_window": 643,
+      "official_checks": {
+        "KXNFLGAME-26JAN11BUFJAC-JAC": {
+          "metadata_sha256": "f5163b5eadc4285ab9d68de840df3008f23756ad4682d0b938d013c5aca17df8",
+          "cutoff": "2026-01-11T21:00:00+00:00",
+          "settlement_label_matches": true
+        },
+        "KXNFLGAME-26JAN11BUFJAC-BUF": {
+          "metadata_sha256": "37dd97aa760f8c33ffda190639f82eebeb6c0a383bc35cfe1e555ab71b081eeb",
+          "cutoff": "2026-01-11T21:00:00+00:00",
+          "settlement_label_matches": true
+        }
+      },
+      "tickers": 2,
+      "tracks": {
+        "bollinger_taker": {
+          "trades": [],
+          "rejections": {
+            "stale_or_missing_decision_quote": 1595
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        },
+        "favorite_taker": {
+          "trades": [],
+          "rejections": {
+            "stale_or_missing_decision_quote": 1595
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        }
+      }
+    }
+  ],
+  "execution_enabled": false,
+  "live_qualified": false,
+  "profitability_proven": false,
+  "limitations": [
+    "Four publicly selected episodes, not representative unused holdout",
+    "No independent venue provenance verification",
+    "No complete contract lifecycle or true resolution cutoff validation; post-outcome contamination possible",
+    "No receipt-clock or transport-gap guarantees",
+    "Historical fee schedule only; current market-specific fees not verified",
+    "Recorded displayed depth is a conditional simulated fill, never our broker fill",
+    "Correlated tickers aggregated by event; not independent observations"
+  ],
+  "totals": {
+    "bollinger_taker": {
+      "entries": 0,
+      "complete": 0,
+      "net_cents_by_stress": {
+        "0": 0,
+        "2": 0,
+        "5": 0
+      }
+    },
+    "favorite_taker": {
+      "entries": 17,
+      "complete": 17,
+      "net_cents_by_stress": {
+        "0": -4.0,
+        "2": -38.0,
+        "5": -89.0
+      }
+    }
+  }
+}

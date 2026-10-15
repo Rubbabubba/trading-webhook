@@ -1,0 +1,11 @@
+{
+  "id": "public_nested_depth_screen_v1_20261015",
+  "frozen_before_structural_replay": true,
+  "source": "Oddpool/PredictionMarketBench at 611d66941717310858683278940df21c33c406f2",
+  "dataset_role": "Exploratory inspected public sample; not untouched validation",
+  "hypothesis": "Conditional on verified nested greater-than rules, buying lower-strike YES plus higher-strike NO guarantees at least 100 cents payout and may cost less after stress.",
+  "selection": "Only KXBTCD event with numeric T suffix; suffix is a provisional relation hint, never semantic proof. Every UTC 300s grid; decision quotes at most5s old, at least1 depth, uncrossed; both delayed future snapshots1to6s later, cross-leg gap at most5s. All unordered strikes. No tuning or selected profitable subset.",
+  "costs": "Original frozen structural screen:2c fee each leg plus2c unfinished-leg stress, minimum1c stressed surplus; compare zeroAI/offline only",
+  "qualification": "Every candidate REJECTED unless original full rules, true event cutoff and nesting identity are independently verified. Source metadata lacks these. Repeated pairs/times are not independent events. No real fills, no orders, no live pass.",
+  "execution_enabled": false
+}

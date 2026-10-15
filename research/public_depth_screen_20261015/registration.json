@@ -1,0 +1,20 @@
+{
+  "id": "public_depth_fixed_screen_v1_20261015",
+  "role": "exploratory_external_benchmark_not_unused_holdout_or_live_qualification",
+  "source": "https://github.com/Oddpool/PredictionMarketBench",
+  "source_revision": "611d66941717310858683278940df21c33c406f2",
+  "frozen_before_price_or_settlement_inspection": true,
+  "execution_enabled": false,
+  "tracks": {
+    "bollinger_taker": "Each ticker on UTC 300-second grid: previous 20 fresh mid observations, population sd, buy one YES below mean-2sd or one NO above mean+2sd; exit at mean recovery or 3600 seconds, otherwise settlement. One entry per ticker per episode.",
+    "favorite_taker": "First fresh UTC 300-second grid observation with a side ask 90 through 98 cents inclusive; one contract, one side per ticker, YES tie priority, hold to settlement. No outcomes used in selection."
+  },
+  "quote_max_age_seconds": 5,
+  "execution_delay_seconds": 1,
+  "execution": "First same-ticker recorded snapshot at or after decision+1s and no more than 5s later; require valid uncrossed two-sided book and at least one displayed contract at executable level. Buy at ask, exit at bid; no passive or touch fills. Unexecuted exits remain owned and retry next decision; missing settlement remains unresolved.",
+  "fee": "ceil(0.07*p*(1-p)*100) cents per one-contract taker fill, historical benchmark schedule; not proof of current market-specific fees",
+  "extra_stress_cents_per_fill": [0, 2, 5],
+  "no_parameter_search": true,
+  "decision": "Never qualifies live: four selected public episodes, external provenance and missing lifecycle/receipt-clock validation. Record every loss and exclusion; positive exploration requires separate larger unused validation and operational execution evidence.",
+  "restrictions": "No orders, credentials, model calls, schedules or frozen production strategy edits. Read data only; independent replay code, do not execute downloaded repository code."
+}

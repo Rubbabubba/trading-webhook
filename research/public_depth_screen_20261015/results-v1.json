@@ -1,0 +1,381 @@
+{
+  "registration_sha256": "2b3bc0b95058c86a215a4f499d96eee4282f0b67c044a17cfb821a596bc8c4bf",
+  "source_revision": "611d66941717310858683278940df21c33c406f2",
+  "files": {
+    "KXBTCD-26JAN2017\\metadata.json": "2a59d0c692f7cbbf2e2829744f6e5647e63b89458fb59b48f8d07e95cc484e85",
+    "KXBTCD-26JAN2017\\orderbook.parquet": "892053c3d1630900b768c70544731a50d2e0e7bb6c52b8f9c9ff8563dee1f87f",
+    "KXBTCD-26JAN2017\\settlement.json": "6b236abf3285b59bb7834ba2265228315ef37210f3935f65e687e1ebc08ecfeb",
+    "KXBTCD-26JAN2017\\trades.parquet": "a300989e1d068c025eee370d8e86b394403a6df61d446ced37ac71b51d6ebaee",
+    "KXHIGHNY-26JAN20\\metadata.json": "fa0e0c9cf2ae6d9a14cbd0719d1200473de17735678753fe7ae7f381be593dc5",
+    "KXHIGHNY-26JAN20\\orderbook.parquet": "c9f1e405ac6a39db4fac1c9478542b0dcb7e9778bbd3ac51a6d931c9139d02ef",
+    "KXHIGHNY-26JAN20\\settlement.json": "b20de8855d7fa7507f848ef472a10f49143b8fae9b30b4eee6fc108f6e7417f8",
+    "KXHIGHNY-26JAN20\\trades.parquet": "bf9f4ad011b4c2b1a202d7e1aa7de1cf9f29a817e27f37edd869223a12628d18",
+    "KXNCAAF-26\\metadata.json": "a8bec319a7f69b68c9769b8e492a87298cbcedcd21bf418ac245d9acef83a98c",
+    "KXNCAAF-26\\orderbook.parquet": "283dd56b3443f227f09e2ae8276db117fb35f91ab33931f106953a4a8e08b773",
+    "KXNCAAF-26\\settlement.json": "5399fa7086a402fab16e166c5d7354d49ed88ee1f23fcae220be9a82f110eb93",
+    "KXNCAAF-26\\trades.parquet": "3e16fcc4d566a78671ec09aa0cea5728bc02f04d32d6b9568f7dbfd595bb3979",
+    "KXNFLGAME-26JAN11BUFJAC\\metadata.json": "873f945b30af27a3ce521de26b7e5fab62e03830a1ec183b1347110d432df62d",
+    "KXNFLGAME-26JAN11BUFJAC\\orderbook.parquet": "1b19d38ab37d91c93ddf74a17ebe96cd99cf33ab3a5cf2bc73c55de827bd9c3c",
+    "KXNFLGAME-26JAN11BUFJAC\\settlement.json": "828f94ecee67ee6a875c8e1954230f957bf5cbee5ff412b636cf38e1e273790f",
+    "KXNFLGAME-26JAN11BUFJAC\\trades.parquet": "69010e3f63a7bc16b159e1bde4cba01979eecc5df41b6870bc8ecda81f9d24e1"
+  },
+  "episodes": [
+    {
+      "event": "KXBTCD-26JAN2017",
+      "rows": 311998,
+      "tickers": 23,
+      "tracks": {
+        "bollinger_taker": {
+          "trades": [],
+          "rejections": {
+            "stale_or_missing_decision_quote": 9760,
+            "invalid_or_empty_book": 20
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        },
+        "favorite_taker": {
+          "trades": [
+            {
+              "ticker": "KXBTCD-26JAN2017-T95249.99",
+              "side": "no",
+              "decision_at": 1768886100,
+              "entry_at": 1768886101.823886,
+              "entry_price": 98.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T94749.99",
+              "side": "no",
+              "decision_at": 1768872900,
+              "entry_at": 1768872902.16068,
+              "entry_price": 91.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T93749.99",
+              "side": "no",
+              "decision_at": 1768890000,
+              "entry_at": 1768890002.690757,
+              "entry_price": 94.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T93249.99",
+              "side": "no",
+              "decision_at": 1768919700,
+              "entry_at": 1768919701.939124,
+              "entry_price": 95.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T92749.99",
+              "side": "no",
+              "decision_at": 1768911600,
+              "entry_at": 1768911601.983012,
+              "entry_price": 91.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T92249.99",
+              "side": "no",
+              "decision_at": 1768918800,
+              "entry_at": 1768918802.15068,
+              "entry_price": 90.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T91249.99",
+              "side": "no",
+              "decision_at": 1768930500,
+              "entry_at": 1768930501.006098,
+              "entry_price": 92.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T90749.99",
+              "side": "no",
+              "decision_at": 1768934700,
+              "entry_at": 1768934705.517538,
+              "entry_price": 96.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T90249.99",
+              "side": "yes",
+              "decision_at": 1768874400,
+              "entry_at": 1768874402.544873,
+              "entry_price": 92.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T89749.99",
+              "side": "no",
+              "decision_at": 1768945200,
+              "entry_at": 1768945204.814971,
+              "entry_price": 93.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T89249.99",
+              "side": "yes",
+              "decision_at": 1768909800,
+              "entry_at": 1768909804.50329,
+              "entry_price": 94.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T88749.99",
+              "side": "yes",
+              "decision_at": 1768886400,
+              "entry_at": 1768886403.309007,
+              "entry_price": 92.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXBTCD-26JAN2017-T88249.99",
+              "side": "yes",
+              "decision_at": 1768891500,
+              "entry_at": 1768891501.310005,
+              "entry_price": 92.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            }
+          ],
+          "rejections": {
+            "stale_or_missing_decision_quote": 9760,
+            "invalid_or_empty_book": 20,
+            "entry_unfilled_or_price_guard": 25
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        }
+      }
+    },
+    {
+      "event": "KXHIGHNY-26JAN20",
+      "rows": 50231,
+      "tickers": 6,
+      "tracks": {
+        "bollinger_taker": {
+          "trades": [],
+          "rejections": {
+            "stale_or_missing_decision_quote": 2438,
+            "invalid_or_empty_book": 4
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        },
+        "favorite_taker": {
+          "trades": [
+            {
+              "ticker": "KXHIGHNY-26JAN20-T29",
+              "side": "no",
+              "decision_at": 1768877100,
+              "entry_at": 1768877102.866238,
+              "entry_price": 96.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXHIGHNY-26JAN20-B28.5",
+              "side": "no",
+              "decision_at": 1768882200,
+              "entry_at": 1768882201.451626,
+              "entry_price": 97.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXHIGHNY-26JAN20-B26.5",
+              "side": "yes",
+              "decision_at": 1768940100,
+              "entry_at": 1768940101.257518,
+              "entry_price": 93.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXHIGHNY-26JAN20-B22.5",
+              "side": "no",
+              "decision_at": 1768874400,
+              "entry_at": 1768874401.468625,
+              "entry_price": 91.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            }
+          ],
+          "rejections": {
+            "stale_or_missing_decision_quote": 2438,
+            "entry_unfilled_or_price_guard": 5,
+            "invalid_or_empty_book": 4
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        }
+      }
+    },
+    {
+      "event": "KXNCAAF-26",
+      "rows": 8320,
+      "tickers": 2,
+      "tracks": {
+        "bollinger_taker": {
+          "trades": [],
+          "rejections": {
+            "stale_or_missing_decision_quote": 881
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        },
+        "favorite_taker": {
+          "trades": [
+            {
+              "ticker": "KXNCAAF-26-MIA",
+              "side": "no",
+              "decision_at": 1768881900,
+              "entry_at": 1768881903.620052,
+              "entry_price": 93.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            },
+            {
+              "ticker": "KXNCAAF-26-IND",
+              "side": "yes",
+              "decision_at": 1768881900,
+              "entry_at": 1768881903.315524,
+              "entry_price": 94.0,
+              "entry_fee": 1,
+              "complete": false,
+              "exit_reason": "unresolved_or_invalid_settlement"
+            }
+          ],
+          "rejections": {
+            "stale_or_missing_decision_quote": 881
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        }
+      }
+    },
+    {
+      "event": "KXNFLGAME-26JAN11BUFJAC",
+      "rows": 8047,
+      "tickers": 2,
+      "tracks": {
+        "bollinger_taker": {
+          "trades": [],
+          "rejections": {
+            "stale_or_missing_decision_quote": 1597,
+            "invalid_or_empty_book": 1
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        },
+        "favorite_taker": {
+          "trades": [],
+          "rejections": {
+            "stale_or_missing_decision_quote": 1597,
+            "invalid_or_empty_book": 1
+          },
+          "complete": 0,
+          "net_cents_by_stress": {
+            "0": 0,
+            "2": 0,
+            "5": 0
+          }
+        }
+      }
+    }
+  ],
+  "execution_enabled": false,
+  "live_qualified": false,
+  "profitability_proven": false,
+  "limitations": [
+    "Four publicly selected episodes, not representative unused holdout",
+    "No independent venue provenance verification",
+    "No complete contract lifecycle or true resolution cutoff validation; post-outcome contamination possible",
+    "No receipt-clock or transport-gap guarantees",
+    "Historical fee schedule only; current market-specific fees not verified",
+    "Recorded displayed depth is a conditional simulated fill, never our broker fill",
+    "Correlated tickers aggregated by event; not independent observations"
+  ],
+  "totals": {
+    "bollinger_taker": {
+      "entries": 0,
+      "complete": 0,
+      "net_cents_by_stress": {
+        "0": 0,
+        "2": 0,
+        "5": 0
+      }
+    },
+    "favorite_taker": {
+      "entries": 19,
+      "complete": 0,
+      "net_cents_by_stress": {
+        "0": 0,
+        "2": 0,
+        "5": 0
+      }
+    }
+  }
+}
