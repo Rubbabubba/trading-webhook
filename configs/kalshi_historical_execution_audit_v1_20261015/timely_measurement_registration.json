@@ -1,0 +1,15 @@
+{
+  "schema": "kalshi_timely_shadow_measurement_v1",
+  "registered_on": "2026-10-15",
+  "purpose": "Separate prospective measurement receipt for unchanged V10/V11/V12 decisions following a historical timing defect.",
+  "horizons_seconds": [5, 30, 300],
+  "maximum_lateness_seconds": 5,
+  "maximum_signals_per_strategy": 500,
+  "capture_start": "Durable first initialization time; never reset on restart.",
+  "transport_budget": "Reuse the existing idle quote slot after owned-inventory and V15 duties; no added network calls.",
+  "missing_data": "Expired windows remain missing. No backfill, rewritten old marks, hypothetical fills or reused historical qualification.",
+  "frozen_decisions_and_registrations_unchanged": true,
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "promotion_ready": false
+}

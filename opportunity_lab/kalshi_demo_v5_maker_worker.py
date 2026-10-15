@@ -30,6 +30,10 @@ from .kalshi_postquote_capture import init as init_postquote_capture, poll as po
 from .kalshi_postquote_diagnostic import init as init_postquote_diagnostic, status as postquote_diagnostic_status
 from .kalshi_trade_side_capture import init as init_trade_side, status as trade_side_status
 from .kalshi_high_edge_shadow import init as init_high_edge, observe as observe_high_edge, status as high_edge_status, pending_ticker as high_edge_pending
+from .kalshi_timely_shadow_measurement import (
+    init as init_timely_measurement, observe as observe_timely_measurement,
+    status as timely_measurement_status, pending_ticker as timely_measurement_pending,
+)
 from .kalshi_activity_trade_capture import init as init_activity_trade_capture, poll as poll_activity_trade_capture, status as activity_trade_capture_status
 from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
 from .life_os_reporter import schedule as schedule_life_os_report
@@ -540,6 +544,7 @@ class MakerState:
         init_postquote_diagnostic(self.db,time.time())
         init_trade_side(self.db,time.time())
         init_high_edge(self.db,time.time())
+        init_timely_measurement(self.db,time.time())
         self.db.executescript("""
           CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY,detail TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS history(at REAL NOT NULL,ticker TEXT NOT NULL,mid TEXT NOT NULL);
@@ -1342,6 +1347,7 @@ def observe_frame(state, ticker, frame, independent_event=None):
     observe_v11_shadow(state, ticker, history, frame, independent_event)
     observe_v12_shadow(state, ticker, history, frame, independent_event)
     observe_high_edge(state.db,ticker,independent_event or ticker,history,frame)
+    observe_timely_measurement(state.db, ticker, now=frame["received_at"], yes_mid=midpoint(frame))
     state.db.execute("INSERT INTO history VALUES(?,?,?)",
                      (frame["received_at"], ticker, str(midpoint(frame))))
     state.db.execute("DELETE FROM history WHERE at<?", (frame["received_at"] - 300,))
@@ -1616,6 +1622,7 @@ def write_status(path, state, journal, **values):
     current_evidence['postquote_price_diagnostic'] = postquote_diagnostic_status(state.db)
     current_evidence['trade_side_capture'] = trade_side_status(state.db)
     current_evidence['high_edge_two_tick_shadow'] = high_edge_status(state.db)
+    current_evidence['timely_shadow_measurement'] = timely_measurement_status(state.db)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     latest_v12 = state.db.execute(
         "SELECT detail,observed_at,ticker FROM v12_shadow_signals ORDER BY id DESC LIMIT 1"
@@ -1822,7 +1829,8 @@ def run(data_root, *, cycles=None):
                         price = limit_price_cents(frame, position["outcome"], "sell")
                         submit(state, journal, broker, markets, market, position["outcome"], "sell", price)
                 else:
-                    pending = pending_markout_ticker(state) or high_edge_pending(state.db,time.time())
+                    pending = (pending_markout_ticker(state) or high_edge_pending(state.db,time.time())
+                               or timely_measurement_pending(state.db,time.time()))
                     if pending:
                         quote = markets.quote({"ticker": pending}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
                         pending_event = state.db.execute(
@@ -1831,6 +1839,10 @@ def run(data_root, *, cycles=None):
                         ).fetchone()
                         if pending_event is None:
                             pending_event=state.db.execute('SELECT event FROM high_edge_v15_signals WHERE ticker=? ORDER BY at DESC LIMIT 1',(pending,)).fetchone()
+                        if pending_event is None:
+                            pending_event = state.db.execute(
+                                'SELECT event FROM timely_shadow_signals WHERE ticker=? ORDER BY at DESC LIMIT 1',
+                                (pending,)).fetchone()
                         observe_frame(state, pending, frame,
                                       pending_event[0] if pending_event else pending)
                         record_due_markouts(state, pending, frame)

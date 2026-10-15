@@ -1,0 +1,34 @@
+{
+  "schema": "kalshi_historical_audit_findings_v1",
+  "maker_audit_generated_at": "2026-10-15T21:03:39.279537+00:00",
+  "maker_audit_registration_sha256": "555a67fca93aeeb4c38a79333bb18cd739058cc13e189646dcb53aca625f89c7",
+  "maker_results": {
+    "v10": {"signals": 42, "raw_complete": 37, "punctual_complete": 0, "late_signals": 39, "missing_horizon_signals": 5, "maximum_lateness_seconds": 69574.071325, "input_sha256": "2668ac2560f7955321afa263e49f80f2c4e3a6c35fd26bf9c38e6a59af75c8ba"},
+    "v11": {"signals": 11, "raw_complete": 7, "punctual_complete": 0, "late_signals": 9, "missing_horizon_signals": 4, "maximum_lateness_seconds": 34383.046166, "input_sha256": "d7f94fcfb64984ecddb24f87b953b98adc39c6e1fa52114958ac3bc7ec65bf9e"},
+    "v12": {"signals": 1276, "raw_complete": 1263, "punctual_complete": 1, "independent_punctual_events": 1, "late_signals": 1272, "missing_horizon_signals": 13, "maximum_lateness_seconds": 147414.794926, "punctual_net_cents_each_horizon_after_original_stress": 3, "input_sha256": "4fde3a048ff1a0b03a38437c8e996bca01007d7bf3093056364aa09e017f8f35"}
+  },
+  "interpretation": "Under the separate fixed five-second-lateness audit, almost all retained legacy horizon marks are late. Original positive V12 totals are not proof of the labeled 5/30/300-second performance or execution profitability. Exclusion categories overlap. Preserve every original row and frozen decision/registration. Do not reopen the stopped V12 trial.",
+  "weather_historical_audit": {
+    "generated_at": "2026-10-15T21:04:59.202397+00:00",
+    "source_observations": 12386,
+    "requests": 20,
+    "request_budget_exhausted": true,
+    "transport_error": null,
+    "before_complete_observations": 3,
+    "after_complete_observations": 7,
+    "before_city_days": 2,
+    "after_city_days": 4,
+    "complete_signal_observations": 0,
+    "hypothetical_net_cents": null,
+    "original_database_modified": false
+  },
+  "remote_full_artifacts": [
+    "/var/data/kalshi-demo-v9/historical-maker-audit-20261015.json",
+    "/var/data/kalshi-demo-v9/historical-weather-audit-20261015.json"
+  ],
+  "repair": "Separate registered prospective timely measurement of unchanged V10/V11/V12 decisions. Durable start, fixed five-second lateness maximum, no old-signal reuse, no backfill, 500-signal-per-strategy cap, existing idle quote slot only. Original collectors and evidence remain unchanged; new receipts are separately labeled.",
+  "verification": {"focused_synthetic_tests_passed": 46, "authentic_historical_audits_completed": true},
+  "profitable_system_proven": false,
+  "live_promotion_ready": false,
+  "engineering_backlog_complete": false
+}
