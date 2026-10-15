@@ -79,3 +79,16 @@ def test_protocol_integrity_and_read_only_snapshot(tmp_path):
     db = sqlite3.connect(path); db.execute("UPDATE high_edge_v15_protocol SET detail='{}'")
     with pytest.raises(ValueError, match="protocol_mismatch"): review(db, now=1000)
     db.close()
+
+
+def test_stored_repeating_decimal_precision_is_not_economic_mismatch():
+    db = sqlite3.connect(":memory:"); setup(db); signal(db, 1, "A")
+    row = json.loads(db.execute("SELECT detail FROM high_edge_v15_signals").fetchone()[0])
+    row["frozen_v12"]["fair_value_cents"] = "46.33333333333333333333333333"
+    row["frozen_v12"]["gross_edge_cents"] = "6.333333333333333333333333333"
+    db.execute("UPDATE high_edge_v15_signals SET detail=?", (json.dumps(row),))
+    assert review(db, now=1000)["complete_signals"] == 1
+    row["frozen_v12"]["gross_edge_cents"] = "6.34"
+    db.execute("UPDATE high_edge_v15_signals SET detail=?", (json.dumps(row),))
+    assert review(db, now=1000)["exclusion_reasons_nonexclusive"]["source_value_arithmetic_mismatch"] == 1
+    db.close()

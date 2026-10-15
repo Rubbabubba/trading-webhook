@@ -50,7 +50,7 @@ def review(db, *, now):
             source_price = number(source["price_cents"])
             source_fair = number(source["fair_value_cents"])
             if (not 0 < source_price < source_fair < 100
-                    or source_fair - source_price != number(source["gross_edge_cents"])):
+                    or abs(source_fair - source_price - number(source["gross_edge_cents"])) > Decimal("0.000001")):
                 errors.add("source_value_arithmetic_mismatch")
             for horizon in PROTOCOL["horizons_seconds"]:
                 if horizon not in marks[sid]:
@@ -107,6 +107,7 @@ def review(db, *, now):
              "positive_cluster_bound_every_horizon": all(h["event_cluster_lcb_cents"] is not None and h["event_cluster_lcb_cents"] > 0 for h in horizons.values())}
     passed = all(gates.values())
     return {"schema": "kalshi_v15_release_review_v1", "candidate": PROTOCOL["schema"],
+            "review_implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "generated_at": datetime.fromtimestamp(float(now), timezone.utc).isoformat(),
             "original_registered_at_unix": float(start), "input_rows_sha256": digest.hexdigest(),
             "review_registration_sha256": hashlib.sha256(canonical(json.loads(REGISTRATION.read_text())).encode()).hexdigest(),

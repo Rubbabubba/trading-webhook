@@ -1,0 +1,12 @@
+{
+  "schema": "v15_release_review_implementation_erratum_v1",
+  "initial_worker_revision": "3bf72dd5d364e37f59b5e7750695e6820abd7eee",
+  "initial_artifact": "/var/data/kalshi-demo-v9/v15-selected-candidate-review-20261015.json",
+  "initial_result": {"signals": 66, "missing_horizon": 65, "source_value_arithmetic_mismatch": 45, "complete_signals": 0, "release_blocked": true},
+  "cause": "Exact Decimal equality rejected representational rounding after subtracting whole-cent entry price from a 28-significant-digit serialized fair value.",
+  "authentic_example": {"source_id": 2, "fair_value_cents": "51.54500765199647544404767426", "price_cents": 45, "gross_edge_cents": "6.545007651996475444047674257", "difference_cents": "3E-27"},
+  "correction": "Apply the same fixed 0.000001-cent numerical consistency tolerance already used for same-observation benchmark agreement. Material inconsistencies remain excluded. Include implementation hash in subsequent report.",
+  "not_changed": ["Original V15 strategy registration", "Source signals or markouts", "100-signal/40-event gates", "Two-cent cost stress", "Execution authority", "Risk limits"],
+  "verification": "Added repeating-decimal versus material-mismatch regression; 42 candidate/worker tests passed after correction. Earlier 68 candidate/worker/monitor tests and 101 execution/accounting tests passed. These are synthetic tests, not profitability evidence.",
+  "preservation": "Retain initial report and write a distinct corrected report. Replay cached same inputs without new prices; do not call this a new holdout."
+}
