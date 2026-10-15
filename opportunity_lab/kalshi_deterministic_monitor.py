@@ -813,6 +813,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "trade_side_capture": (status.get('evidence') or {}).get('trade_side_capture'),
         "high_edge_two_tick_shadow": (status.get('evidence') or {}).get('high_edge_two_tick_shadow'),
         "timely_shadow_measurement": (status.get('evidence') or {}).get('timely_shadow_measurement'),
+        "selected_candidate_release_review": (status.get('evidence') or {}).get('selected_candidate_release_review'),
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),
         "v10_gate": gate,
         "v12_gate": v12_gate,

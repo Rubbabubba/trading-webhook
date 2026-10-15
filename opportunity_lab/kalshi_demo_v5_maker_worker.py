@@ -30,6 +30,7 @@ from .kalshi_postquote_capture import init as init_postquote_capture, poll as po
 from .kalshi_postquote_diagnostic import init as init_postquote_diagnostic, status as postquote_diagnostic_status
 from .kalshi_trade_side_capture import init as init_trade_side, status as trade_side_status
 from .kalshi_high_edge_shadow import init as init_high_edge, observe as observe_high_edge, status as high_edge_status, pending_ticker as high_edge_pending
+from .kalshi_v15_release_review import review as review_selected_candidate
 from .kalshi_timely_shadow_measurement import (
     init as init_timely_measurement, observe as observe_timely_measurement,
     status as timely_measurement_status, pending_ticker as timely_measurement_pending,
@@ -1622,6 +1623,7 @@ def write_status(path, state, journal, **values):
     current_evidence['postquote_price_diagnostic'] = postquote_diagnostic_status(state.db)
     current_evidence['trade_side_capture'] = trade_side_status(state.db)
     current_evidence['high_edge_two_tick_shadow'] = high_edge_status(state.db)
+    current_evidence['selected_candidate_release_review'] = review_selected_candidate(state.db, now=time.time())
     current_evidence['timely_shadow_measurement'] = timely_measurement_status(state.db)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     latest_v12 = state.db.execute(

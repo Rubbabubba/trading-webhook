@@ -1,0 +1,20 @@
+{
+  "schema": "kalshi_v15_release_review_v1",
+  "registered_on": "2026-10-15",
+  "candidate": "kalshi_high_edge_two_tick_v15",
+  "selection_reason": "Existing preregistered two-tick challenger with bounded markout timing; selected without ranking new historical winners.",
+  "original_registration": "configs/kalshi_high_edge_two_tick_v15_20261012/registration.json",
+  "purpose": "Verify the original prospective cohort and release prerequisites now; do not retune the strategy or invent an unused holdout.",
+  "required_horizons_seconds": [5, 30, 300],
+  "maximum_markout_lateness_seconds": 5,
+  "minimum_complete_signals": 100,
+  "minimum_independent_events": 40,
+  "additional_cost_sensitivity_cents": [0, 2, 5],
+  "required_consistency": ["Stored protocol matches frozen registration", "All signals are after original registration", "Two-tick entry prices and outcomes match source V12 decisions", "Finite, internally consistent same-observation markouts", "Missing and invalid observations remain in denominator"],
+  "research_roles": {"original_cohort": "prospective under October12 registration; now inspected", "new_unused_holdout": "not supplied; never rename inspected data as untouched"},
+  "demo_release": "Original sample and positive net/cluster-confidence gates must pass; quote evidence alone is not authority to enable original V15 orders. A separately registered execution trial remains required.",
+  "live_release": "Independent actual fills, fees, reconciliation, operational evidence and strategy-specific owner approval remain required.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "promotion_ready": false
+}
