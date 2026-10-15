@@ -1,0 +1,28 @@
+{
+  "schema": "kalshi_historical_execution_audit_v1",
+  "registered_on": "2026-10-15",
+  "purpose": "Audit retained frozen V10/V11/V12 observations now, without waiting for another event or inventing fills.",
+  "scope": "Retrospective accounting and data-quality audit, not a new prospective strategy or untouched validation set.",
+  "fixed_parameters": {
+    "strategies": ["v10", "v11", "v12"],
+    "horizons_seconds": [5, 30, 300],
+    "maximum_markout_lateness_seconds": 5,
+    "additional_execution_stress_cents": [0, 1, 2, 5],
+    "chronological_diagnostic_split": "oldest two thirds versus newest third by whole event first observation",
+    "maximum_signals_per_strategy": 50000,
+    "minimum_independent_events_for_confidence_bound": 2
+  },
+  "rules": [
+    "Report original retained markouts separately from punctual complete observations.",
+    "Do not backfill missing horizons or substitute later prices.",
+    "Reject nonfinite values, future entry timestamps, early marks and incorrect two-cent stress arithmetic.",
+    "Retain every incomplete or rejected signal in the denominator.",
+    "Do not choose a winning stress level, price band or split after seeing results.",
+    "Neither diagnostic split is claimed to be untouched; source data already informed prior research.",
+    "Quote markouts and stress sensitivity cannot demonstrate own fills, fee receipts or executable profitability.",
+    "Frozen registrations and all existing evidence remain unchanged."
+  ],
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "live_promotion_authority": false
+}
