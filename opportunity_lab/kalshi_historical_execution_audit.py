@@ -153,7 +153,8 @@ def main():
     args = parser.parse_args()
     raw = json.dumps(audit(args.database), sort_keys=True, indent=2, allow_nan=False) + "\n"
     if args.output:
-        Path(args.output).write_text(raw, encoding="utf-8")
+        with Path(args.output).open("x", encoding="utf-8") as destination:
+            destination.write(raw)
     print(raw)
 
 

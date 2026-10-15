@@ -1,0 +1,15 @@
+{
+  "schema": "kalshi_weather_historical_audit_v1",
+  "registered_on": "2026-10-15",
+  "hypothesis": "No new trading hypothesis: recover already elapsed outcomes for retained frozen weather observations now and report the original cost-stressed scores.",
+  "maximum_observations": 50000,
+  "maximum_official_demo_market_gets": 20,
+  "maximum_complete_scan_passes": 3,
+  "data": "Private in-memory copy of original observations, forecast inventory and cached official settlement results; at most twenty additional public Demo settlement reads.",
+  "preservation": "Original database, cursor, trial registrations, risk limits and loss baselines remain unchanged. Output is a separate historical artifact.",
+  "success": "Accounting recovery with authentic finalized outcomes. Positive historical scores alone never establish executable profitability.",
+  "failure": "Unavailable, mismatched, nonfinal or budget-limited outcomes remain incomplete. Transport errors are recorded. Losses remain in the report.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "live_promotion_authority": false
+}
