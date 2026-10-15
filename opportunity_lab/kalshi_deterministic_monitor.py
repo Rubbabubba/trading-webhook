@@ -479,11 +479,30 @@ def factory_promotion_preflight(packet):
             "demo_fills": trial.get("fills") or 0, "blockers": blockers}
 
 
+def compact_candidate_review(review):
+    """Bounded decision receipt; full diagnostics remain in the worker artifact."""
+    if not isinstance(review, dict):
+        return None
+    keys = ("schema", "candidate", "generated_at", "input_rows_sha256",
+            "review_registration_sha256", "review_implementation_sha256",
+            "signals", "complete_signals", "independent_complete_events",
+            "incomplete_or_invalid_signals", "exclusion_reasons_nonexclusive",
+            "original_quote_gates", "original_quote_screen_passed", "release_decision",
+            "unused_new_holdout_supplied", "execution_evidence", "blockers",
+            "execution_enabled", "fill_assumed", "profitability_proven", "live_promotion_ready")
+    return {**{key: review.get(key) for key in keys},
+            "full_review_reference": "status.json#evidence.selected_candidate_release_review"}
+
+
 def _atomic(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if len(text.encode()) > MAX_PACKET_BYTES:
+        # Preserve every field and the existing hard limit. Whitespace must
+        # not turn an otherwise bounded report into a stopped monitor.
+        text = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
     if len(text.encode()) > MAX_PACKET_BYTES:
         raise ValueError("monitor_packet_too_large")
     temporary.write_text(text)
@@ -813,7 +832,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "trade_side_capture": (status.get('evidence') or {}).get('trade_side_capture'),
         "high_edge_two_tick_shadow": (status.get('evidence') or {}).get('high_edge_two_tick_shadow'),
         "timely_shadow_measurement": (status.get('evidence') or {}).get('timely_shadow_measurement'),
-        "selected_candidate_release_review": (status.get('evidence') or {}).get('selected_candidate_release_review'),
+        "selected_candidate_release_review": compact_candidate_review((status.get('evidence') or {}).get('selected_candidate_release_review')),
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),
         "v10_gate": gate,
         "v12_gate": v12_gate,

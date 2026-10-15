@@ -2,8 +2,40 @@ import json
 from datetime import datetime
 
 from opportunity_lab.kalshi_deterministic_monitor import (
-    check, factory_promotion_preflight, gate_state, run_check,
+    check, compact_candidate_review, factory_promotion_preflight, gate_state, run_check,
 )
+
+
+def test_candidate_receipt_preserves_release_blockers_without_full_diagnostics():
+    report = {"schema": "kalshi_v15_release_review_v1", "signals": 67,
+              "complete_signals": 1, "release_decision": "blocked_insufficient_or_failed_evidence",
+              "blockers": ["minimum_complete_signals", "actual_fills_and_fees_missing"],
+              "input_rows_sha256": "a" * 64, "execution_enabled": False,
+              "horizons": {"large_diagnostic": "x" * 100000}}
+    compact = compact_candidate_review(report)
+    assert compact["blockers"] == report["blockers"]
+    assert compact["complete_signals"] == 1 and compact["execution_enabled"] is False
+    assert compact["input_rows_sha256"] == report["input_rows_sha256"]
+    assert "horizons" not in compact and len(json.dumps(compact)) < 2000
+    assert compact_candidate_review(None) is None
+
+
+def test_packet_whitespace_compaction_preserves_all_fields_and_hard_limit(tmp_path):
+    from opportunity_lab.kalshi_deterministic_monitor import _atomic, MAX_PACKET_BYTES
+    payload = {"rows": [{"x": "a" * 40} for _ in range(1000)]}
+    assert len(json.dumps(payload, indent=2).encode()) > MAX_PACKET_BYTES
+    target = tmp_path / "packet.json"
+    _atomic(target, payload)
+    assert len(target.read_bytes()) <= MAX_PACKET_BYTES
+    assert json.loads(target.read_text()) == payload
+
+
+def test_genuinely_oversized_packet_still_rejected(tmp_path):
+    import pytest
+    from opportunity_lab.kalshi_deterministic_monitor import _atomic, MAX_PACKET_BYTES
+    with pytest.raises(ValueError, match="monitor_packet_too_large"):
+        _atomic(tmp_path / "oversized.json", {"x": "a" * MAX_PACKET_BYTES})
+    assert not (tmp_path / "oversized.json").exists()
 
 
 def test_factory_promotion_preflight_exposes_missing_fee_and_dossier_proof():

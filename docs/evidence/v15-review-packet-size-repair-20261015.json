@@ -1,0 +1,13 @@
+{
+  "schema": "kalshi_candidate_review_packet_repair_v1",
+  "fault": "Verification encountered monitor_packet_too_large after adding the full selected-candidate dossier to the compact packet.",
+  "measured_bytes": {"full_pretty_packet": 66003, "full_dossier_pretty": 3472, "decision_only_pretty_packet": 64035, "existing_hard_limit": 64000},
+  "repair": [
+    "Compact packet carries the candidate decision, blockers, counts and evidence/implementation hashes; full diagnostics remain in status and immutable audit artifacts.",
+    "If whitespace makes the preserved payload exceed the existing cap, serialize the identical payload without indentation before enforcing the same 64000-byte limit. Do not drop fields or raise the limit.",
+    "Genuinely oversized compact payloads remain rejected."
+  ],
+  "verification": "36 candidate/monitor tests passed including preservation of every field, hard-limit enforcement and rejection of truly oversized reports. Authentic post-deployment publication must be verified separately.",
+  "no_execution_or_risk_change": true,
+  "profitable_strategy_qualification": false
+}
