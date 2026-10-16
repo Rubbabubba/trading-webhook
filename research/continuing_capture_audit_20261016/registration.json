@@ -1,0 +1,23 @@
+{
+  "id": "continuing_capture_integrity_and_overlap_audit_v1",
+  "registered_at": "2026-10-16T03:52:06.059961+00:00",
+  "purpose": "Qualify newly retained prospective raw source evidence before any new price/outcome strategy analysis. No return test, orders or source downloads.",
+  "input": "/var/data/kalshi-demo-v9/continuing-capture-v1.sqlite3 read-only consistent transaction",
+  "limits": {
+    "max_quotes": 5000,
+    "max_trades": 2000,
+    "max_raw_blob_bytes": 20000000
+  },
+  "checks": [
+    "Pinned source protocol canonical hash and Demo-only/no-fill flags",
+    "Every compressed blob hash, decompressed size and content identity",
+    "Quote identity/event/lifecycle metadata and monotone separate request/receipt clocks",
+    "Book side price/quantity domain and noncrossing; stored usable classification",
+    "Poll/page raw response and captured public trade identity/economic equality",
+    "Strict prior-quote 30-second scope; source second-resolution timestamp ambiguity remains visible",
+    "Public trade age relative to prior quote at2/5/30seconds; never assert a queue fill"
+  ],
+  "promotion_qualified": false,
+  "profitability_proven": false,
+  "actual_orders": 0
+}
