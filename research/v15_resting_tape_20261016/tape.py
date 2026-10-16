@@ -43,6 +43,8 @@ class Tape:
             record.update(status=200,payload=json.loads(raw))
         except (ValueError,OSError,urllib.error.URLError) as error:
             record.update(status='blocked',error=type(error).__name__,http_status=getattr(error,'code',None))
+        finally:
+            self.next_at=time.monotonic()+.5
         with path.open('x') as f:json.dump(record,f,indent=2,allow_nan=False)
         return record
 
