@@ -1,0 +1,311 @@
+{
+  "id": "external_v15_resting_trade_through_v1_20261016",
+  "registered_at": "2026-10-16T02:23:32.126755+00:00",
+  "hypothesis": "Unchanged V15 microprice limits may earn positive cost-stressed markouts when conservatively conditioned on actual opposing public trade-through after a valid passive activation. Native V15 remains frozen and disabled.",
+  "source": "Public HF raw books plus official historical public trades; no provider strategy code",
+  "files": [
+    {
+      "type": "file",
+      "oid": "4a9dc802e64d7dc01501993c4ab14b9d257a619c",
+      "size": 70585115,
+      "lfs": {
+        "oid": "60fd367bc870b12fd25a75447a78905e053ffc902d805abca7e222171541f49c",
+        "size": 70585115,
+        "pointerSize": 133
+      },
+      "xetHash": "12443e74d1ff910a0d1a63bff6be44d98a41f9d83bc93b07dc2e23d6730e4bd1",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030024.879178Z_ip-172-31-3-129_1a9da8.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9ce191d493dccd8a989b5003eabf869cdeece2a1",
+      "size": 69375274,
+      "lfs": {
+        "oid": "3fb82aa2b195e5d9f8001f098e7034890f695fdeb12232e359cf458e8b42a7bb",
+        "size": 69375274,
+        "pointerSize": 133
+      },
+      "xetHash": "f26728e14a11d7dfd3d9c90faecb5c5f1b2693981152b9996cd957d245f35657",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030242.411151Z_ip-172-31-3-129_7e4b80.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "6a349db2dedcaeb5cbe0605f349945e574092df5",
+      "size": 68033436,
+      "lfs": {
+        "oid": "de053b1bdf27e7854b55a4ce7bd38e8485a759c32c155664bd6ee6c6e33a8234",
+        "size": 68033436,
+        "pointerSize": 133
+      },
+      "xetHash": "ab836a5d5985b589e204a93165af3799a5bdd5e18a860b40a331297db484c968",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030503.057391Z_ip-172-31-3-129_148079.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "3243e7635ddc095faf1336d6db967043d11a6c27",
+      "size": 66517961,
+      "lfs": {
+        "oid": "526c37248247f668064e4eab263e6d37746ac3ef1e2564a06b292aed5f03cedd",
+        "size": 66517961,
+        "pointerSize": 133
+      },
+      "xetHash": "49a67ff13778152edf7cb7e3a85ee3b68465ee0db6c56c9624fdbf1278e27c16",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030727.272158Z_ip-172-31-3-129_27a39a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a13ddf7bc48146af0844b969a2ba7902c95e2561",
+      "size": 59965276,
+      "lfs": {
+        "oid": "ea85185f2253e5f57886ccd915e7c8bdffb387cdcf1fe8a755768735afce7968",
+        "size": 59965276,
+        "pointerSize": 133
+      },
+      "xetHash": "ebb571de0a8853a48d1cf395e9eb334be945777373c1f068bcc66d3562b7dc76",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030954.635514Z_ip-172-31-3-129_c838ea.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "56e5a14a57eddc1c8fbcb69dab44e4ddca221f71",
+      "size": 70852818,
+      "lfs": {
+        "oid": "f937cadabed3cf1a8a742de5dce6b5f5a4cb3ac4209b14e9c8fd1efc85caa657",
+        "size": 70852818,
+        "pointerSize": 133
+      },
+      "xetHash": "e1090be484d697d2cc7697a7e28e946d5350ccef2979fba12d288e14832dc5a1",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T031131.795031Z_ip-172-31-3-129_a84e64.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "30a895a65aa017e1dc1ad0ef4048361ae89168c8",
+      "size": 69637435,
+      "lfs": {
+        "oid": "9a8a6e9895eb8598a606732142e0da029fd042100d8dac1f762fc19e8b52e4d5",
+        "size": 69637435,
+        "pointerSize": 133
+      },
+      "xetHash": "750f71d01d4b1e0973a9d39931c91ff752d6a956a523b7bea58551c02fd5ed15",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T031347.518567Z_ip-172-31-3-129_453f0d.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "5720322b96c3465f31faa2df058a01d51ca0600c",
+      "size": 68655989,
+      "lfs": {
+        "oid": "9701797ebd8c3ca6241d295329c84edbf1054b52af14292382f5ef59dd6b00c7",
+        "size": 68655989,
+        "pointerSize": 133
+      },
+      "xetHash": "93e98dc7ab2ced1b88c4ce26a44da86ca2a909eaeaa1038b2b7935728800979b",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T031606.419107Z_ip-172-31-3-129_94a4a9.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7f2a4a9754d65ac6ecc7a794c35cbfec2ce2829a",
+      "size": 67810309,
+      "lfs": {
+        "oid": "bc46980494cf8d8b90b3c10d3bb551d5d30a5e10d81ef163e21175007b6af128",
+        "size": 67810309,
+        "pointerSize": 133
+      },
+      "xetHash": "2c5edf1f3289f54dd8e2b47c51fb84d9ad8f381303e24f6cd2e1e180e3e2b3c6",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T031823.823490Z_ip-172-31-3-129_753a65.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "679a2abe3b4ed7eb30c23022b3b89db76fcd8f1f",
+      "size": 58964848,
+      "lfs": {
+        "oid": "e8a6f0cda61e2ed50923feecaf47fb42dce497fa53e5bb0c6ec337bc87b255d9",
+        "size": 58964848,
+        "pointerSize": 133
+      },
+      "xetHash": "2e83c3cecfe50ba679a21dd7d53871e94b6b2312ec7753c99f38ce26d6fcc117",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T032057.498127Z_ip-172-31-3-129_9d1f4b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "bd56c59f1cb9a18bc97cd0b1108dcccdc2c60c85",
+      "size": 65332327,
+      "lfs": {
+        "oid": "7b1c52e729d2d01d14438a94b902f3600bdca89573d87a94a4b2d0abb2ff204f",
+        "size": 65332327,
+        "pointerSize": 133
+      },
+      "xetHash": "ea50855082caf3fd7ebfefefb0790f6698d8ba4c86c36a1d2d7166fa132b589f",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T032247.941043Z_ip-172-31-3-129_bed8cb.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "1778f8758feea31c6132388cf83c0f5d5b474da2",
+      "size": 66693319,
+      "lfs": {
+        "oid": "bc4136e2f22eccb5e00c5ac34ae5ca1d65078ae342a3ba16cdf28d6e7375175e",
+        "size": 66693319,
+        "pointerSize": 133
+      },
+      "xetHash": "9f70723e20a7a59e0e24078cce7779d9e76ec43de3b4c9749d2b1b0c3288c27e",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T032507.389089Z_ip-172-31-3-129_a47771.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7edd95aaed3d983d2a73188978a75ba18c143afc",
+      "size": 66363884,
+      "lfs": {
+        "oid": "168edca8c0cfd739c6a186b4538e0d6f707fc8d84958e5ee6340289c44cdf1a4",
+        "size": 66363884,
+        "pointerSize": 133
+      },
+      "xetHash": "521bc9d355f7488ebceb8293a118f395b17017ce49e6daed95f7375eb1d0b59e",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T032747.297891Z_ip-172-31-3-129_ec8af7.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "f463708199a6ae1255329ad458c5bdf3cb1d6c8c",
+      "size": 15948404,
+      "lfs": {
+        "oid": "80dbb861bb94045474dabacc889c52e6db5bfa101afe34a8839191de8aa8d166",
+        "size": 15948404,
+        "pointerSize": 133
+      },
+      "xetHash": "e7834f6cd8908201156877a69d5d30e2f6e9f18dc4b4d6794b2250c03829b044",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T033114.190355Z_ip-172-31-3-129_3c3b35.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "e5cd3ed239a5796d2124c27cb0c5475717152bd4",
+      "size": 1651230,
+      "lfs": {
+        "oid": "0d18fb5d22d7ae10688142f81a89b69f34d96bd1a606c996da5645cbf61b3727",
+        "size": 1651230,
+        "pointerSize": 132
+      },
+      "xetHash": "cc77eec6a8c9f7965b6897f8066cbfec27d0dd90687478c9909c68e3605af926",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T033614.226016Z_ip-172-31-3-129_a82a7b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "c3a6eee4e78fc2fe8e4788abfc52564c84874cb2",
+      "size": 19122720,
+      "lfs": {
+        "oid": "66fa1932ceb52ad1c6998bacf5bb2c79dcce2ee0fcc510f2362de29a7058ab68",
+        "size": 19122720,
+        "pointerSize": 133
+      },
+      "xetHash": "6af785469f854f80f2a1697e57b82a250a097b8a9a30f474504ede27eb438183",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T033650.530314Z_ip-172-31-3-129_f61a97.jsonl.gz"
+    }
+  ],
+  "global_file_numbers": [
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34
+  ],
+  "warmup_files": 6,
+  "decision_files": [
+    25,
+    26,
+    27,
+    28,
+    29,
+    30
+  ],
+  "tail_only_files": [
+    31,
+    32,
+    33,
+    34
+  ],
+  "source_transform": "Existing audited raw positive-ladder reconstruction, inferred snapshot epochs and max-receipt availability fence. Declared universe required; non-combo only.",
+  "signal": "Unchanged V12 decision with gross edge at least5c, V15 bid+2limit. Same-observation frozen V10/V12 comparisons, fixed5second-grid history60-300seconds.",
+  "sampling": {
+    "decision_grid_seconds": 5,
+    "measurement_grid_seconds": 1,
+    "maximum_channel_age_seconds": 1,
+    "maximum_tracking_seconds": 370
+  },
+  "activation": {
+    "delay_seconds": 1,
+    "first_one_second_grid_only": true,
+    "quote_guard": "best_bid<=limit<ask; worse-than-current-best quotes rejected; own price unchanged",
+    "quantity": 1,
+    "queue_evidence": "Record displayed ahead size when limit equals best bid. Strict price trade-through is conditional clearance evidence, never own queue or broker fill proof."
+  },
+  "resting": {
+    "ttl_seconds": 60,
+    "cancel_ack_delay_seconds": 1,
+    "no_repricing": true,
+    "cancel_on_other_price_changes": false,
+    "require_contract_open_through_cancel_ack": true
+  },
+  "fill_model": {
+    "execution_clock": "Public exchange created_time compared to recorder UTC with unverified assumed1second clock margin",
+    "safe_interval": "activation+1 <= trade_time <= cancel_request-1",
+    "trigger": "Earliest non-block opposing directional trade with at least1contract, economic outcome trade price at least1cent below resting limit",
+    "ambiguous": "Any earlier opposing print at or below limit that lacks full-contract strict-through or lies in activation/cancel race bands becomes uncertain_possible_fill; never skip it for later favorable fill",
+    "cancel_race": "Include possible opposing executions through cancel_ack+1, retain ambiguity/full-principal stress",
+    "trades_are_own_fills": false
+  },
+  "tape": {
+    "endpoint": "https://external-api.kalshi.com/trade-api/v2/historical/trades",
+    "query": "Per selected ticker from floor(activation)-1 through ceil(cancel_ack+1), is_block_trade=false, limit1000; pre-activation clock band is uncertainty, never a certified fill",
+    "max_pages_per_ticker": 3,
+    "max_tickers": 100,
+    "max_total_requests": 300,
+    "minimum_request_interval_seconds": 0.5,
+    "missing_cursor_or_invalid_rows": "blocked/incomplete, not no-fill",
+    "duplicate_trade_id": "deduplicate only exact economic identity; conflicts block"
+  },
+  "exit": {
+    "horizons_seconds": [
+      5,
+      30,
+      300
+    ],
+    "reference": "conditional fill exchange time",
+    "observation": "first scheduled1second book view at or after horizon; no hindsight search for better price",
+    "maximum_lateness_seconds": 5,
+    "missing": "unresolved; full entry principal plus entry costs stress",
+    "each_horizon_separate": true
+  },
+  "costs": {
+    "entry_fee_cents": 2,
+    "exit_fee_cents": 2,
+    "entry_slippage_reserve_cents": 1,
+    "exit_slippage_cents": 1,
+    "extra_stress_per_transaction_cents": [
+      0,
+      2,
+      5
+    ],
+    "historical_fee_provenance_verified": false
+  },
+  "metadata": "Reuse official cache; validate binary rules and decision/activation/cancel window, earliest eligible ticker per official event,100event cap. Never replace failed/unfilled first attempt.",
+  "limits": {
+    "maximum_records": 15000000,
+    "maximum_preliminary_tickers": 1000,
+    "maximum_cached_views": 500000,
+    "maximum_grid_samples": 20000
+  },
+  "gate": "At least100complete conditional entries40verified independent parent events5families on independent unused dates, positive all-horizon stressed net and valid parent/session95percent lower bound, genuine fee/publication/clock/queue and execution evidence before separate Demo trial. No one-date proxy or synthetic test can pass.",
+  "stop": "Source/identity/hash contradictions block qualification; full sample nonpositive stressed horizon rejects. Preserve all failed and ambiguous paths; no tuning or inversion on inspected windows.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "actual_orders": 0,
+  "promotion_ready": false,
+  "frozen_gates_unchanged": true
+}
