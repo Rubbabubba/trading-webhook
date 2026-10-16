@@ -1,0 +1,8 @@
+{
+  "scope": "Pre-replay implementation clarification, before any new file price inspection",
+  "first_leg": "First observed source frame at least1second after decision, no more than1second late",
+  "second_leg": "First observed frame at least1second after the actual modeled first-leg observation, no more than1second late; nominally decision+2seconds",
+  "orphan_unwind": "First observed frame at least1second after the actual second-leg failure observation, no more than1second late; nominally decision+3seconds",
+  "reason": "Serial latency must not collapse when the preceding observation arrives late. Preserve the original1second per-stage delay and1second lateness; no result-driven change.",
+  "execution_enabled":false
+}

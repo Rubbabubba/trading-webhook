@@ -1,0 +1,613 @@
+{
+  "schema": "structural_rule_metadata_audit_v2",
+  "audited_at": "2026-10-16T00:46:56.289162+00:00",
+  "registration_sha256": "3f438d690302853ffb6c20679851afe46cf7645d7e5f91bd6c70e70d0e5ca8bb",
+  "cached_records": 133,
+  "cached_sources": [
+    "research\\ask_markdown_20261016\\official-metadata\\batch-0.json",
+    "research\\receipt_depth_20261015\\official-metadata\\0.json",
+    "research\\receipt_depth_20261015\\official-metadata\\1.json",
+    "research\\reconstructed_markdown_20261016\\official-metadata\\batch-0.json",
+    "research\\reconstructed_markdown_20261016\\official-metadata\\batch-1.json",
+    "research\\reconstructed_markdown_20261016\\official-metadata\\batch-2.json"
+  ],
+  "conflicting_tickers": [],
+  "v1_accepted": 7,
+  "v2_accepted": 46,
+  "v2_rejections": {
+    "unsupported_rule_template": 46,
+    "unsupported_contract": 41
+  },
+  "groups": 19,
+  "groups_with_multiple_strikes": 11,
+  "normal_settlement_pairs": 59,
+  "memberships": [
+    {
+      "relationship_id": "06305174370e495f3da0a0de533b32dba75f615d7c172b8424ae52dd5b6c3b52",
+      "event_id": "KXSOLD-26JUL1823",
+      "tickers": [
+        {
+          "ticker": "KXSOLD-26JUL1823-T76.2499",
+          "strike": "76.2499"
+        },
+        {
+          "ticker": "KXSOLD-26JUL1823-T76.4999",
+          "strike": "76.4999"
+        }
+      ],
+      "normal_settlement_pairs": 1
+    },
+    {
+      "relationship_id": "09cb7d52cd2b5eeaad0ec6d49986be3a8302d7e5356fb034f5e49a6c15fdb2b6",
+      "event_id": "KXMLBF5TOTAL-26JUL182207DETLAA",
+      "tickers": [
+        {
+          "ticker": "KXMLBF5TOTAL-26JUL182207DETLAA-6",
+          "strike": "5.5"
+        },
+        {
+          "ticker": "KXMLBF5TOTAL-26JUL182207DETLAA-7",
+          "strike": "6.5"
+        }
+      ],
+      "normal_settlement_pairs": 1
+    },
+    {
+      "relationship_id": "1dba98f3a3bacf4b11fc150abb075f069f94620951fd65e7610d4d38a0bacbe5",
+      "event_id": "KXMLBTOTAL-26JUL182008SFSEA",
+      "tickers": [
+        {
+          "ticker": "KXMLBTOTAL-26JUL182008SFSEA-8",
+          "strike": "7.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182008SFSEA-9",
+          "strike": "8.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182008SFSEA-10",
+          "strike": "9.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182008SFSEA-11",
+          "strike": "10.5"
+        }
+      ],
+      "normal_settlement_pairs": 6
+    },
+    {
+      "relationship_id": "1f400faa3efbdfd3f6e94f8b3d592da2f898c33300a11263d46af53982b7fe4b",
+      "event_id": "KXETHD-26JUL2417",
+      "tickers": [
+        {
+          "ticker": "KXETHD-26JUL2417-T1999.99",
+          "strike": "1999.99"
+        }
+      ],
+      "normal_settlement_pairs": 0
+    },
+    {
+      "relationship_id": "21f59eff7c17485c0932cf8fd94d67e4d2bd131b33298f0858a066202fe9dee3",
+      "event_id": "KXETHD-26JUL1917",
+      "tickers": [
+        {
+          "ticker": "KXETHD-26JUL1917-T1879.99",
+          "strike": "1879.99"
+        }
+      ],
+      "normal_settlement_pairs": 0
+    },
+    {
+      "relationship_id": "27c7a031a48680917cf3e56793ad43f48feaf1d55c137f426466f441604468b3",
+      "event_id": "KXMLBF5TOTAL-26JUL182205WSHATH",
+      "tickers": [
+        {
+          "ticker": "KXMLBF5TOTAL-26JUL182205WSHATH-7",
+          "strike": "6.5"
+        }
+      ],
+      "normal_settlement_pairs": 0
+    },
+    {
+      "relationship_id": "34c5fbffb841586db33e48df43a341a49bfc87176603021154192ccb099f7939",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182205WSHATH",
+      "tickers": [
+        {
+          "ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-WSH4",
+          "strike": "3.5"
+        },
+        {
+          "ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-WSH5",
+          "strike": "4.5"
+        },
+        {
+          "ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-WSH7",
+          "strike": "6.5"
+        }
+      ],
+      "normal_settlement_pairs": 3
+    },
+    {
+      "relationship_id": "5a90c1cfbacfa0f5fe8b64e92b88fe3a4c6da3ee04c1c1476ba2fedffca98e4d",
+      "event_id": "KXBTCD-26JUL1823",
+      "tickers": [
+        {
+          "ticker": "KXBTCD-26JUL1823-T64799.99",
+          "strike": "64799.99"
+        }
+      ],
+      "normal_settlement_pairs": 0
+    },
+    {
+      "relationship_id": "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "tickers": [
+        {
+          "ticker": "KXMLBTOTAL-26JUL182207DETLAA-9",
+          "strike": "8.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+          "strike": "9.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182207DETLAA-11",
+          "strike": "10.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182207DETLAA-12",
+          "strike": "11.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182207DETLAA-13",
+          "strike": "12.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182207DETLAA-14",
+          "strike": "13.5"
+        }
+      ],
+      "normal_settlement_pairs": 15
+    },
+    {
+      "relationship_id": "6560490fa3e6781e655d3a20fd199dcaa1d02c3379649d6a7ed79fb347315a64",
+      "event_id": "KXSOLD-26JUL1917",
+      "tickers": [
+        {
+          "ticker": "KXSOLD-26JUL1917-T76.9999",
+          "strike": "76.9999"
+        }
+      ],
+      "normal_settlement_pairs": 0
+    },
+    {
+      "relationship_id": "771cfa8629c8a3316c3034acef918eb951c4cd340055382f98bd703ee6f39270",
+      "event_id": "KXXRPD-26JUL1823",
+      "tickers": [
+        {
+          "ticker": "KXXRPD-26JUL1823-T1.0999",
+          "strike": "1.0999"
+        }
+      ],
+      "normal_settlement_pairs": 0
+    },
+    {
+      "relationship_id": "7c19f01b4c67d74a4e976c9759c63cdb626744fcfb590cae63ff92d4b4e66f39",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182207DETLAA",
+      "tickers": [
+        {
+          "ticker": "KXMLBTEAMTOTAL-26JUL182207DETLAA-LAA3",
+          "strike": "2.5"
+        }
+      ],
+      "normal_settlement_pairs": 0
+    },
+    {
+      "relationship_id": "82523facc781055013b52ce5e915f28186d25b32e67970bca67c405b5e39d2a0",
+      "event_id": "KXMLBTOTAL-26JUL182205WSHATH",
+      "tickers": [
+        {
+          "ticker": "KXMLBTOTAL-26JUL182205WSHATH-10",
+          "strike": "9.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182205WSHATH-11",
+          "strike": "10.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182205WSHATH-12",
+          "strike": "11.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182205WSHATH-13",
+          "strike": "12.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182205WSHATH-14",
+          "strike": "13.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL182205WSHATH-15",
+          "strike": "14.5"
+        }
+      ],
+      "normal_settlement_pairs": 15
+    },
+    {
+      "relationship_id": "84c7c2ef36bcd4debbcfba4ab90f2600449e61a7a607f0806036c63e9270355c",
+      "event_id": "KXMLBTOTAL-26JUL181610PITCLE",
+      "tickers": [
+        {
+          "ticker": "KXMLBTOTAL-26JUL181610PITCLE-4",
+          "strike": "3.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL181610PITCLE-5",
+          "strike": "4.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL181610PITCLE-6",
+          "strike": "5.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL181610PITCLE-7",
+          "strike": "6.5"
+        },
+        {
+          "ticker": "KXMLBTOTAL-26JUL181610PITCLE-8",
+          "strike": "7.5"
+        }
+      ],
+      "normal_settlement_pairs": 10
+    },
+    {
+      "relationship_id": "ae5547eead9448e304d79c89617962d24669deebc87f3fd9610e0cb1ab8d775f",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182207DETLAA",
+      "tickers": [
+        {
+          "ticker": "KXMLBTEAMTOTAL-26JUL182207DETLAA-DET7",
+          "strike": "6.5"
+        },
+        {
+          "ticker": "KXMLBTEAMTOTAL-26JUL182207DETLAA-DET8",
+          "strike": "7.5"
+        }
+      ],
+      "normal_settlement_pairs": 1
+    },
+    {
+      "relationship_id": "be0f555d7f2f467751187db86a7f7012d8b538330080d75d61638f491e351af2",
+      "event_id": "KXETHD-26JUL1823",
+      "tickers": [
+        {
+          "ticker": "KXETHD-26JUL1823-T1864.99",
+          "strike": "1864.99"
+        },
+        {
+          "ticker": "KXETHD-26JUL1823-T1869.99",
+          "strike": "1869.99"
+        },
+        {
+          "ticker": "KXETHD-26JUL1823-T1874.99",
+          "strike": "1874.99"
+        }
+      ],
+      "normal_settlement_pairs": 3
+    },
+    {
+      "relationship_id": "c4a56996b7b353936053bac0f118c26579b25f0044b822c8e5ba9e9d24db3572",
+      "event_id": "KXSOLD-26JUL2417",
+      "tickers": [
+        {
+          "ticker": "KXSOLD-26JUL2417-T73.9999",
+          "strike": "73.9999"
+        },
+        {
+          "ticker": "KXSOLD-26JUL2417-T75.9999",
+          "strike": "75.9999"
+        },
+        {
+          "ticker": "KXSOLD-26JUL2417-T78.9999",
+          "strike": "78.9999"
+        }
+      ],
+      "normal_settlement_pairs": 3
+    },
+    {
+      "relationship_id": "e98522e15af39a62da3c9c46ede63d191920ab6fa71d1723174632add692fc00",
+      "event_id": "KXMLBTEAMTOTAL-26JUL191610SFSEA",
+      "tickers": [
+        {
+          "ticker": "KXMLBTEAMTOTAL-26JUL191610SFSEA-SEA2",
+          "strike": "1.5"
+        }
+      ],
+      "normal_settlement_pairs": 0
+    },
+    {
+      "relationship_id": "f989777ad6ac35b91d3a7939ab5dc8f9c9c18dd92e0b0ca2c73781096cb42be2",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182205WSHATH",
+      "tickers": [
+        {
+          "ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-ATH7",
+          "strike": "6.5"
+        },
+        {
+          "ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-ATH8",
+          "strike": "7.5"
+        }
+      ],
+      "normal_settlement_pairs": 1
+    }
+  ],
+  "illustrative_pairs_only": [
+    {
+      "relationship_id": "06305174370e495f3da0a0de533b32dba75f615d7c172b8424ae52dd5b6c3b52",
+      "event_id": "KXSOLD-26JUL1823",
+      "low_ticker": "KXSOLD-26JUL1823-T76.2499",
+      "high_ticker": "KXSOLD-26JUL1823-T76.4999",
+      "low_strike": "76.2499",
+      "high_strike": "76.4999",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "09cb7d52cd2b5eeaad0ec6d49986be3a8302d7e5356fb034f5e49a6c15fdb2b6",
+      "event_id": "KXMLBF5TOTAL-26JUL182207DETLAA",
+      "low_ticker": "KXMLBF5TOTAL-26JUL182207DETLAA-6",
+      "high_ticker": "KXMLBF5TOTAL-26JUL182207DETLAA-7",
+      "low_strike": "5.5",
+      "high_strike": "6.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "1dba98f3a3bacf4b11fc150abb075f069f94620951fd65e7610d4d38a0bacbe5",
+      "event_id": "KXMLBTOTAL-26JUL182008SFSEA",
+      "low_ticker": "KXMLBTOTAL-26JUL182008SFSEA-8",
+      "high_ticker": "KXMLBTOTAL-26JUL182008SFSEA-9",
+      "low_strike": "7.5",
+      "high_strike": "8.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "1dba98f3a3bacf4b11fc150abb075f069f94620951fd65e7610d4d38a0bacbe5",
+      "event_id": "KXMLBTOTAL-26JUL182008SFSEA",
+      "low_ticker": "KXMLBTOTAL-26JUL182008SFSEA-8",
+      "high_ticker": "KXMLBTOTAL-26JUL182008SFSEA-10",
+      "low_strike": "7.5",
+      "high_strike": "9.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "1dba98f3a3bacf4b11fc150abb075f069f94620951fd65e7610d4d38a0bacbe5",
+      "event_id": "KXMLBTOTAL-26JUL182008SFSEA",
+      "low_ticker": "KXMLBTOTAL-26JUL182008SFSEA-8",
+      "high_ticker": "KXMLBTOTAL-26JUL182008SFSEA-11",
+      "low_strike": "7.5",
+      "high_strike": "10.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "1dba98f3a3bacf4b11fc150abb075f069f94620951fd65e7610d4d38a0bacbe5",
+      "event_id": "KXMLBTOTAL-26JUL182008SFSEA",
+      "low_ticker": "KXMLBTOTAL-26JUL182008SFSEA-9",
+      "high_ticker": "KXMLBTOTAL-26JUL182008SFSEA-10",
+      "low_strike": "8.5",
+      "high_strike": "9.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "1dba98f3a3bacf4b11fc150abb075f069f94620951fd65e7610d4d38a0bacbe5",
+      "event_id": "KXMLBTOTAL-26JUL182008SFSEA",
+      "low_ticker": "KXMLBTOTAL-26JUL182008SFSEA-9",
+      "high_ticker": "KXMLBTOTAL-26JUL182008SFSEA-11",
+      "low_strike": "8.5",
+      "high_strike": "10.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "1dba98f3a3bacf4b11fc150abb075f069f94620951fd65e7610d4d38a0bacbe5",
+      "event_id": "KXMLBTOTAL-26JUL182008SFSEA",
+      "low_ticker": "KXMLBTOTAL-26JUL182008SFSEA-10",
+      "high_ticker": "KXMLBTOTAL-26JUL182008SFSEA-11",
+      "low_strike": "9.5",
+      "high_strike": "10.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "34c5fbffb841586db33e48df43a341a49bfc87176603021154192ccb099f7939",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182205WSHATH",
+      "low_ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-WSH4",
+      "high_ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-WSH5",
+      "low_strike": "3.5",
+      "high_strike": "4.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "34c5fbffb841586db33e48df43a341a49bfc87176603021154192ccb099f7939",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182205WSHATH",
+      "low_ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-WSH4",
+      "high_ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-WSH7",
+      "low_strike": "3.5",
+      "high_strike": "6.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "34c5fbffb841586db33e48df43a341a49bfc87176603021154192ccb099f7939",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182205WSHATH",
+      "low_ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-WSH5",
+      "high_ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-WSH7",
+      "low_strike": "4.5",
+      "high_strike": "6.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "low_ticker": "KXMLBTOTAL-26JUL182207DETLAA-9",
+      "high_ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+      "low_strike": "8.5",
+      "high_strike": "9.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "low_ticker": "KXMLBTOTAL-26JUL182207DETLAA-9",
+      "high_ticker": "KXMLBTOTAL-26JUL182207DETLAA-11",
+      "low_strike": "8.5",
+      "high_strike": "10.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "low_ticker": "KXMLBTOTAL-26JUL182207DETLAA-9",
+      "high_ticker": "KXMLBTOTAL-26JUL182207DETLAA-12",
+      "low_strike": "8.5",
+      "high_strike": "11.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "low_ticker": "KXMLBTOTAL-26JUL182207DETLAA-9",
+      "high_ticker": "KXMLBTOTAL-26JUL182207DETLAA-13",
+      "low_strike": "8.5",
+      "high_strike": "12.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "low_ticker": "KXMLBTOTAL-26JUL182207DETLAA-9",
+      "high_ticker": "KXMLBTOTAL-26JUL182207DETLAA-14",
+      "low_strike": "8.5",
+      "high_strike": "13.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "low_ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+      "high_ticker": "KXMLBTOTAL-26JUL182207DETLAA-11",
+      "low_strike": "9.5",
+      "high_strike": "10.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "low_ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+      "high_ticker": "KXMLBTOTAL-26JUL182207DETLAA-12",
+      "low_strike": "9.5",
+      "high_strike": "11.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "low_ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+      "high_ticker": "KXMLBTOTAL-26JUL182207DETLAA-13",
+      "low_strike": "9.5",
+      "high_strike": "12.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    },
+    {
+      "relationship_id": "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "low_ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+      "high_ticker": "KXMLBTOTAL-26JUL182207DETLAA-14",
+      "low_strike": "9.5",
+      "high_strike": "13.5",
+      "ordinary_binary_minimum_payout_cents": 100,
+      "actual_orders": 0,
+      "fill_assumed": false,
+      "execution_enabled": false,
+      "administrative_cancellation_payoff_verified": false
+    }
+  ],
+  "source_prices_read": false,
+  "executable_opportunities_tested": 0,
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "profitability_proven": false,
+  "historical_rule_publication_verified": false,
+  "administrative_cancellation_payoff_verified": false,
+  "promotion_ready": false
+}

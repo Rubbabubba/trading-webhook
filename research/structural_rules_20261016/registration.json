@@ -1,0 +1,12 @@
+{
+  "id": "structural_threshold_rules_v2_20261016",
+  "purpose": "Validate normal-settlement implication relationships before a separate unused-price experiment. No order authority.",
+  "hypothesis": "Within an identical resolution variable, YES at a strictly lower greater-than threshold and NO at a higher threshold pay at least1dollar in ordinary binary settlement states. A prospective separately frozen two-leg latency/fee/unwind test is needed before any executable-edge claim.",
+  "supported_templates": ["Exact CF Benchmarks sixty-second average above a numeric strike, optional dollar symbol", "Exact baseball combined runs more than a numeric strike", "Exact baseball team scores an integer N+ runs, corresponding floor strike N-0.5"],
+  "identity": ["event_ticker", "full primary rule with exactly one numeric threshold normalized", "rules_secondary", "occurrence_datetime", "expiration_time", "exchange_index"],
+  "close_time_policy": "Per-leg actual open and earliest close/occurrence/expected expiration must be checked at every modeled entry. Different close times do not change the semantic relationship; never trade a closed leg. This is a separate version; frozen v1 identity remains unchanged.",
+  "rejection": "Missing/ambiguous/unsupported primary text, incompatible metadata strike, nonbinary market, missing shared identity fields, differing source/time/statistic rules, duplicate/equal strikes or administrative outcome uncertainty prevent execution qualification.",
+  "limits": {"maximum_cached_metadata_records":3000},
+  "price_inspection": "No new source prices or PnL in this rules-only audit. Future structural price experiment must freeze scope/timing/costs and unused source files first.",
+  "execution_enabled":false,"fill_assumed":false,"administrative_cancellation_payoff_verified":false,"historical_rule_publication_verified":false
+}

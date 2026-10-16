@@ -1,0 +1,232 @@
+{
+  "id": "external_structural_threshold_delayed_state_v2_20261016",
+  "registered_at": "2026-10-16T00:48:28.941999+00:00",
+  "hypothesis": "Normal binary settlement implication across exact matched thresholds may offer a two-leg surplus that survives delayed execution costs. No probability model or prior outcomes used.",
+  "metadata_scope": "All59normal-settlement pairs in11groups from existing cached metadata audit; no price-ranked selection or full-market coverage claim.",
+  "metadata_audit_sha256": "54638a0359b5f70141a90ade3962bbf799287d1e4b1f6a1c7c10b325ed29da71",
+  "relationship_ids": [
+    "06305174370e495f3da0a0de533b32dba75f615d7c172b8424ae52dd5b6c3b52",
+    "09cb7d52cd2b5eeaad0ec6d49986be3a8302d7e5356fb034f5e49a6c15fdb2b6",
+    "1dba98f3a3bacf4b11fc150abb075f069f94620951fd65e7610d4d38a0bacbe5",
+    "34c5fbffb841586db33e48df43a341a49bfc87176603021154192ccb099f7939",
+    "60a25d4c6d01cfe4c93213959c72858f5cca5baa290b6bfddbb826c1c9b8632f",
+    "82523facc781055013b52ce5e915f28186d25b32e67970bca67c405b5e39d2a0",
+    "84c7c2ef36bcd4debbcfba4ab90f2600449e61a7a607f0806036c63e9270355c",
+    "ae5547eead9448e304d79c89617962d24669deebc87f3fd9610e0cb1ab8d775f",
+    "be0f555d7f2f467751187db86a7f7012d8b538330080d75d61638f491e351af2",
+    "c4a56996b7b353936053bac0f118c26579b25f0044b822c8e5ba9e9d24db3572",
+    "f989777ad6ac35b91d3a7939ab5dc8f9c9c18dd92e0b0ca2c73781096cb42be2"
+  ],
+  "files": [
+    {
+      "type": "file",
+      "oid": "7ccb23e9f5b77cc09b4f3e22ec9ce4095c6df8b0",
+      "size": 59965899,
+      "lfs": {
+        "oid": "5b1605514724e7823152008cfd70f8c86b893d6778cf466314c9036c3d6a6d3c",
+        "size": 59965899,
+        "pointerSize": 133
+      },
+      "xetHash": "2f7ff69ae844558f5381f16e14dd8a1d70bea483867509a382f15b14ed471c61",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023456.569561Z_ip-172-31-3-129_50db72.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "865ad79a494dc559fc1528ab3f4c64213deecf81",
+      "size": 68889918,
+      "lfs": {
+        "oid": "b2db6743a491d9a91a59b082cffd53add073a07e05c494b9c66e4d98882725dc",
+        "size": 68889918,
+        "pointerSize": 133
+      },
+      "xetHash": "8d77480eac4fd7374df7af52ab95cb50801583eb7a77bf78eaf88d2b99e3c358",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023643.137774Z_ip-172-31-3-129_6c297a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9bea31f43c6bc3c9e6d65fb8d7bd2bbaa5788486",
+      "size": 67241627,
+      "lfs": {
+        "oid": "6637b8ea90bc23cc9399a1d521c36927811a4ac4030efdf97bda192d1702c040",
+        "size": 67241627,
+        "pointerSize": 133
+      },
+      "xetHash": "1216cbb5ddbfbd0e785dcb67f803816aa4520e3321c36febbe8e74046e9d2f95",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023842.827028Z_ip-172-31-3-129_e1d9fc.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "da5021d1a0749af5fe7499318bfd63583b905177",
+      "size": 69186152,
+      "lfs": {
+        "oid": "ed37d8242a466e04a2dbf6ea5ea6d501e83c8292a638e43e375881f32fd82b74",
+        "size": 69186152,
+        "pointerSize": 133
+      },
+      "xetHash": "e607fbc167e9c4b83cddcf69d6e1299b0da33425d539c7c5cda97ea132ec227b",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024048.345029Z_ip-172-31-3-129_44c640.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "da510b4e5e3d84595d7b420fd955f22faccbaae0",
+      "size": 69522651,
+      "lfs": {
+        "oid": "26d45a6e16d769f3438ddeacb4021cb1ccbd88b7d54679b2f666a55f7908478c",
+        "size": 69522651,
+        "pointerSize": 133
+      },
+      "xetHash": "82e1f785b5b4e8398ae607bdcdc39abe2174b1c2c12c14068f91ca96bdd46d7e",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024249.072705Z_ip-172-31-3-129_abce9a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9a9a34257b587fa369be9e8add4f55fb681628a8",
+      "size": 67410745,
+      "lfs": {
+        "oid": "72407969ced6ff377461ca4cb1634af8088cb98c3dfb997216853f2b7229136d",
+        "size": 67410745,
+        "pointerSize": 133
+      },
+      "xetHash": "5d92bda6c7582a56e3a02d62040a5e6e0a8abafa8ae4ee56b3e8dc2e389b40df",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024448.218443Z_ip-172-31-3-129_633c3b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "3ae524c23c63664e37b2b92609f91a896ca7e8f7",
+      "size": 60218701,
+      "lfs": {
+        "oid": "f37399b6094149dca6849c493d758e96c6b6875693be43815f99ae9ddf3c9f4b",
+        "size": 60218701,
+        "pointerSize": 133
+      },
+      "xetHash": "d911150844a48908d95a10067b1c983a140d9889003bad731cafdc41e3ab0eb2",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024651.836112Z_ip-172-31-3-129_efc183.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "223b3949a0e5954a443626158cac500b98bea173",
+      "size": 68686460,
+      "lfs": {
+        "oid": "2efe7b31b8df1fb13885bbc534a72795b8d5c82abb65e2e73ee2a89b71ea8e89",
+        "size": 68686460,
+        "pointerSize": 133
+      },
+      "xetHash": "e0587b25eb238cee3d17352e0d48ab6b441c4412785fd846b1e0be8e51f646e2",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024830.888776Z_ip-172-31-3-129_bb4f2e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "d712396e97f0492c9484d58ddc6fac09de986c33",
+      "size": 68678878,
+      "lfs": {
+        "oid": "e4584bdb3290ba2757b6cceb78fc7db9351cb1fe97170dc42751bf2945c57866",
+        "size": 68678878,
+        "pointerSize": 133
+      },
+      "xetHash": "a9a250c335c9393abe9ddd93bae65cc6324ded4e01ea5f7af7af77a2b49ea855",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025023.747132Z_ip-172-31-3-129_79e323.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a0d39e7c723678eb6bbf2b455f4ec27ccfb0cdee",
+      "size": 67939864,
+      "lfs": {
+        "oid": "16dcbf5c40911e2b0a255c51c41d11388d7322a4f0164848d687bbbd60f5d704",
+        "size": 67939864,
+        "pointerSize": 133
+      },
+      "xetHash": "8fb7a3ee01873b7ca19126b88c42399963bc10c95edb2233214168fd26deb08f",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025238.694036Z_ip-172-31-3-129_92508b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a6d6f8405878b07b0e05efc4e710918569639134",
+      "size": 68370914,
+      "lfs": {
+        "oid": "fb12d7cfabfcbfbab4c815234788ae05439903abbb1c56c24b0d02e007d2002c",
+        "size": 68370914,
+        "pointerSize": 133
+      },
+      "xetHash": "6abfb62a0e42d3e66ad8526d85fc6f8f7b4c47572e4bbacaa38062178fb62d61",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025427.641378Z_ip-172-31-3-129_1955e5.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "43c4b7f27fbde0335e284163ed705f2c8c39159b",
+      "size": 66260479,
+      "lfs": {
+        "oid": "eea3c4d5e14f207863d377e669827b77ab86c99c0e8df38e87383ca88e16b04c",
+        "size": 66260479,
+        "pointerSize": 133
+      },
+      "xetHash": "7456b65189d6868af433ae40b4a55b391e8f6483de1bf48368ba4e9ca90a7613",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025621.581139Z_ip-172-31-3-129_bf9c12.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "83740725a2264daebbd258893147982121b1f758",
+      "size": 60064081,
+      "lfs": {
+        "oid": "72c5a00df0f5c6a7c66435a94084578043036de3cfb537ec6cb25b850afd95f2",
+        "size": 60064081,
+        "pointerSize": 133
+      },
+      "xetHash": "e23a17b495f52fec88a3b48ae4aae899947273a00baf38631313978da2938b57",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025834.750326Z_ip-172-31-3-129_bb3449.jsonl.gz"
+    }
+  ],
+  "global_file_numbers": [
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+  ],
+  "warmup_files": 7,
+  "selection": "Files6-12 cached warmup only, next six unused files13-18 for decisions. No outcome-driven expansion.",
+  "feed": "Use frozen reconstructed raw-positive ladder feed and serialized max-receipt availability fence; retain inferred epochs, raw receipt times and source faults.",
+  "decision": {
+    "grid_seconds": 5,
+    "maximum_channel_age_seconds": 1,
+    "require_current_universe_membership": true,
+    "require_current_epoch_ticker_snapshot": true,
+    "minimum_depth_contracts": 1,
+    "earliest_attempt_per_event": 1,
+    "total_event_cap": 100,
+    "minimum_surplus_after_extra2_cents": 1
+  },
+  "timing": {
+    "first_leg_seconds": 1,
+    "second_leg_seconds": 2,
+    "orphan_unwind_seconds": 3,
+    "maximum_observation_lateness_seconds": 1,
+    "primary_order": "lower_threshold_yes_first",
+    "alternate_order": "higher_threshold_no_first_diagnostic_not_independent"
+  },
+  "fees": {
+    "assumed_fee_cents_per_fill": 2,
+    "slippage_cents_per_fill": 1,
+    "extra_stress_cents_per_fill": [
+      0,
+      2,
+      5
+    ],
+    "source": "Official July7general fee table conservative whole-cent bound atM1; series-specific historical applicability unverified. Previous5c protocols unchanged."
+  },
+  "guards": "Per-leg modeled ask cannot exceed its decision ask; both legs pass official open/earliest close/occurrence/expected-expiration guards at each execution stage. Closed, invalid, unsubscribed or uncertain-epoch legs remain unavailable. No future sorting or quote use.",
+  "accounting": "Only conditional quotes/depth, never fills. Report ordinary binary minimum payout for completed bundles; modeled orphan liquidation or full-principal-loss stress if unavailable. Any unresolved entry/unwind retained; no replacement after rejected first attempt.",
+  "gate": "No promotion from this one-date sample. Require100complete paired opportunities across40verified independent parent events and unused multiple dates, positive net and event-cluster95%lower bound after all original costs andextra2stress, nonnegative extra5stress, source/rule/admin/fee verification and authentic bounded execution evidence. Each ordering must satisfy costs; never choose best after results.",
+  "administrative_cancellation_payoff_verified": false,
+  "historical_rule_publication_verified": false,
+  "fill_assumed": false,
+  "execution_enabled": false,
+  "actual_orders": 0
+}
