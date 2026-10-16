@@ -1,0 +1,34 @@
+{
+  "id": "demo_book_trade_stream_feasibility_v1",
+  "registered_at": "2026-10-16T03:59:31.918439+00:00",
+  "purpose": "Test whether approved existing Demo authentication yields interleaved book and public trade source evidence without minute polling. Not a strategy/backtest/order grant.",
+  "endpoint": "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2",
+  "auth": "Existing KALSHI_DEMO credentials only; sign GET/trade-api/ws/v2; never emit headers, keys, signatures or private messages.",
+  "selection": "Exact current persisted sampling_window.tickers, at most8; no price/outcome selection or order changes.",
+  "commands": [
+    {
+      "cmd": "subscribe",
+      "params": {
+        "channels": [
+          "orderbook_delta",
+          "trade"
+        ],
+        "market_tickers": "exact selected list"
+      }
+    }
+  ],
+  "limits": {
+    "max_seconds": 60,
+    "max_messages": 10000,
+    "max_raw_bytes": 2097152,
+    "max_message_bytes": 262144,
+    "max_queue": 32,
+    "connection_attempts": 1
+  },
+  "archive": "/var/data/kalshi-demo-v9/stream-feasibility-v1-20261016.jsonl.gz exclusively created; preserve failed/partial data and receipt; no overwrite",
+  "stop": "Stop at bound or any auth/protocol/connection fault; sanitize error class/status only, do not change credentials/hosts or bypass denial.",
+  "dependency": "Official PyPI websockets15.0.1 in isolated /tmp target if absent; no new service/subscription/model calls.",
+  "qualification": "Actual connect/subscription/snapshot proves transport only. Need sequence continuity, source/receipt clocks, trades and prospective replay before any execution inference.",
+  "execution_enabled": false,
+  "profitability_proven": false
+}
