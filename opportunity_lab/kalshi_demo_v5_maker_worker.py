@@ -493,7 +493,11 @@ def sampling_window(state, cohort, *, now):
     current = state.load("sampling_window", {})
     current_markets = current.get("markets", [])
     started_at = current.get("started_at")
-    if (len(current_markets) == min(SAMPLING_WINDOW_SIZE, len(cohort))
+    unusable = state.load("sampling_window_book_health", {})
+    abandoned = (unusable.get("started_at") == started_at
+                 and unusable.get("abandoned_at") is not None)
+    if (not abandoned
+            and len(current_markets) == min(SAMPLING_WINDOW_SIZE, len(cohort))
             and type(started_at) in (int, float)
             and now - started_at < SAMPLING_WINDOW_SECONDS):
         # A partial universe pass may choose a different contract for an event
@@ -524,6 +528,45 @@ def sampling_window(state, cohort, *, now):
         )
     }})
     return selected
+
+
+
+def record_sampling_book_health(state, ticker, *, usable, now, reason=None):
+    """Advance a wholly unusable observation window without removing its events.
+
+    Two consecutive normal lifecycle/book failures per member are required.
+    A successful validated frame resets that member. This only shortens a
+    window with no usable member; it adds no requests and changes no signal,
+    freshness, position handling, markout horizon or execution permission.
+    """
+    window = state.load("sampling_window", {})
+    tickers = window.get("tickers", [])
+    if ticker not in tickers:
+        return
+    health = state.load("sampling_window_book_health", {})
+    if health.get("started_at") != window.get("started_at"):
+        health = {"schema": "kalshi_sampling_book_health_v1",
+                  "started_at": window.get("started_at"), "failures": {}}
+    failures = health["failures"]
+    if usable:
+        failures[ticker] = {"consecutive": 0, "last_at": now, "reason": None}
+    elif reason in {"missing_book", "demo_market_not_active_binary"}:
+        previous = failures.get(ticker, {})
+        failures[ticker] = {"consecutive": min(2, previous.get("consecutive", 0) + 1),
+                            "last_at": now, "reason": reason}
+    else:
+        return
+    if (health.get("abandoned_at") is None
+            and window.get("cohort_size", 0) > len(tickers)
+            and all(failures.get(t, {}).get("consecutive", 0) >= 2 for t in tickers)):
+        health["abandoned_at"] = now
+        state.record(None, {"action": "sampling_window_unusable_advanced",
+                            "reason": "all_members_repeatedly_unusable",
+                            "window_started_at": window.get("started_at"),
+                            "tickers": tickers, "failures": failures,
+                            "cohort_members_removed": 0,
+                            "execution_permission_changed": False})
+    state.save("sampling_window_book_health", health)
 
 
 def next_sampling_market(state, cohort, *, now):
@@ -1363,6 +1406,7 @@ def scan_market_candidate(state, journal, markets, market):
     try:
         quote = markets.quote({"ticker": market["ticker"]})
         frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
+        record_sampling_book_health(state, market["ticker"], usable=True, now=time.time())
         rows = observe_frame(state, market["ticker"], frame, event_id(market))
         preferred = preferred_outcome(state, journal, market["ticker"])
         signal = maker_quote(rows, frame, preferred)
@@ -1374,6 +1418,7 @@ def scan_market_candidate(state, journal, markets, market):
         reason = str(error)
         if reason not in {"missing_book", "demo_market_not_active_binary"}:
             raise
+        record_sampling_book_health(state, market["ticker"], usable=False, now=time.time(), reason=reason)
         state.record(market["ticker"], {
             "action": "scan_skip", "reason": reason
         })
@@ -1629,6 +1674,7 @@ def write_status(path, state, journal, **values):
     current_evidence['selected_candidate_release_review'] = review_selected_candidate(state.db, now=time.time())
     current_evidence['timely_shadow_measurement'] = timely_measurement_status(state.db)
     current_evidence['measurement_scheduler'] = state.load('measurement_scheduler', {})
+    current_evidence['sampling_book_health'] = state.load('sampling_window_book_health', {})
     current_evidence['rule_vintage_archive'] = rule_archive_status(state.db)
     continuing=getattr(state,'continuing_capture',None)
     if continuing is not None:

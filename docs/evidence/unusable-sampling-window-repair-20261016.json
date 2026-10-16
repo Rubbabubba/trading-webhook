@@ -1,0 +1,45 @@
+{
+  "schema": "kalshi_unusable_sampling_window_repair_v1",
+  "recorded_at": "2026-10-16T03:35:57.119651+00:00",
+  "observed_worker_revision": "ecaf928c13e5056e251703e720597b22de460c9b",
+  "observed_packet_at": "2026-10-16T03:31:19.309852+00:00",
+  "fault": "Fresh healthy worker scans repeatedly skip missing_book across all8 active sampling members; stable window holds15minutes even when no history can be collected. Last V10 evaluation approximately33minutes old while scan counter advances.",
+  "evidence": {
+    "scan": 190439,
+    "sampling_window_started_at": 1792121330.3416903,
+    "cohort_size": 273,
+    "last_six_scan_actions": "all missing_book; no unmarked owned fills",
+    "continuing_capture": {
+      "quotes": 571,
+      "events": 81,
+      "public_trades": 35,
+      "errors": 0
+    },
+    "v15_complete": 1,
+    "timely_v12_signals": 8,
+    "timely_complete": 0,
+    "production_execution_enabled": false,
+    "open_positions": 0,
+    "unresolved_orders": 0
+  },
+  "repair": "Only after two consecutive normal missing-book/inactive failures for every current window member, advance to next window early. Success resets member; keep complete cohort and normal wraparound revisits. No added network requests, gates, signal parameters, old evidence or execution permissions changed.",
+  "tests": {
+    "passed": 47,
+    "scope": [
+      "unusable window rotation and revisit",
+      "success reset",
+      "old-window isolation",
+      "single-window no fast retry",
+      "real scan skip integration",
+      "unexpected transport propagation",
+      "existing scheduler",
+      "existing maker worker and all-event coverage",
+      "timely measurements"
+    ],
+    "synthetic_only": true,
+    "first_attempt": "33 temporary-fixture setup errors under default temp permissions;14 tests passed. Re-run with unique writable basetemp:47passed. No code change to hide test failures."
+  },
+  "deployed": false,
+  "prospective_effect_verified": false,
+  "profitability_proven": false
+}
