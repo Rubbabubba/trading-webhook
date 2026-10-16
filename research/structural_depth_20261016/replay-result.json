@@ -1,0 +1,44 @@
+{
+  "schema": "structural_delayed_state_replay_v2",
+  "registration_sha256": "0675dd1918fa76d1381c567dd416025093de2b21065995dd96d8299eb0a1a07c",
+  "timing_clarification_sha256": "ff555461b1902644de765af60f437ec750ae9e092fb2de0d8683ea4f31d01c35",
+  "complete_registered_window": true,
+  "source_fault": null,
+  "decision_window": [
+    1784429299.4576824,
+    1784430024.8317852
+  ],
+  "validated_pairs": 59,
+  "counts": {
+    "records": 8164228,
+    "pair_grid_checks": 8555,
+    "no_cost_stressed_surplus": 6517,
+    "unavailable_pair_checks": 2038
+  },
+  "feed_counts": {
+    "maximum_availability_fence_ns": 7615694,
+    "zero_truncations_rebuilt_from_raw": 4041416
+  },
+  "audit_counts": {
+    "records": 8164228,
+    "first_observed_channels": 19,
+    "unverified_channel_rows": 305647,
+    "universe": 3,
+    "inferred_epoch_restarts": 56,
+    "raw_snapshots": 552872,
+    "fully_reconstructed_rows": 7858578,
+    "raw_deltas": 7305706,
+    "global_clock_regression": 3056
+  },
+  "attempts": [],
+  "primary_states": {},
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "realized_profit_cents": null,
+  "promotion_ready": false,
+  "profitability_proven": false,
+  "execution_enabled": false,
+  "historical_rule_publication_verified": false,
+  "administrative_cancellation_payoff_verified": false,
+  "note": "Continuous state/channels may be current while last ticker update is older. This modeled feed-availability assumption is explicit; no fresh REST/broker execution evidence is claimed."
+}

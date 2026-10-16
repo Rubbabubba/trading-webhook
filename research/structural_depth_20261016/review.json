@@ -1,0 +1,89 @@
+{
+  "schema": "structural_delayed_state_review_v2",
+  "replay_sha256": "aeaff0775be50166ba5251f39150919b7c5c9955bf62223b45c1a46124c032d1",
+  "complete_registered_window": true,
+  "source_fault": null,
+  "validated_pairs": 59,
+  "decision_window": [
+    1784429299.4576824,
+    1784430024.8317852
+  ],
+  "counts": {
+    "records": 8164228,
+    "pair_grid_checks": 8555,
+    "no_cost_stressed_surplus": 6517,
+    "unavailable_pair_checks": 2038
+  },
+  "opportunity_event_attempts": 0,
+  "orderings": {
+    "low_yes_first": {
+      "states": {},
+      "scenarios": {
+        "0": {
+          "conditional_bundle_normal_min_cents": null,
+          "conditional_orphan_liquidation_cents": null,
+          "unresolved_principal_stress_cents": null,
+          "combined_conditional_with_unresolved_stress_cents": null,
+          "session_cluster_lcb_cents": null
+        },
+        "2": {
+          "conditional_bundle_normal_min_cents": null,
+          "conditional_orphan_liquidation_cents": null,
+          "unresolved_principal_stress_cents": null,
+          "combined_conditional_with_unresolved_stress_cents": null,
+          "session_cluster_lcb_cents": null
+        },
+        "5": {
+          "conditional_bundle_normal_min_cents": null,
+          "conditional_orphan_liquidation_cents": null,
+          "unresolved_principal_stress_cents": null,
+          "combined_conditional_with_unresolved_stress_cents": null,
+          "session_cluster_lcb_cents": null
+        }
+      }
+    },
+    "high_no_first": {
+      "states": {},
+      "scenarios": {
+        "0": {
+          "conditional_bundle_normal_min_cents": null,
+          "conditional_orphan_liquidation_cents": null,
+          "unresolved_principal_stress_cents": null,
+          "combined_conditional_with_unresolved_stress_cents": null,
+          "session_cluster_lcb_cents": null
+        },
+        "2": {
+          "conditional_bundle_normal_min_cents": null,
+          "conditional_orphan_liquidation_cents": null,
+          "unresolved_principal_stress_cents": null,
+          "combined_conditional_with_unresolved_stress_cents": null,
+          "session_cluster_lcb_cents": null
+        },
+        "5": {
+          "conditional_bundle_normal_min_cents": null,
+          "conditional_orphan_liquidation_cents": null,
+          "unresolved_principal_stress_cents": null,
+          "combined_conditional_with_unresolved_stress_cents": null,
+          "session_cluster_lcb_cents": null
+        }
+      }
+    }
+  },
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "realized_pnl_cents": null,
+  "profitability_proven": false,
+  "promotion_ready": false,
+  "execution_enabled": false,
+  "decision": "do_not_advance_no_validated_executable_edge",
+  "blockers": [
+    "one_source_date_not_independent_date_holdout",
+    "no_authentic_broker_paired_fills",
+    "historical_rule_publication_unverified",
+    "administrative_outcome_payoffs_unverified",
+    "event_netting_and_cash_reconciliation_unverified",
+    "series_specific_historical_fee_terms_unverified",
+    "seed_metadata_scope_not_full_universe"
+  ],
+  "note": "No attempts is absence of cost-qualified opportunities in this bounded cohort, not zero-return trading or proof of market-wide absence."
+}

@@ -1,0 +1,9 @@
+# Separate structural rule matcher — October16 UTC
+
+Cached metadata audit:133contracts, no conflicting cached versions; frozen v1 matcher accepted7 and new v2 accepted46. V2 has19normalized relationship groups,11with multiple strikes and59ordinary binary settlement pairs. Forty-six unsupported primary templates and41unsupported contract types remained rejected. This measures a bounded seed cache, not full-market coverage or a profitable edge.
+
+The new matcher recognizes exact approved CF Benchmarks sixty-second averaging templates with optional currency symbols, explicit combined baseball run thresholds and explicit integer N+ team-run thresholds. Printed thresholds must agree with market strike metadata. It retains complete remaining primary text, secondary rules, event, occurrence and expiration identity, rejects ambiguous/negative/unsupported clauses and does not infer relationships from tickers. Differing actual close times are allowed only in this new semantic identity; each leg's actual trading window remains mandatory.
+
+The minimum100c combined payout is a theorem for **ordinary binary outcomes** of the same increasing threshold variable. It is not a verified guarantee across cancellations, administrative/scalar settlements, netting behavior or inconsistent contract vintages. Those remain explicit execution blockers. No deployed frozen matcher was edited or replaced.
+
+Seven targeted synthetic tests across the matcher and delayed execution model passed. They cover strict source/time/context distinctions, currency formatting, integer-run equivalence, different per-leg close times, serial delays, price guards and orphan loss/unknown preservation. The separate unused-depth experiment is retained in`research/structural_depth_20261016`; source metadata alone never constitutes an execution test.

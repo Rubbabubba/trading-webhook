@@ -1,0 +1,6 @@
+{
+  "scope": "All existing validated cached rule pairs, fixed before unused prices",
+  "selection_history": "The metadata seed cache was populated by earlier failed directional/momentum/markdown studies. It is not a random or complete market universe; all available rule-valid pairs were retained without ranking new structural prices or prior PnL.",
+  "independence": "Same July19 source date and some earlier events recur under a distinct hypothesis. This is not independent-date holdout evidence or full-universe coverage.",
+  "prohibited_inference": "Neither no opportunities in this sample nor positive conditional bundles certify market-wide absence, an executable edge, actual fills or live readiness."
+}

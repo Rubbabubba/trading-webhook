@@ -1,0 +1,21 @@
+{
+  "reviewed_at": "2026-10-16",
+  "sources": [
+    {
+      "url": "https://help.kalshi.com/en/articles/13823816-collateral-return",
+      "finding": "Directional collateral return can credit part of a hedged payout early and reduce later settlement cash. Eligibility locks per event with the first order, including an unfilled order. Returned collateral can constrain position sales.",
+      "implication": "Any execution adapter must inspect existing event-level netting state, reconcile early cash exactly once and validate orphan/exit behavior. Current historical experiment measures ordinary economic payout only, not an authenticated broker cash path; no setting was inspected or changed."
+    },
+    {
+      "url": "https://help.kalshi.com/en/articles/13823825-timeline-and-payout",
+      "finding": "Markets can close at an outcome occurrence or a listed time; per-leg timing must be checked."
+    },
+    {
+      "url": "https://help.kalshi.com/en/articles/13823826-market-outcomes",
+      "finding": "Full contract terms and named source govern outcomes; matching cached summaries alone does not certify administrative cases."
+    }
+  ],
+  "actual_account_netting_state_verified": false,
+  "actual_cash_reconciliation": false,
+  "execution_enabled": false
+}
