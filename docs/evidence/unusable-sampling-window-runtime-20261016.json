@@ -1,0 +1,106 @@
+{
+  "deployment": {
+    "schema": "unusable_sampling_corrected_deployment_v1",
+    "recorded_at": "2026-10-16T03:48:25.116608+00:00",
+    "revision": "bbbb166f49ec4433206e7d5416def1de04825ad1",
+    "deploy_id": "dep-db8pq42vcj2c73aphfsg",
+    "service_id": "srv-dalhjqv40ujc73e2km1g",
+    "instance": "5wl6j",
+    "state": "Live",
+    "environment": "demo",
+    "tests_passed": 48,
+    "synthetic_tests_only": true,
+    "worker_packet_status_at": "2026-10-16T03:43:14.598990+00:00",
+    "worker_status_at": "2026-10-16T03:47:24.875256+00:00",
+    "phase": "running",
+    "errors": [],
+    "production_execution_enabled": false,
+    "positions": 0,
+    "publication_accepted": true,
+    "genuine_validation": "Missing-book counters now reach2 on genuine observations; initial e98ac2b prematurely reset them and its receipt remains preserved.",
+    "early_rotation_observed": true,
+    "state_of_evidence": "verified_sampling_effect_only; strategy evidence awaiting_observation",
+    "profitability_proven": false,
+    "first_deployment_receipt": "unusable-sampling-deployment-20261016.json",
+    "proof": "unusable-sampling-corrected-render-live.png",
+    "life_os_page_receipt": "Signed out; do not claim page engineering note was submitted.",
+    "prospective_effect_verified": true,
+    "genuine_rotation_receipt": "unusable-sampling-genuine-rotation-20261016.json",
+    "genuine_window_duration_seconds": 191.50593423843384,
+    "normal_window_seconds": 900,
+    "cohort_size_after": 273
+  },
+  "genuine_observation": {
+    "now": 1792122453.3802786,
+    "status_at": "2026-10-16T03:47:24.875256+00:00",
+    "phase": "running",
+    "errors": [],
+    "production": false,
+    "positions": 0,
+    "window_started_at": 1792122424.557302,
+    "offset": 179,
+    "cohort_size": 273,
+    "scan": 190506,
+    "advanced": [
+      {
+        "action": "sampling_window_unusable_advanced",
+        "reason": "all_members_repeatedly_unusable",
+        "window_started_at": 1792122233.0513678,
+        "tickers": [
+          "KXNCAAFSPREAD-26OCT17PSUMICH-MICH6",
+          "KXNCAAFSPREAD-26OCT17RUTGMD-RUTG6",
+          "KXNCAAFSPREAD-26OCT17SJSUUTEP-SJSU15",
+          "KXNCAAFSPREAD-26OCT17TCUBAY-BAY11",
+          "KXNCAAFSPREAD-26OCT17TOLEMU-TOL2",
+          "KXNCAAFSPREAD-26OCT17UKOKLA-OKLA11",
+          "KXNCAAFSPREAD-26OCT17UNCDUKE-DUKE8",
+          "KXNCAAFSPREAD-26OCT17UNLVAFA-AFA12"
+        ],
+        "failures": {
+          "KXNCAAFSPREAD-26OCT17PSUMICH-MICH6": {
+            "consecutive": 2,
+            "last_at": 1792122328.6932192,
+            "reason": "missing_book"
+          },
+          "KXNCAAFSPREAD-26OCT17RUTGMD-RUTG6": {
+            "consecutive": 2,
+            "last_at": 1792122340.0596063,
+            "reason": "missing_book"
+          },
+          "KXNCAAFSPREAD-26OCT17SJSUUTEP-SJSU15": {
+            "consecutive": 2,
+            "last_at": 1792122357.400763,
+            "reason": "missing_book"
+          },
+          "KXNCAAFSPREAD-26OCT17TCUBAY-BAY11": {
+            "consecutive": 2,
+            "last_at": 1792122369.0948951,
+            "reason": "missing_book"
+          },
+          "KXNCAAFSPREAD-26OCT17TOLEMU-TOL2": {
+            "consecutive": 2,
+            "last_at": 1792122380.8712878,
+            "reason": "missing_book"
+          },
+          "KXNCAAFSPREAD-26OCT17UKOKLA-OKLA11": {
+            "consecutive": 2,
+            "last_at": 1792122394.8827205,
+            "reason": "missing_book"
+          },
+          "KXNCAAFSPREAD-26OCT17UNCDUKE-DUKE8": {
+            "consecutive": 2,
+            "last_at": 1792122406.0636826,
+            "reason": "missing_book"
+          },
+          "KXNCAAFSPREAD-26OCT17UNLVAFA-AFA12": {
+            "consecutive": 2,
+            "last_at": 1792122417.3578634,
+            "reason": "missing_book"
+          }
+        },
+        "cohort_members_removed": 0,
+        "execution_permission_changed": false
+      }
+    ]
+  }
+}
