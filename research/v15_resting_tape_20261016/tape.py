@@ -23,6 +23,8 @@ class Tape:
             body=self.cache/(key+'.body')
             if record.get('raw_sha256') and hashlib.sha256(body.read_bytes()).hexdigest()!=record['raw_sha256']:
                 raise ValueError('tape_cache_hash_changed')
+            if record.get('status')==200 and json.loads(body.read_bytes())!=record.get('payload'):
+                raise ValueError('tape_cache_payload_changed')
             return record
         if self.requests>=300:raise ValueError('tape_request_budget')
         self.requests+=1

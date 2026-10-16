@@ -14,7 +14,7 @@ def outcome_view(view, side):
                 bid_size=view['no_bid_size'], ask_size=view['yes_bid_size'])
 
 
-def classify(attempt, signal, activation_view, tape, *, complete):
+def classify(attempt, signal, activation_view, tape, *, complete, arrival_view):
     if signal is None:
         return dict(state='benchmark_no_trade', owned_fill=False)
     side = signal['outcome']; limit = signal['price_cents']
@@ -24,9 +24,17 @@ def classify(attempt, signal, activation_view, tape, *, complete):
         return dict(result, state='activation_unobserved')
     if not quote['bid']<=limit<quote['ask']:
         return dict(result, state='activation_quote_rejected', activation_quote=quote)
-    result.update(activation_quote=quote,
-        displayed_ahead_size=quote['bid_size'] if limit==quote['bid'] else 0,
-        queue_independently_verified=False, modeled_entry_cost=limit+3)
+    result.update(client_quote=quote,queue_independently_verified=False,modeled_entry_cost=limit+3)
+    arrival=outcome_view(arrival_view,side)
+    if arrival is None:
+        return dict(result,state='arrival_unobserved_uncertain_possible_fill')
+    if arrival['ask']<=limit:
+        return dict(result,state='post_only_arrival_rejected',arrival_quote=arrival)
+    # Eligibility used the earlier client quote. A worse arrival bid cannot
+    # retrospectively prevent an order that was already sent.
+    result.update(arrival_quote=arrival,
+        displayed_ahead_size=arrival['bid_size'] if arrival['bid']>=limit else 0,
+        displayed_ahead_is_lower_bound=True)
     if not complete:
         return dict(result, state='tape_incomplete_uncertain_possible_fill')
     potential=[]
@@ -55,7 +63,7 @@ def classify(attempt, signal, activation_view, tape, *, complete):
 def exit_observation(path, horizon, view, at):
     due=path['entry_at']+horizon
     quote=outcome_view(view,path['side'])
-    if quote is None or not due<=at<=due+5 or quote['bid_size']<1:
+    if quote is None or not due+1<=at<=due+5 or quote['bid_size']<1:
         return dict(state='unresolved_exit',observed_at=at)
     return dict(state='conditional_exit',at=at,bid=quote['bid'],
                 net_proceeds_before_extra_stress=max(0,math.floor(quote['bid'])-1)-2)

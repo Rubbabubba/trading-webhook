@@ -11,8 +11,25 @@ from .tape import Tape
 ROOT=Path(__file__).parent
 
 
+def causal_attempt(source):
+    at=source['decision_at']
+    return dict(source,source_plan_v1={k:source[k] for k in ('activation_at','cancel_request_at','cancel_ack_at')},
+        client_check_at=at+1,activation_at=at+2,cancel_request_at=at+62,cancel_ack_at=at+63)
+
+
+def tape_identity_conflicts(tapes):
+    identities={};conflicts=set()
+    for ticker,observation in tapes.items():
+        for row in observation['trades']:
+            old=identities.get(row['trade_id'])
+            if old is not None and old[1]!=row:
+                conflicts.update((ticker,old[0]))
+            identities.setdefault(row['trade_id'],(ticker,row))
+    return conflicts
+
+
 def run():
-    pre=json.loads((ROOT/'preliminary.json').read_text());spec=json.loads((ROOT/'registration.json').read_text())
+    pre=json.loads((ROOT/'preliminary.json').read_text());spec=json.loads((ROOT/'registration-v2.json').read_text())
     view_path=Path(pre['views']['path'])
     if hashlib.sha256(view_path.read_bytes()).hexdigest()!=pre['views']['sha256']:
         raise ValueError('source_view_cache_changed')
@@ -47,7 +64,8 @@ def run():
         with path.open('x') as f:json.dump(receipt,f,indent=2)
         time.sleep(.5)
     selected=[];seen=set();rejections=Counter()
-    for a in sorted(pre['preliminary_attempts'],key=lambda a:(a['decision_at'],a['ticker'])):
+    for original in sorted(pre['preliminary_attempts'],key=lambda a:(a['decision_at'],a['ticker'])):
+        a=causal_attempt(original)
         m=markets.get(a['ticker'])
         reason=eligible(dict(a,entry_at=a['activation_at'],exit_at=a['cancel_ack_at']),m)
         if reason:rejections[reason]+=1;continue
@@ -57,30 +75,43 @@ def run():
         seen.add(event);selected.append(dict(a,event_id=event,family=a['ticker'].split('-',1)[0]))
     tape=Tape(view_path.parent/'trades');tapes={};paths={name:[] for name in ('v15','v12','v10')}
     for index,a in enumerate(selected):
-        activation=views.get((a['ticker'],a['activation_at']))
+        activation=views.get((a['ticker'],a['client_check_at']))
+        arrival=views.get((a['ticker'],a['activation_at']))
         signals=dict(v15=a['signal_details']['v15_ioc'],v12=a['signal_details']['frozen_v12'],v10=a['signal_details']['frozen_v10'])
         # Avoid pointless GETs where every hypothetical order fails activation.
-        possible=any(classify(a,s,activation,[],complete=True)['state']=='no_qualifying_public_trade' for s in signals.values())
+        possible=any(classify(a,s,activation,[],complete=True,arrival_view=arrival)['state']=='no_qualifying_public_trade' for s in signals.values())
         observation=tape.fetch(a) if possible else dict(complete=False,error='no_valid_passive_activation',pages=[],trades=[],owned_fills=0)
-        tapes[a['ticker']]=observation;a['paths']={};a['activation_view']=activation
+        tapes[a['ticker']]=observation;a['paths']={};a['client_view']=activation;a['arrival_view']=arrival
         for name,signal in signals.items():
-            path=classify(a,signal,activation,observation['trades'],complete=observation['complete'])
+            path=classify(a,signal,activation,observation['trades'],complete=observation['complete'],arrival_view=arrival)
             if path['state']=='conditional_trade_through':
                 path['exits']={}
                 for h in (5,30,300):
-                    at=math.ceil(path['entry_at']+h);v=views.get((a['ticker'],at))
+                    at=math.ceil(path['entry_at']+h+1);v=views.get((a['ticker'],at))
                     exit=exit_observation(path,h,v,at)
                     if exit['state']=='conditional_exit' and eligible(dict(a,exit_at=at),markets[a['ticker']]):
                         exit=dict(state='unresolved_exit_after_official_close',observed_at=at)
                     exit['source_view']=v;path['exits'][str(h)]=exit
             a['paths'][name]=path;paths[name].append(path)
         print(json.dumps(dict(tape_event=index+1,total=len(selected),rows=len(observation['trades']),complete=observation['complete'],primary_state=a['paths']['v15']['state'])),flush=True)
-    result=dict(schema='v15_resting_trade_through_review_v1',
-        registration_sha256=pre['registration_sha256'],preliminary_sha256=hashlib.sha256((ROOT/'preliminary.json').read_bytes()).hexdigest(),
+    conflicts=tape_identity_conflicts(tapes)
+    for a in selected:
+        if a['ticker'] not in conflicts:continue
+        observation=tapes[a['ticker']];observation.update(complete=False,error='global_trade_identity_conflict')
+        signals=dict(v15=a['signal_details']['v15_ioc'],v12=a['signal_details']['frozen_v12'],v10=a['signal_details']['frozen_v10'])
+        a['paths']={name:classify(a,s,a['client_view'],observation['trades'],complete=False,
+            arrival_view=a['arrival_view']) for name,s in signals.items()}
+    paths={name:[a['paths'][name] for a in selected] for name in ('v15','v12','v10')}
+    result=dict(schema='v15_resting_trade_through_review_v2_causal',
+        registration_sha256=hashlib.sha256((ROOT/'registration-v2.json').read_bytes()).hexdigest(),
+        source_registration_sha256=pre['registration_sha256'],preliminary_sha256=hashlib.sha256((ROOT/'preliminary.json').read_bytes()).hexdigest(),
         source_fault=pre['source_fault'],complete_registered_window=pre['complete_registered_window'],
         decision_window=pre['decision_window'],counts=pre['counts'],preliminary_tickers=len(pre['preliminary_attempts']),
         selected_official_events=len(selected),families=dict(Counter(a['family'] for a in selected)),rejections=dict(rejections),
         metadata_errors=metadata_errors,actual_tape_requests=tape.requests,
+        tape_attempted_events=sum(bool(t['pages']) for t in tapes.values()),
+        tape_blocked_events=sum(bool(t['pages']) and not t['complete'] for t in tapes.values()),
+        global_identity_conflicts=sorted(conflicts),
         tape_complete_events=sum(t['complete'] for t in tapes.values()),public_tape_rows=sum(len(t['trades']) for t in tapes.values()),
         tracks={name:dict(states=dict(Counter(p['state'] for p in rows)),**summarize(rows)) for name,rows in paths.items()},
         selected=selected,tapes=tapes,actual_orders=0,actual_fills=0,execution_enabled=False,profitability_proven=False,promotion_ready=False,
