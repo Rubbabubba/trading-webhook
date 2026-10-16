@@ -1,0 +1,13 @@
+{
+  "id": "demo_stream_archive_v1_20261016",
+  "registered_at": "2026-10-16T20:03:31Z",
+  "purpose": "Bounded durable source archive foundation for a later existing-worker Demo stream adapter. Engineering only; no new economic hypothesis or strategy outcome.",
+  "limits": {"messages":100000,"compressed_bytes":33554432,"database_bytes":50331648,"minimum_free_bytes":134217728,"message_bytes":262144,"connection_epochs":1024,"targets_per_epoch":8},
+  "persistence": "Synchronous FULL SQLite transactions, immutable message rows, raw/compressed SHA256 plus ordered connection/time/hash chain. Restart closes prior epoch as interrupted; never reconstruct a new epoch from old books.",
+  "source": "Only supported public Demo subscribed/book/trade envelopes accepted by existing strict source parser; unknown fields rejected without storing payload or exception text.",
+  "evaluation": "Synthetic fault/restart/capacity tests plus replay of retained479-message feasibility prefix. Reusing that old prefix is engineering compatibility evidence, not untouched strategy validation.",
+  "integration_status": "Not connected to worker or network. Separate existing-worker bounded adapter and fresh deployed observation remain required.",
+  "execution_enabled":false,
+  "fill_assumed":false,
+  "profitability_proven":false
+}
