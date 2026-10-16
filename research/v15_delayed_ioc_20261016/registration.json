@@ -1,0 +1,228 @@
+{
+  "id": "external_v15_delayed_ioc_v1_20261016",
+  "registered_at": "2026-10-16T01:59:06.238909+00:00",
+  "hypothesis": "Frozen V15 microprice signals may retain executable value when their unchanged bid-plus-two limit is marketable after a one-second delay. This is a separate conditional IOC experiment, not assumed passive fills or a change to deployed V15.",
+  "source": "https://huggingface.co/datasets/lerchen3/kalshi-orderbook-alpha",
+  "source_method": "Existing raw positive-ladder reconstruction and serialized maximum-receipt availability fence, inferred epochs retained; no hindsight sorting.",
+  "files": [
+    {
+      "type": "file",
+      "oid": "223b3949a0e5954a443626158cac500b98bea173",
+      "size": 68686460,
+      "lfs": {
+        "oid": "2efe7b31b8df1fb13885bbc534a72795b8d5c82abb65e2e73ee2a89b71ea8e89",
+        "size": 68686460,
+        "pointerSize": 133
+      },
+      "xetHash": "e0587b25eb238cee3d17352e0d48ab6b441c4412785fd846b1e0be8e51f646e2",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024830.888776Z_ip-172-31-3-129_bb4f2e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "d712396e97f0492c9484d58ddc6fac09de986c33",
+      "size": 68678878,
+      "lfs": {
+        "oid": "e4584bdb3290ba2757b6cceb78fc7db9351cb1fe97170dc42751bf2945c57866",
+        "size": 68678878,
+        "pointerSize": 133
+      },
+      "xetHash": "a9a250c335c9393abe9ddd93bae65cc6324ded4e01ea5f7af7af77a2b49ea855",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025023.747132Z_ip-172-31-3-129_79e323.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a0d39e7c723678eb6bbf2b455f4ec27ccfb0cdee",
+      "size": 67939864,
+      "lfs": {
+        "oid": "16dcbf5c40911e2b0a255c51c41d11388d7322a4f0164848d687bbbd60f5d704",
+        "size": 67939864,
+        "pointerSize": 133
+      },
+      "xetHash": "8fb7a3ee01873b7ca19126b88c42399963bc10c95edb2233214168fd26deb08f",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025238.694036Z_ip-172-31-3-129_92508b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a6d6f8405878b07b0e05efc4e710918569639134",
+      "size": 68370914,
+      "lfs": {
+        "oid": "fb12d7cfabfcbfbab4c815234788ae05439903abbb1c56c24b0d02e007d2002c",
+        "size": 68370914,
+        "pointerSize": 133
+      },
+      "xetHash": "6abfb62a0e42d3e66ad8526d85fc6f8f7b4c47572e4bbacaa38062178fb62d61",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025427.641378Z_ip-172-31-3-129_1955e5.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "43c4b7f27fbde0335e284163ed705f2c8c39159b",
+      "size": 66260479,
+      "lfs": {
+        "oid": "eea3c4d5e14f207863d377e669827b77ab86c99c0e8df38e87383ca88e16b04c",
+        "size": 66260479,
+        "pointerSize": 133
+      },
+      "xetHash": "7456b65189d6868af433ae40b4a55b391e8f6483de1bf48368ba4e9ca90a7613",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025621.581139Z_ip-172-31-3-129_bf9c12.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "83740725a2264daebbd258893147982121b1f758",
+      "size": 60064081,
+      "lfs": {
+        "oid": "72c5a00df0f5c6a7c66435a94084578043036de3cfb537ec6cb25b850afd95f2",
+        "size": 60064081,
+        "pointerSize": 133
+      },
+      "xetHash": "e23a17b495f52fec88a3b48ae4aae899947273a00baf38631313978da2938b57",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T025834.750326Z_ip-172-31-3-129_bb3449.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "4a9dc802e64d7dc01501993c4ab14b9d257a619c",
+      "size": 70585115,
+      "lfs": {
+        "oid": "60fd367bc870b12fd25a75447a78905e053ffc902d805abca7e222171541f49c",
+        "size": 70585115,
+        "pointerSize": 133
+      },
+      "xetHash": "12443e74d1ff910a0d1a63bff6be44d98a41f9d83bc93b07dc2e23d6730e4bd1",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030024.879178Z_ip-172-31-3-129_1a9da8.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9ce191d493dccd8a989b5003eabf869cdeece2a1",
+      "size": 69375274,
+      "lfs": {
+        "oid": "3fb82aa2b195e5d9f8001f098e7034890f695fdeb12232e359cf458e8b42a7bb",
+        "size": 69375274,
+        "pointerSize": 133
+      },
+      "xetHash": "f26728e14a11d7dfd3d9c90faecb5c5f1b2693981152b9996cd957d245f35657",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030242.411151Z_ip-172-31-3-129_7e4b80.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "6a349db2dedcaeb5cbe0605f349945e574092df5",
+      "size": 68033436,
+      "lfs": {
+        "oid": "de053b1bdf27e7854b55a4ce7bd38e8485a759c32c155664bd6ee6c6e33a8234",
+        "size": 68033436,
+        "pointerSize": 133
+      },
+      "xetHash": "ab836a5d5985b589e204a93165af3799a5bdd5e18a860b40a331297db484c968",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030503.057391Z_ip-172-31-3-129_148079.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "3243e7635ddc095faf1336d6db967043d11a6c27",
+      "size": 66517961,
+      "lfs": {
+        "oid": "526c37248247f668064e4eab263e6d37746ac3ef1e2564a06b292aed5f03cedd",
+        "size": 66517961,
+        "pointerSize": 133
+      },
+      "xetHash": "49a67ff13778152edf7cb7e3a85ee3b68465ee0db6c56c9624fdbf1278e27c16",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030727.272158Z_ip-172-31-3-129_27a39a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "a13ddf7bc48146af0844b969a2ba7902c95e2561",
+      "size": 59965276,
+      "lfs": {
+        "oid": "ea85185f2253e5f57886ccd915e7c8bdffb387cdcf1fe8a755768735afce7968",
+        "size": 59965276,
+        "pointerSize": 133
+      },
+      "xetHash": "ebb571de0a8853a48d1cf395e9eb334be945777373c1f068bcc66d3562b7dc76",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T030954.635514Z_ip-172-31-3-129_c838ea.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "56e5a14a57eddc1c8fbcb69dab44e4ddca221f71",
+      "size": 70852818,
+      "lfs": {
+        "oid": "f937cadabed3cf1a8a742de5dce6b5f5a4cb3ac4209b14e9c8fd1efc85caa657",
+        "size": 70852818,
+        "pointerSize": 133
+      },
+      "xetHash": "e1090be484d697d2cc7697a7e28e946d5350ccef2979fba12d288e14832dc5a1",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T031131.795031Z_ip-172-31-3-129_a84e64.jsonl.gz"
+    }
+  ],
+  "global_file_numbers": [
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24
+  ],
+  "warmup_files": 6,
+  "unused_decision_files": [
+    19,
+    20,
+    21,
+    22,
+    23,
+    24
+  ],
+  "universe": "Current declared source universe, all non-combo binary candidates; no price-ranked universe or complete-market coverage claim.",
+  "decision_grid_seconds": 5,
+  "maximum_channel_age_seconds": 1,
+  "signal": "Unchanged V12 shadow_decision, minimum gross edge5c, V15 limit=V12bid+2; midpoint20-80c,spread4-12c,depth3+ratio4 and imbalance10percent unchanged.",
+  "comparisons": [
+    "frozen_v10 same decision/history",
+    "frozen_v12 same decision"
+  ],
+  "history": "5second-grid midpoint samples in prior60-300seconds, at least3, same valid epoch; no future observations.",
+  "entry": {
+    "delay_seconds": 1,
+    "maximum_lateness_seconds": 1,
+    "one_contract": true,
+    "require_observed_ask_plus_one_cent_slippage_at_most_original_limit": true,
+    "insufficient_depth": "unfilled",
+    "unavailable_or_late": "unfilled_no_retry",
+    "no_queue_inference": true
+  },
+  "exit": {
+    "counterfactual_horizons_seconds": [
+      5,
+      30,
+      300
+    ],
+    "measured_from": "actual modeled entry observation",
+    "maximum_lateness_seconds": 5,
+    "action": "sell at observed bid minus1cslippage; each horizon separate, never summed as three positions",
+    "missing": "unresolved; include full principal and entry costs stress"
+  },
+  "costs": {
+    "assumed_fee_cents_per_fill": 2,
+    "slippage_cents_per_fill": 1,
+    "extra_cost_stress_cents_per_fill": [
+      0,
+      2,
+      5
+    ],
+    "historical_series_fee_verified": false,
+    "note": "2c is general one-contract fee ceiling assumption, not authenticated historical series fee. New protocol only; older5c studies unchanged."
+  },
+  "limits": {
+    "maximum_records": 15000000,
+    "maximum_preliminary_tickers": 1000,
+    "maximum_selected_events": 100
+  },
+  "metadata": "After source-only selection, cached official binary contract metadata validates open/earliest documented close/expiration/occurrence and exact event identity. Earliest attempt per official event, no replacement if unfilled. Retain excluded and failed attempts.",
+  "gate": "At least100complete conditional entries40independent parent events5families on unused independent dates with positive stressed result and valid parent/session-cluster95percent lower bound, actual fee/source-publication provenance and separately qualified authentic execution before any Demo trial. One-date archive cannot pass.",
+  "auto_reject": "Any nonpositive cost-stressed horizon at required independent sample rejects; source faults truncate and block qualification; do not tune on inspected prices.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "promotion_ready": false,
+  "frozen_protocols_unchanged": true
+}
