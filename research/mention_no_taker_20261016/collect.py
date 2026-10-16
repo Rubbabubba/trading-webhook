@@ -55,8 +55,10 @@ def run():
     mp=ROOT/"selection.json"
     if mp.exists():assert json.loads(mp.read_bytes())==manifest
     else:mp.write_text(json.dumps(manifest,indent=2),encoding="utf8")
+    (ROOT/"labels.json").write_text(json.dumps({m["ticker"]:m for m in markets if m.get("ticker") in {x["ticker"] for x in selected}},indent=2),encoding="utf8")
     candles={}
     for m in selected:
+        if c.n+c.existing>=180:break
         anchors=[ts(m.get(k)) for k in ["close_time","expected_expiration_time","occurrence_datetime"] if m.get(k)]
         t=int(min(anchors)-86400);end=t//60*60
         r,d=c.get("/historical/markets/"+m["ticker"]+"/candlesticks",dict(start_ts=end-60,end_ts=end,period_interval=1));candles[m["ticker"]]=r
