@@ -1,6 +1,7 @@
 from fractions import Fraction
 from research.v15_delayed_ioc_20261016.replay import decision, step
 from opportunity_lab.kalshi_maker_v12 import shadow_decision
+from research.v15_delayed_ioc_20261016.review import account
 
 
 def frame():
@@ -56,3 +57,20 @@ def test_size_and_fractional_cent_guards():
     p = dict(limit=42)
     step(p, 'entry', 1, 1, {**view(), 'ask': 41.01})
     assert p['state'] == 'entry_limit_not_marketable_after_slippage'
+
+
+def test_independent_cash_accounting_preserves_missing_exits_and_unfilled_nulls():
+    p = dict(limit=42)
+    step(p, 'entry', 1, 1, view())
+    step(p, '5', 6, 6, {**view(), 'bid': 50})
+    step(p, '30', 31, 37, view())
+    step(p, '300', 301, 301, None)
+    result = account([p, {'state': 'entry_limit_not_marketable_after_slippage'}])
+    assert result['conditional_entries'] == 1
+    assert result['horizons']['5']['scenarios']['0']['complete_net_cents'] == 3
+    assert result['horizons']['5']['scenarios']['2']['complete_net_cents'] == -1
+    assert result['horizons']['30']['scenarios']['0']['combined_with_unresolved_stress_cents'] == -44
+    assert result['complete_all_horizons'] == 0
+    no_entry = account([{'state': 'entry_limit_not_marketable_after_slippage'}])
+    assert no_entry['horizons']['5']['gross_cents'] is None
+    assert no_entry['horizons']['5']['scenarios']['0']['complete_net_cents'] is None
