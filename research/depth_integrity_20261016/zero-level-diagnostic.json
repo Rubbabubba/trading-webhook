@@ -1,0 +1,653 @@
+{
+  "schema": "external_depth_rejection_diagnostic_v1",
+  "counts": {
+    "zero_quantity_top3_truncation": 62
+  },
+  "samples": [
+    {
+      "kind": "zero_quantity_top3_truncation",
+      "ticker": "KXMLBTOTAL-26JUL182207DETLAA-9",
+      "seq": 16532,
+      "record_type": "delta",
+      "raw_delta": {
+        "delta_side": "yes",
+        "delta_price_cents": 88.0,
+        "delta_qty": -1000.0,
+        "level_qty_before": 1000.0,
+        "level_qty_after": 0.0
+      },
+      "displayed": {
+        "yes": {
+          "bid_levels": [
+            [
+              90.0,
+              10.0
+            ],
+            [
+              89.0,
+              1270.0
+            ],
+            [
+              88.0,
+              0.0
+            ]
+          ],
+          "ask_levels": [
+            [
+              91.0,
+              2750.0
+            ],
+            [
+              92.0,
+              1642.0
+            ],
+            [
+              93.0,
+              32.51
+            ]
+          ],
+          "ignore_qty_bid": [
+            89.0,
+            1270.0
+          ],
+          "ignore_qty_ask": [
+            91.0,
+            2750.0
+          ]
+        },
+        "no": {
+          "bid_levels": [
+            [
+              9.0,
+              2750.0
+            ],
+            [
+              8.0,
+              1642.0
+            ],
+            [
+              7.0,
+              32.51
+            ]
+          ],
+          "ask_levels": [
+            [
+              10.0,
+              10.0
+            ],
+            [
+              11.0,
+              1270.0
+            ],
+            [
+              12.0,
+              0.0
+            ]
+          ],
+          "ignore_qty_bid": [
+            9.0,
+            2750.0
+          ],
+          "ignore_qty_ask": [
+            11.0,
+            1270.0
+          ]
+        }
+      },
+      "reconstructed_top4": {
+        "yes": [
+          [
+            "90.0",
+            "10.0"
+          ],
+          [
+            "89.0",
+            "1270.0"
+          ],
+          [
+            "87.0",
+            "15.0"
+          ],
+          [
+            "86.0",
+            "140.0"
+          ]
+        ],
+        "no": [
+          [
+            "9.0",
+            "2750.0"
+          ],
+          [
+            "8.0",
+            "1642.0"
+          ],
+          [
+            "7.0",
+            "32.51"
+          ],
+          [
+            "6.0",
+            "6.0"
+          ]
+        ]
+      }
+    },
+    {
+      "kind": "zero_quantity_top3_truncation",
+      "ticker": "KXLIGAMXGAME-26JUL18CDGTOL-CDG",
+      "seq": 22387,
+      "record_type": "delta",
+      "raw_delta": {
+        "delta_side": "no",
+        "delta_price_cents": 89.0,
+        "delta_qty": -4000.0,
+        "level_qty_before": 4000.0,
+        "level_qty_after": 0.0
+      },
+      "displayed": {
+        "yes": {
+          "bid_levels": [
+            [
+              6.0,
+              3703.27
+            ],
+            [
+              5.0,
+              639.57
+            ],
+            [
+              4.0,
+              643.31
+            ]
+          ],
+          "ask_levels": [
+            [
+              7.0,
+              17572.0
+            ],
+            [
+              8.0,
+              7070.0
+            ],
+            [
+              12.0,
+              0.0
+            ]
+          ],
+          "ignore_qty_bid": [
+            6.0,
+            3703.27
+          ],
+          "ignore_qty_ask": [
+            7.0,
+            17572.0
+          ]
+        },
+        "no": {
+          "bid_levels": [
+            [
+              93.0,
+              17572.0
+            ],
+            [
+              92.0,
+              7070.0
+            ],
+            [
+              88.0,
+              0.0
+            ]
+          ],
+          "ask_levels": [
+            [
+              94.0,
+              3703.27
+            ],
+            [
+              95.0,
+              639.57
+            ],
+            [
+              96.0,
+              643.31
+            ]
+          ],
+          "ignore_qty_bid": [
+            93.0,
+            17572.0
+          ],
+          "ignore_qty_ask": [
+            94.0,
+            3703.27
+          ]
+        }
+      },
+      "reconstructed_top4": {
+        "yes": [
+          [
+            "6.0",
+            "3703.27"
+          ],
+          [
+            "5.0",
+            "639.57"
+          ],
+          [
+            "4.0",
+            "643.31"
+          ],
+          [
+            "3.0",
+            "6597.0"
+          ]
+        ],
+        "no": [
+          [
+            "93.0",
+            "17572.0"
+          ],
+          [
+            "92.0",
+            "7070.0"
+          ],
+          [
+            "85.0",
+            "30.0"
+          ],
+          [
+            "83.0",
+            "331.0"
+          ]
+        ]
+      }
+    },
+    {
+      "kind": "zero_quantity_top3_truncation",
+      "ticker": "KXMENWORLDCUP-26-AR",
+      "seq": 22666,
+      "record_type": "delta",
+      "raw_delta": {
+        "delta_side": "yes",
+        "delta_price_cents": 41.5,
+        "delta_qty": -1.0,
+        "level_qty_before": 1.0,
+        "level_qty_after": 0.0
+      },
+      "displayed": {
+        "yes": {
+          "bid_levels": [
+            [
+              41.5,
+              0.0
+            ],
+            [
+              41.3,
+              83676.46
+            ],
+            [
+              41.2,
+              1561.61
+            ]
+          ],
+          "ask_levels": [
+            [
+              41.7,
+              391.62
+            ],
+            [
+              41.8,
+              406478.54
+            ],
+            [
+              41.9,
+              6500.0
+            ]
+          ],
+          "ignore_qty_bid": [
+            41.3,
+            83676.46
+          ],
+          "ignore_qty_ask": [
+            41.8,
+            406478.54
+          ]
+        },
+        "no": {
+          "bid_levels": [
+            [
+              58.3,
+              391.62
+            ],
+            [
+              58.2,
+              406478.54
+            ],
+            [
+              58.1,
+              6500.0
+            ]
+          ],
+          "ask_levels": [
+            [
+              58.5,
+              0.0
+            ],
+            [
+              58.7,
+              83676.46
+            ],
+            [
+              58.8,
+              1561.61
+            ]
+          ],
+          "ignore_qty_bid": [
+            58.2,
+            406478.54
+          ],
+          "ignore_qty_ask": [
+            58.7,
+            83676.46
+          ]
+        }
+      },
+      "reconstructed_top4": {
+        "yes": [
+          [
+            "41.3",
+            "83676.46"
+          ],
+          [
+            "41.2",
+            "1561.61"
+          ],
+          [
+            "41.1",
+            "2817.85"
+          ],
+          [
+            "41.0",
+            "18846.48"
+          ]
+        ],
+        "no": [
+          [
+            "58.3",
+            "391.62"
+          ],
+          [
+            "58.2",
+            "406478.54"
+          ],
+          [
+            "58.1",
+            "6500.0"
+          ],
+          [
+            "58.0",
+            "960000.0"
+          ]
+        ]
+      }
+    },
+    {
+      "kind": "zero_quantity_top3_truncation",
+      "ticker": "KXMLBTOTAL-26JUL181610PITCLE-4",
+      "seq": 23665,
+      "record_type": "delta",
+      "raw_delta": {
+        "delta_side": "yes",
+        "delta_price_cents": 65.0,
+        "delta_qty": -97.65,
+        "level_qty_before": 97.65,
+        "level_qty_after": 0.0
+      },
+      "displayed": {
+        "yes": {
+          "bid_levels": [
+            [
+              66.0,
+              750.0
+            ],
+            [
+              65.0,
+              0.0
+            ],
+            [
+              64.0,
+              1450.0
+            ]
+          ],
+          "ask_levels": [
+            [
+              67.0,
+              2843.48
+            ],
+            [
+              68.0,
+              1986.52
+            ],
+            [
+              75.0,
+              24.0
+            ]
+          ],
+          "ignore_qty_bid": [
+            64.0,
+            1450.0
+          ],
+          "ignore_qty_ask": [
+            67.0,
+            2843.48
+          ]
+        },
+        "no": {
+          "bid_levels": [
+            [
+              33.0,
+              2843.48
+            ],
+            [
+              32.0,
+              1986.52
+            ],
+            [
+              25.0,
+              24.0
+            ]
+          ],
+          "ask_levels": [
+            [
+              34.0,
+              750.0
+            ],
+            [
+              35.0,
+              0.0
+            ],
+            [
+              36.0,
+              1450.0
+            ]
+          ],
+          "ignore_qty_bid": [
+            33.0,
+            2843.48
+          ],
+          "ignore_qty_ask": [
+            36.0,
+            1450.0
+          ]
+        }
+      },
+      "reconstructed_top4": {
+        "yes": [
+          [
+            "66.0",
+            "750.0"
+          ],
+          [
+            "64.0",
+            "1450.0"
+          ],
+          [
+            "63.0",
+            "495.0"
+          ],
+          [
+            "62.0",
+            "450.0"
+          ]
+        ],
+        "no": [
+          [
+            "33.0",
+            "2843.48"
+          ],
+          [
+            "32.0",
+            "1986.52"
+          ],
+          [
+            "25.0",
+            "24.0"
+          ],
+          [
+            "20.0",
+            "2.0"
+          ]
+        ]
+      }
+    },
+    {
+      "kind": "zero_quantity_top3_truncation",
+      "ticker": "KXBTC-26JUL1823-B64950",
+      "seq": 24668,
+      "record_type": "delta",
+      "raw_delta": {
+        "delta_side": "no",
+        "delta_price_cents": 65.0,
+        "delta_qty": -491.0,
+        "level_qty_before": 491.0,
+        "level_qty_after": 0.0
+      },
+      "displayed": {
+        "yes": {
+          "bid_levels": [
+            [
+              30.0,
+              400.0
+            ],
+            [
+              28.0,
+              906.58
+            ],
+            [
+              25.0,
+              50.0
+            ]
+          ],
+          "ask_levels": [
+            [
+              35.0,
+              0.0
+            ],
+            [
+              36.0,
+              441.42
+            ],
+            [
+              38.0,
+              48.0
+            ]
+          ],
+          "ignore_qty_bid": null,
+          "ignore_qty_ask": [
+            99.0,
+            2000.0
+          ]
+        },
+        "no": {
+          "bid_levels": [
+            [
+              65.0,
+              0.0
+            ],
+            [
+              64.0,
+              441.42
+            ],
+            [
+              62.0,
+              48.0
+            ]
+          ],
+          "ask_levels": [
+            [
+              70.0,
+              400.0
+            ],
+            [
+              72.0,
+              906.58
+            ],
+            [
+              75.0,
+              50.0
+            ]
+          ],
+          "ignore_qty_bid": [
+            1.0,
+            2000.0
+          ],
+          "ignore_qty_ask": null
+        }
+      },
+      "reconstructed_top4": {
+        "yes": [
+          [
+            "30.0",
+            "400.0"
+          ],
+          [
+            "28.0",
+            "906.58"
+          ],
+          [
+            "25.0",
+            "50.0"
+          ],
+          [
+            "20.0",
+            "1.0"
+          ]
+        ],
+        "no": [
+          [
+            "64.0",
+            "441.42"
+          ],
+          [
+            "62.0",
+            "48.0"
+          ],
+          [
+            "61.0",
+            "100.0"
+          ],
+          [
+            "60.0",
+            "3.0"
+          ]
+        ]
+      }
+    }
+  ],
+  "strict_audit_unchanged": true,
+  "raw_delta_arithmetic_disagreements": 0,
+  "within_channel_clock_regressions": 0,
+  "global_clock_regressions": 414,
+  "actual_orders": 0,
+  "profitability_proven": false
+}

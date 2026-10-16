@@ -1,0 +1,12 @@
+{
+  "id": "external_depth_integrity_v1_20261016",
+  "purpose": "Source integrity audit only; no signals, prices selected for entry, outcomes, orders or profit estimates",
+  "selection": "Already cached sixth file only; audit all records without PnL or strategy-based selection",
+  "epoch": "A snapshot with seq1 after a prior seq greater than1 starts a new inferred channel epoch. Reused shard/sid alone never preserves old ticker initialization. Duplicate seq1 or any other sequence gap invalidates channel until a later explicit seq1 snapshot; epoch is inferred, not an observed connection UUID.",
+  "snapshot": "Independently reconstruct full ladders from snapshot_yes_bids and snapshot_no_bids. A ticker must have a snapshot in the current inferred epoch before any delta is accepted.",
+  "delta": "Require raw side, price, quantity, reported before and after to agree with reconstructed ladder; compare top3 displayed YES and NO bids and complementary asks to independently reconstructed values.",
+  "quantity_absolute_tolerance": "0.000001 contracts for serialized binary float arithmetic only, fixed before audit results; exact price equality; no negative quantities accepted",
+  "clock": "Do not reorder or alter source timestamps. Report global and within-channel regressions separately. No execution chronology claim from successful state reconstruction.",
+  "limits": {"maximum_records":1500000,"maximum_ladder_levels":3000000,"maximum_fault_samples":20},
+  "execution_enabled":false,"fill_assumed":false,"changes_frozen_strategy":false
+}

@@ -1,0 +1,191 @@
+{
+  "schema": "external_depth_integrity_audit_v1",
+  "source": {
+    "url": "https://huggingface.co/datasets/lerchen3/kalshi-orderbook-alpha/resolve/main/data/2026/07/19/kalshi_orderbooks_20260719T023456.569561Z_ip-172-31-3-129_50db72.jsonl.gz",
+    "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T023456.569561Z_ip-172-31-3-129_50db72.jsonl.gz",
+    "sha256": "5b1605514724e7823152008cfd70f8c86b893d6778cf466314c9036c3d6a6d3c",
+    "bytes": 59965899
+  },
+  "protocol_sha256": "1883c5a85b075108811736fce03adb8cdcaf5f0de5a5014c9d4d0eb9bc0a03fa",
+  "counts": {
+    "records": 641477,
+    "first_observed_channels": 19,
+    "unverified_channel_rows": 305647,
+    "universe": 1,
+    "inferred_epoch_restarts": 18,
+    "raw_snapshots": 182768,
+    "fully_reconstructed_rows": 282929,
+    "raw_deltas": 100223,
+    "derived_top3_disagreement": 62,
+    "uninitialized_ticker_rows": 52838,
+    "global_clock_regression": 414
+  },
+  "fault_samples": [
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXMLBTOTAL-26JUL182207DETLAA-9",
+      "shard": 0,
+      "sid": 1,
+      "seq": 16532,
+      "received_ts_ns": 1784428574164225356
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXLIGAMXGAME-26JUL18CDGTOL-CDG",
+      "shard": 0,
+      "sid": 1,
+      "seq": 22387,
+      "received_ts_ns": 1784428576671673401
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXMENWORLDCUP-26-AR",
+      "shard": 0,
+      "sid": 1,
+      "seq": 22666,
+      "received_ts_ns": 1784428576689092246
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXMLBTOTAL-26JUL181610PITCLE-4",
+      "shard": 0,
+      "sid": 1,
+      "seq": 23665,
+      "received_ts_ns": 1784428576803380433
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXBTC-26JUL1823-B64950",
+      "shard": 0,
+      "sid": 1,
+      "seq": 24668,
+      "received_ts_ns": 1784428576910561511
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXBTCD-26JUL1823-T64799.99",
+      "shard": 0,
+      "sid": 1,
+      "seq": 24991,
+      "received_ts_ns": 1784428576969043454
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+      "shard": 0,
+      "sid": 1,
+      "seq": 25248,
+      "received_ts_ns": 1784428576985143064
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXBTC-26JUL1823-B64850",
+      "shard": 0,
+      "sid": 1,
+      "seq": 25490,
+      "received_ts_ns": 1784428577882111990
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXXRP15M-26JUL182245-45",
+      "shard": 18,
+      "sid": 1,
+      "seq": 4049,
+      "received_ts_ns": 1784428578225125503
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXBTCD-26JUL1823-T64999.99",
+      "shard": 0,
+      "sid": 1,
+      "seq": 28471,
+      "received_ts_ns": 1784428578277037043
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXMLBTOTAL-26JUL182207DETLAA-11",
+      "shard": 0,
+      "sid": 1,
+      "seq": 29552,
+      "received_ts_ns": 1784428578455051233
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXBTC15M-26JUL182245-45",
+      "shard": 17,
+      "sid": 1,
+      "seq": 13208,
+      "received_ts_ns": 1784428578641986103
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXETHD-26JUL1823-T1864.99",
+      "shard": 0,
+      "sid": 1,
+      "seq": 34146,
+      "received_ts_ns": 1784428579174074579
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXSOLD-26JUL1823-T76.2499",
+      "shard": 17,
+      "sid": 1,
+      "seq": 18984,
+      "received_ts_ns": 1784428579495021387
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXETHD-26JUL1823-T1869.99",
+      "shard": 0,
+      "sid": 1,
+      "seq": 39580,
+      "received_ts_ns": 1784428580024263042
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXBNB15M-26JUL182245-45",
+      "shard": 17,
+      "sid": 1,
+      "seq": 23416,
+      "received_ts_ns": 1784428580216891335
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXSOL15M-26JUL182245-45",
+      "shard": 18,
+      "sid": 1,
+      "seq": 4689,
+      "received_ts_ns": 1784428581683472497
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXMLBSPREAD-26JUL182207DETLAA-DET3",
+      "shard": 0,
+      "sid": 1,
+      "seq": 42821,
+      "received_ts_ns": 1784428581703223437
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXMLBTOTAL-26JUL181610PITCLE-6",
+      "shard": 0,
+      "sid": 1,
+      "seq": 42864,
+      "received_ts_ns": 1784428581705577774
+    },
+    {
+      "reason": "derived_top3_disagreement",
+      "ticker": "KXMLBTOTAL-26JUL181610PITCLE-5",
+      "shard": 0,
+      "sid": 1,
+      "seq": 43505,
+      "received_ts_ns": 1784428581741407724
+    }
+  ],
+  "final_ladder_levels": 265643,
+  "execution_enabled": false,
+  "actual_orders": 0,
+  "profitability_proven": false,
+  "connection_uuid_verified": false,
+  "original_clock_order_preserved": true
+}
