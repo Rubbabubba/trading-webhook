@@ -1,0 +1,12 @@
+{
+  "url": "https://huggingface.co/api/datasets/lerchen3/kalshi-orderbook-alpha/tree/main/data/2026?limit=100",
+  "captured_at": "2026-10-16T02:13:50.172793+00:00",
+  "entries": [
+    {
+      "type": "directory",
+      "oid": "e89d6858c6d6a3e2938a2f8f6959044bd661e7c7",
+      "size": 0,
+      "path": "data/2026/07"
+    }
+  ]
+}

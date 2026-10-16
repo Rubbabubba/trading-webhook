@@ -1,0 +1,13 @@
+{
+  "schema": "v15_delayed_ioc_independent_accounting_v1",
+  "reviewed_sha256": "cc508a2d033b9c52e59a8d29371c9316ee562455eee4b9c7559c5f166628d80c",
+  "official_event_windows_checked": 88,
+  "conditional_entries_checked": 0,
+  "conditional_exits_checked": 0,
+  "causal_quote_views_checked": 0,
+  "result": "passed_retained_result_consistency_only",
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "profitability_proven": false,
+  "note": "Consistency is not verification of external quote truth, historical fees, fills, independence or profitability."
+}

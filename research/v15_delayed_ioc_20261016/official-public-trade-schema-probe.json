@@ -1,0 +1,133 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/trades?min_ts=1784430024&max_ts=1784430084&limit=10&is_block_trade=false",
+  "captured_at": "2026-10-16T02:16:48.176511+00:00",
+  "status": 200,
+  "response_sha256": "895ae5df01519c28d39ec083d85bdb87a1de5a823dec5900f692483be6413ca3",
+  "payload": {
+    "cursor": "EhIKENSsemeepVgUGKowhE2Kfy0aDAiD_PDSBhDY68m6Aw",
+    "trades": [
+      {
+        "count_fp": "89.28",
+        "created_time": "2026-07-19T03:01:23.986009Z",
+        "is_block_trade": false,
+        "no_price_dollars": "0.8300",
+        "taker_book_side": "bid",
+        "taker_outcome_side": "yes",
+        "taker_side": "yes",
+        "ticker": "KXT20MATCH-26JUL181930WASLOS-WAS",
+        "trade_id": "4d13c7f8-d304-7636-536d-9549131983ca",
+        "yes_price_dollars": "0.1700"
+      },
+      {
+        "count_fp": "31.00",
+        "created_time": "2026-07-19T03:01:23.967729Z",
+        "is_block_trade": false,
+        "no_price_dollars": "0.3600",
+        "taker_book_side": "bid",
+        "taker_outcome_side": "yes",
+        "taker_side": "yes",
+        "ticker": "KXMLBGAME-26JUL182008SFSEA-SEA",
+        "trade_id": "da4ed679-a5d6-59bb-8e50-a9174186d2c7",
+        "yes_price_dollars": "0.6400"
+      },
+      {
+        "count_fp": "5.00",
+        "created_time": "2026-07-19T03:01:23.967729Z",
+        "is_block_trade": false,
+        "no_price_dollars": "0.3600",
+        "taker_book_side": "bid",
+        "taker_outcome_side": "yes",
+        "taker_side": "yes",
+        "ticker": "KXMLBGAME-26JUL182008SFSEA-SEA",
+        "trade_id": "7edb574d-67a0-5399-b0d7-09dcb71e70f6",
+        "yes_price_dollars": "0.6400"
+      },
+      {
+        "count_fp": "9.20",
+        "created_time": "2026-07-19T03:01:23.967729Z",
+        "is_block_trade": false,
+        "no_price_dollars": "0.3600",
+        "taker_book_side": "bid",
+        "taker_outcome_side": "yes",
+        "taker_side": "yes",
+        "ticker": "KXMLBGAME-26JUL182008SFSEA-SEA",
+        "trade_id": "53dddf20-57cf-5468-8574-2aab12b31a90",
+        "yes_price_dollars": "0.6400"
+      },
+      {
+        "count_fp": "31.00",
+        "created_time": "2026-07-19T03:01:23.967729Z",
+        "is_block_trade": false,
+        "no_price_dollars": "0.3600",
+        "taker_book_side": "bid",
+        "taker_outcome_side": "yes",
+        "taker_side": "yes",
+        "ticker": "KXMLBGAME-26JUL182008SFSEA-SEA",
+        "trade_id": "1ac597e2-4271-5a24-b9fe-59f6c222a47f",
+        "yes_price_dollars": "0.6400"
+      },
+      {
+        "count_fp": "630.24",
+        "created_time": "2026-07-19T03:01:23.948863Z",
+        "is_block_trade": false,
+        "no_price_dollars": "0.5000",
+        "taker_book_side": "ask",
+        "taker_outcome_side": "no",
+        "taker_side": "no",
+        "ticker": "KXLIGAMXGAME-26JUL18QUEAME-AME",
+        "trade_id": "f053b420-7ba3-5505-fba6-74785833298c",
+        "yes_price_dollars": "0.5000"
+      },
+      {
+        "count_fp": "36.00",
+        "created_time": "2026-07-19T03:01:23.944186Z",
+        "is_block_trade": false,
+        "no_price_dollars": "0.9700",
+        "taker_book_side": "bid",
+        "taker_outcome_side": "yes",
+        "taker_side": "yes",
+        "ticker": "KXBTCD-26JUL1900-T64999.99",
+        "trade_id": "03f072d9-6c6a-4222-1822-6204990790c2",
+        "yes_price_dollars": "0.0300"
+      },
+      {
+        "count_fp": "41.20",
+        "created_time": "2026-07-19T03:01:23.934351Z",
+        "is_block_trade": false,
+        "no_price_dollars": "0.0800",
+        "taker_book_side": "bid",
+        "taker_outcome_side": "yes",
+        "taker_side": "yes",
+        "ticker": "KXUFCFIGHT-26JUL18DUUSM-DU",
+        "trade_id": "e2e842ec-dab7-50f9-793b-9fe493c8b281",
+        "yes_price_dollars": "0.9200"
+      },
+      {
+        "count_fp": "7.44",
+        "created_time": "2026-07-19T03:01:23.934351Z",
+        "is_block_trade": false,
+        "no_price_dollars": "0.0800",
+        "taker_book_side": "bid",
+        "taker_outcome_side": "yes",
+        "taker_side": "yes",
+        "ticker": "KXUFCFIGHT-26JUL18DUUSM-DU",
+        "trade_id": "3a5fc396-1e66-5ac8-558e-01f8aef20cdc",
+        "yes_price_dollars": "0.9200"
+      },
+      {
+        "count_fp": "2.39",
+        "created_time": "2026-07-19T03:01:23.928151Z",
+        "is_block_trade": false,
+        "no_price_dollars": "0.5100",
+        "taker_book_side": "bid",
+        "taker_outcome_side": "yes",
+        "taker_side": "yes",
+        "ticker": "KXMLBTOTAL-26JUL182205WSHATH-14",
+        "trade_id": "d4ac7a67-9ea5-5814-18aa-30844d8a7f2d",
+        "yes_price_dollars": "0.4900"
+      }
+    ]
+  },
+  "purpose": "Read-only endpoint/schema probe on already inspected UTC minute; not prospective strategy evidence or complete tape.",
+  "actual_orders": 0
+}

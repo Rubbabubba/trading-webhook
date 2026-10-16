@@ -1,0 +1,3661 @@
+{
+  "schema": "v15_delayed_ioc_independent_book_verification_v1",
+  "review_sha256": "cc508a2d033b9c52e59a8d29371c9316ee562455eee4b9c7559c5f166628d80c",
+  "source_records": 7516676,
+  "checked_entry_paths": 192,
+  "all_reported_entry_states_reproduced": true,
+  "observations": [
+    {
+      "ticker": "KXATPEXACTMATCH-26JUL19CERTRU-CER21",
+      "event_id": "KXATPEXACTMATCH-26JUL19CERTRU",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 22,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 27.0,
+        "ask_depth": 5.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429947.431466,
+        "available_at": 1784429947.431466
+      }
+    },
+    {
+      "ticker": "KXATPEXACTMATCH-26JUL19CERTRU-CER21",
+      "event_id": "KXATPEXACTMATCH-26JUL19CERTRU",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 20,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 27.0,
+        "ask_depth": 5.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429947.431466,
+        "available_at": 1784429947.431466
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19BAEKEC-KEC2",
+      "event_id": "KXATPGSPREAD-26JUL19BAEKEC",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 48,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 59.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430024.9695346,
+        "available_at": 1784430024.9695346
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19BAEKEC-KEC2",
+      "event_id": "KXATPGSPREAD-26JUL19BAEKEC",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 46,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 59.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430024.9695346,
+        "available_at": 1784430024.9695346
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19CHODEJ-DEJ2",
+      "event_id": "KXATPGSPREAD-26JUL19CHODEJ",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 47,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 350.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430002.7466915,
+        "available_at": 1784430002.7466915
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19CHODEJ-DEJ2",
+      "event_id": "KXATPGSPREAD-26JUL19CHODEJ",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 45,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 350.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430002.7466915,
+        "available_at": 1784430002.7466915
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19VANFAR-FAR2",
+      "event_id": "KXATPGSPREAD-26JUL19VANFAR",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 46,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 53.0,
+        "ask_depth": 500.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430004.183371,
+        "available_at": 1784430004.183371
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19VANFAR-FAR2",
+      "event_id": "KXATPGSPREAD-26JUL19VANFAR",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 44,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 53.0,
+        "ask_depth": 500.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430004.183371,
+        "available_at": 1784430004.183371
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19CHODEJ-23",
+      "event_id": "KXATPGTOTAL-26JUL19CHODEJ",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 47,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 335.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430003.090055,
+        "available_at": 1784430003.090055
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19CHODEJ-23",
+      "event_id": "KXATPGTOTAL-26JUL19CHODEJ",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 45,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 335.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430003.090055,
+        "available_at": 1784430003.090055
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19DROUGO-23",
+      "event_id": "KXATPGTOTAL-26JUL19DROUGO",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 48,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430003.2547252,
+        "available_at": 1784430003.2547252
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19DROUGO-23",
+      "event_id": "KXATPGTOTAL-26JUL19DROUGO",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 46,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430003.2547252,
+        "available_at": 1784430003.2547252
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19VANFAR-24",
+      "event_id": "KXATPGTOTAL-26JUL19VANFAR",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 47,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 52.0,
+        "ask_depth": 38.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430007.8580403,
+        "available_at": 1784430007.8580403
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19VANFAR-24",
+      "event_id": "KXATPGTOTAL-26JUL19VANFAR",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 45,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 52.0,
+        "ask_depth": 38.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430007.8580403,
+        "available_at": 1784430007.8580403
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19VANFAR-24",
+      "event_id": "KXATPGTOTAL-26JUL19VANFAR",
+      "track": "frozen_v10",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 47,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 52.0,
+        "ask_depth": 38.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430007.8580403,
+        "available_at": 1784430007.8580403
+      }
+    },
+    {
+      "ticker": "KXATPSETWINNER-26JUL19CERTRU-1-CER",
+      "event_id": "KXATPSETWINNER-26JUL19CERTRU-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 39,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 22.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430016.603525,
+        "available_at": 1784430016.603525
+      }
+    },
+    {
+      "ticker": "KXATPSETWINNER-26JUL19CERTRU-1-CER",
+      "event_id": "KXATPSETWINNER-26JUL19CERTRU-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 37,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 22.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430016.603525,
+        "available_at": 1784430016.603525
+      }
+    },
+    {
+      "ticker": "KXATPSETWINNER-26JUL19CERTRU-2-CER",
+      "event_id": "KXATPSETWINNER-26JUL19CERTRU-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 39,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 22.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430006.7711112,
+        "available_at": 1784430006.7711112
+      }
+    },
+    {
+      "ticker": "KXATPSETWINNER-26JUL19CERTRU-2-CER",
+      "event_id": "KXATPSETWINNER-26JUL19CERTRU-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 37,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 22.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430006.7711112,
+        "available_at": 1784430006.7711112
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL190400MISEAC-1-EAC",
+      "event_id": "KXCS2MAP-26JUL190400MISEAC-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 35,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 256.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429989.3320532,
+        "available_at": 1784429989.3320532
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL190400MISEAC-1-EAC",
+      "event_id": "KXCS2MAP-26JUL190400MISEAC-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 33,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 256.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429989.3320532,
+        "available_at": 1784429989.3320532
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191500GHBSTA-2-GH",
+      "event_id": "KXCS2MAP-26JUL191500GHBSTA-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 51,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 60.0,
+        "ask_depth": 800.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429950.798778,
+        "available_at": 1784429950.798778
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191500GHBSTA-2-GH",
+      "event_id": "KXCS2MAP-26JUL191500GHBSTA-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 49,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 60.0,
+        "ask_depth": 800.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429950.798778,
+        "available_at": 1784429950.798778
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL2006301WINARC-1-ARC",
+      "event_id": "KXCS2MAP-26JUL2006301WINARC-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 39,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 800.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430013.465308,
+        "available_at": 1784430013.465308
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL2006301WINARC-1-ARC",
+      "event_id": "KXCS2MAP-26JUL2006301WINARC-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 37,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 800.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430013.465308,
+        "available_at": 1784430013.465308
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL210600M80NIP-1-M80",
+      "event_id": "KXCS2MAP-26JUL210600M80NIP-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 44,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 2504.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430018.6673806,
+        "available_at": 1784430018.6673806
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL210600M80NIP-1-M80",
+      "event_id": "KXCS2MAP-26JUL210600M80NIP-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 42,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 2504.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430018.6673806,
+        "available_at": 1784430018.6673806
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL210600M80NIP-2-NIP",
+      "event_id": "KXCS2MAP-26JUL210600M80NIP-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 41,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 50.0,
+        "ask_depth": 2507.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430025.0552871,
+        "available_at": 1784430025.0552871
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL210600M80NIP-2-NIP",
+      "event_id": "KXCS2MAP-26JUL210600M80NIP-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 39,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 50.0,
+        "ask_depth": 2507.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430025.0552871,
+        "available_at": 1784430025.0552871
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL211100NTRMOUZ-1-MOUZ",
+      "event_id": "KXCS2MAP-26JUL211100NTRMOUZ-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 69,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 76.0,
+        "ask_depth": 284.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430013.5610907,
+        "available_at": 1784430013.5610907
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL211100NTRMOUZ-1-MOUZ",
+      "event_id": "KXCS2MAP-26JUL211100NTRMOUZ-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 67,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 76.0,
+        "ask_depth": 284.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430013.5610907,
+        "available_at": 1784430013.5610907
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL211100NTRMOUZ-1-MOUZ",
+      "event_id": "KXCS2MAP-26JUL211100NTRMOUZ-1",
+      "track": "frozen_v10",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 69,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 76.0,
+        "ask_depth": 284.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430013.5610907,
+        "available_at": 1784430013.5610907
+      }
+    },
+    {
+      "ticker": "KXITFWMATCH-26JUL19RABBOJ-BOJ",
+      "event_id": "KXITFWMATCH-26JUL19RABBOJ",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 23,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 30.0,
+        "ask_depth": 495.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429989.141023,
+        "available_at": 1784429989.141023
+      }
+    },
+    {
+      "ticker": "KXITFWMATCH-26JUL19RABBOJ-BOJ",
+      "event_id": "KXITFWMATCH-26JUL19RABBOJ",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 21,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 30.0,
+        "ask_depth": 495.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429989.141023,
+        "available_at": 1784429989.141023
+      }
+    },
+    {
+      "ticker": "KXITFWMATCH-26JUL19RABBOJ-BOJ",
+      "event_id": "KXITFWMATCH-26JUL19RABBOJ",
+      "track": "frozen_v10",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 23,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 30.0,
+        "ask_depth": 495.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429989.141023,
+        "available_at": 1784429989.141023
+      }
+    },
+    {
+      "ticker": "KXLOLMAP-26JUL220500EDGLGD-2-LGD",
+      "event_id": "KXLOLMAP-26JUL220500EDGLGD-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 40,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 19.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429951.923011,
+        "available_at": 1784429951.923011
+      }
+    },
+    {
+      "ticker": "KXLOLMAP-26JUL220500EDGLGD-2-LGD",
+      "event_id": "KXLOLMAP-26JUL220500EDGLGD-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 19.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429951.923011,
+        "available_at": 1784429951.923011
+      }
+    },
+    {
+      "ticker": "KXMLBF3-26JUL191335TEXATL-ATL",
+      "event_id": "KXMLBF3-26JUL191335TEXATL",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 63,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 72.0,
+        "ask_depth": 250.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784429983.3288918,
+        "available_at": 1784429983.3288918
+      }
+    },
+    {
+      "ticker": "KXMLBF3-26JUL191335TEXATL-ATL",
+      "event_id": "KXMLBF3-26JUL191335TEXATL",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 61,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 72.0,
+        "ask_depth": 250.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784429983.3288918,
+        "available_at": 1784429983.3288918
+      }
+    },
+    {
+      "ticker": "KXMLBF3-26JUL191420MINCHC-MIN",
+      "event_id": "KXMLBF3-26JUL191420MINCHC",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 65,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 74.0,
+        "ask_depth": 250.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784429986.7883317,
+        "available_at": 1784429986.7883317
+      }
+    },
+    {
+      "ticker": "KXMLBF3-26JUL191420MINCHC-MIN",
+      "event_id": "KXMLBF3-26JUL191420MINCHC",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 63,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 74.0,
+        "ask_depth": 250.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784429986.7883317,
+        "available_at": 1784429986.7883317
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL182008LADNYY-LAD",
+      "event_id": "KXMLBF5-26JUL182008LADNYY",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 43.0,
+        "ask_depth": 44.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429951.968474,
+        "available_at": 1784429951.968474
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL182008LADNYY-LAD",
+      "event_id": "KXMLBF5-26JUL182008LADNYY",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 36,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 43.0,
+        "ask_depth": 44.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429951.968474,
+        "available_at": 1784429951.968474
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191335TEXATL-ATL",
+      "event_id": "KXMLBF5-26JUL191335TEXATL",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 61,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 70.0,
+        "ask_depth": 258.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784430025.0288367,
+        "available_at": 1784430025.0288367
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191335TEXATL-ATL",
+      "event_id": "KXMLBF5-26JUL191335TEXATL",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 59,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 70.0,
+        "ask_depth": 258.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784430025.0288367,
+        "available_at": 1784430025.0288367
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191420MINCHC-MIN",
+      "event_id": "KXMLBF5-26JUL191420MINCHC",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 65,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 70.0,
+        "ask_depth": 267.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784430025.0305018,
+        "available_at": 1784430025.0305018
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191420MINCHC-MIN",
+      "event_id": "KXMLBF5-26JUL191420MINCHC",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 63,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 70.0,
+        "ask_depth": 267.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784430025.0305018,
+        "available_at": 1784430025.0305018
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191920LADNYY-LAD",
+      "event_id": "KXMLBF5-26JUL191920LADNYY",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 39,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 46.0,
+        "ask_depth": 27.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430024.0079644,
+        "available_at": 1784430024.0079644
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191920LADNYY-LAD",
+      "event_id": "KXMLBF5-26JUL191920LADNYY",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 37,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 46.0,
+        "ask_depth": 27.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430024.0079644,
+        "available_at": 1784430024.0079644
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191420MINCHC-CHC2",
+      "event_id": "KXMLBF5SPREAD-26JUL191420MINCHC",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 63,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 70.0,
+        "ask_depth": 375.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784430011.6750782,
+        "available_at": 1784430011.6750782
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191420MINCHC-CHC2",
+      "event_id": "KXMLBF5SPREAD-26JUL191420MINCHC",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 61,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 70.0,
+        "ask_depth": 375.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784430011.6750782,
+        "available_at": 1784430011.6750782
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191510CINCOL-CIN3",
+      "event_id": "KXMLBF5SPREAD-26JUL191510CINCOL",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 25,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 33.0,
+        "ask_depth": 44.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429960.8723848,
+        "available_at": 1784429960.8723848
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191510CINCOL-CIN3",
+      "event_id": "KXMLBF5SPREAD-26JUL191510CINCOL",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 23,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 33.0,
+        "ask_depth": 44.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429960.8723848,
+        "available_at": 1784429960.8723848
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191510CINCOL-CIN3",
+      "event_id": "KXMLBF5SPREAD-26JUL191510CINCOL",
+      "track": "frozen_v10",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 25,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 33.0,
+        "ask_depth": 44.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429960.8723848,
+        "available_at": 1784429960.8723848
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191420MINCHC-5",
+      "event_id": "KXMLBF5TOTAL-26JUL191420MINCHC",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 54,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 59.0,
+        "ask_depth": 166.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784430021.560785,
+        "available_at": 1784430021.560785
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191420MINCHC-5",
+      "event_id": "KXMLBF5TOTAL-26JUL191420MINCHC",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 52,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 59.0,
+        "ask_depth": 166.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784430021.560785,
+        "available_at": 1784430021.560785
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191920LADNYY-5",
+      "event_id": "KXMLBF5TOTAL-26JUL191920LADNYY",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 43,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 53.0,
+        "ask_depth": 31.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429952.0069876,
+        "available_at": 1784429952.0069876
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191920LADNYY-5",
+      "event_id": "KXMLBF5TOTAL-26JUL191920LADNYY",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 41,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 53.0,
+        "ask_depth": 31.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429952.0069876,
+        "available_at": 1784429952.0069876
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182205WSHATH-ATHCCORTES26-2",
+      "event_id": "KXMLBHIT-26JUL182205WSHATH",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 54,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 63.0,
+        "ask_depth": 50.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430019.540679,
+        "available_at": 1784430019.540679
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182205WSHATH-ATHCCORTES26-2",
+      "event_id": "KXMLBHIT-26JUL182205WSHATH",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 52,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 63.0,
+        "ask_depth": 50.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784430019.540679,
+        "available_at": 1784430019.540679
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182207DETLAA-DETDDINGLER13-1",
+      "event_id": "KXMLBHIT-26JUL182207DETLAA",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 40,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 50.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429983.082113,
+        "available_at": 1784429983.082113
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182207DETLAA-DETDDINGLER13-1",
+      "event_id": "KXMLBHIT-26JUL182207DETLAA",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 50.0,
+        "channel_at": 1784430026.0001018,
+        "ticker_receipt_at": 1784429983.082113,
+        "available_at": 1784429983.082113
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL191335TEXATL-TEX4",
+      "event_id": "KXMLBTEAMTOTAL-26JUL191335TEXATL",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 43.0,
+        "ask_depth": 24.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784429990.686679,
+        "available_at": 1784429990.686679
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL191335TEXATL-TEX4",
+      "event_id": "KXMLBTEAMTOTAL-26JUL191335TEXATL",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 36,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 43.0,
+        "ask_depth": 24.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784429990.686679,
+        "available_at": 1784429990.686679
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL191420MINCHC-CHC4",
+      "event_id": "KXMLBTEAMTOTAL-26JUL191420MINCHC",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 40,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 47.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784429983.27077,
+        "available_at": 1784429983.27077
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL191420MINCHC-CHC4",
+      "event_id": "KXMLBTEAMTOTAL-26JUL191420MINCHC",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 47.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430025.9997497,
+        "ticker_receipt_at": 1784429983.27077,
+        "available_at": 1784429983.27077
+      }
+    },
+    {
+      "ticker": "KXNBASUMMERSPREAD-26JUL19BKNOKC-BKN7",
+      "event_id": "KXNBASUMMERSPREAD-26JUL19BKNOKC",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 60,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 66.0,
+        "ask_depth": 32.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784430011.512023,
+        "available_at": 1784430011.512023
+      }
+    },
+    {
+      "ticker": "KXNBASUMMERSPREAD-26JUL19BKNOKC-BKN7",
+      "event_id": "KXNBASUMMERSPREAD-26JUL19BKNOKC",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 58,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 66.0,
+        "ask_depth": 32.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784430011.512023,
+        "available_at": 1784430011.512023
+      }
+    },
+    {
+      "ticker": "KXNPBGAME-26JUL200300SAITOH-SAI",
+      "event_id": "KXNPBGAME-26JUL200300SAITOH",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 47,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 55.0,
+        "ask_depth": 98.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784430005.5065608,
+        "available_at": 1784430005.5065608
+      }
+    },
+    {
+      "ticker": "KXNPBGAME-26JUL200300SAITOH-SAI",
+      "event_id": "KXNPBGAME-26JUL200300SAITOH",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 45,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 55.0,
+        "ask_depth": 98.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784430005.5065608,
+        "available_at": 1784430005.5065608
+      }
+    },
+    {
+      "ticker": "KXPGATOP20-COPC26-JBYR",
+      "event_id": "KXPGATOP20-COPC26",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 42,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 47.0,
+        "ask_depth": 1000.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784429988.0168867,
+        "available_at": 1784429988.0168867
+      }
+    },
+    {
+      "ticker": "KXPGATOP20-COPC26-JBYR",
+      "event_id": "KXPGATOP20-COPC26",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 40,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 47.0,
+        "ask_depth": 1000.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784429988.0168867,
+        "available_at": 1784429988.0168867
+      }
+    },
+    {
+      "ticker": "KXPGATOP5-COPC26-DFRI",
+      "event_id": "KXPGATOP5-COPC26",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 17,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 25.0,
+        "ask_depth": 2055.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784429957.5222888,
+        "available_at": 1784429957.5222888
+      }
+    },
+    {
+      "ticker": "KXPGATOP5-COPC26-DFRI",
+      "event_id": "KXPGATOP5-COPC26",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 15,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 25.0,
+        "ask_depth": 2055.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784429957.5222888,
+        "available_at": 1784429957.5222888
+      }
+    },
+    {
+      "ticker": "KXVALORANTMAP-26JUL200800XLGBLG-1-XLG",
+      "event_id": "KXVALORANTMAP-26JUL200800XLGBLG-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 45.0,
+        "ask_depth": 18.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784429968.8628738,
+        "available_at": 1784429968.8628738
+      }
+    },
+    {
+      "ticker": "KXVALORANTMAP-26JUL200800XLGBLG-1-XLG",
+      "event_id": "KXVALORANTMAP-26JUL200800XLGBLG-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 36,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 45.0,
+        "ask_depth": 18.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784429968.8628738,
+        "available_at": 1784429968.8628738
+      }
+    },
+    {
+      "ticker": "KXVALORANTMAP-26JUL200800XLGBLG-2-BLG",
+      "event_id": "KXVALORANTMAP-26JUL200800XLGBLG-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 500.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784430025.9580054,
+        "available_at": 1784430025.9580054
+      }
+    },
+    {
+      "ticker": "KXVALORANTMAP-26JUL200800XLGBLG-2-BLG",
+      "event_id": "KXVALORANTMAP-26JUL200800XLGBLG-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "yes",
+      "limit": 36,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 500.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784430025.9580054,
+        "available_at": 1784430025.9580054
+      }
+    },
+    {
+      "ticker": "KXWNBASPREAD-26JUL20LVTOR-LV13",
+      "event_id": "KXWNBASPREAD-26JUL20LVTOR",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 54,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 62.0,
+        "ask_depth": 20.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784430021.0065603,
+        "available_at": 1784430021.0065603
+      }
+    },
+    {
+      "ticker": "KXWNBASPREAD-26JUL20LVTOR-LV13",
+      "event_id": "KXWNBASPREAD-26JUL20LVTOR",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 52,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 62.0,
+        "ask_depth": 20.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784430021.0065603,
+        "available_at": 1784430021.0065603
+      }
+    },
+    {
+      "ticker": "KXWNBATOTAL-26JUL20LVTOR-190",
+      "event_id": "KXWNBATOTAL-26JUL20LVTOR",
+      "track": "v15_ioc",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 65,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 72.0,
+        "ask_depth": 20.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784430025.0216773,
+        "available_at": 1784430025.0216773
+      }
+    },
+    {
+      "ticker": "KXWNBATOTAL-26JUL20LVTOR-190",
+      "event_id": "KXWNBATOTAL-26JUL20LVTOR",
+      "track": "frozen_v12",
+      "decision_at": 1784430025,
+      "side": "no",
+      "limit": 63,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430026.0001018,
+      "due": 1784430026,
+      "quote": {
+        "ask": 72.0,
+        "ask_depth": 20.0,
+        "channel_at": 1784430025.994127,
+        "ticker_receipt_at": 1784430025.0216773,
+        "available_at": 1784430025.0216773
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191335TEXATL-ATL2",
+      "event_id": "KXMLBF5SPREAD-26JUL191335TEXATL",
+      "track": "v15_ioc",
+      "decision_at": 1784430030,
+      "side": "no",
+      "limit": 73,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430031.0000567,
+      "due": 1784430031,
+      "quote": {
+        "ask": 79.0,
+        "ask_depth": 415.0,
+        "channel_at": 1784430030.99906,
+        "ticker_receipt_at": 1784430026.946458,
+        "available_at": 1784430026.946458
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191335TEXATL-ATL2",
+      "event_id": "KXMLBF5SPREAD-26JUL191335TEXATL",
+      "track": "frozen_v12",
+      "decision_at": 1784430030,
+      "side": "no",
+      "limit": 71,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430031.0000567,
+      "due": 1784430031,
+      "quote": {
+        "ask": 79.0,
+        "ask_depth": 415.0,
+        "channel_at": 1784430030.99906,
+        "ticker_receipt_at": 1784430026.946458,
+        "available_at": 1784430026.946458
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191335TEXATL-ATL2",
+      "event_id": "KXMLBF5SPREAD-26JUL191335TEXATL",
+      "track": "frozen_v10",
+      "decision_at": 1784430030,
+      "side": "no",
+      "limit": 73,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430031.0000567,
+      "due": 1784430031,
+      "quote": {
+        "ask": 79.0,
+        "ask_depth": 415.0,
+        "channel_at": 1784430030.99906,
+        "ticker_receipt_at": 1784430026.946458,
+        "available_at": 1784430026.946458
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL2006301WINARC-2-1WIN",
+      "event_id": "KXCS2MAP-26JUL2006301WINARC-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430040,
+      "side": "no",
+      "limit": 39,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430041.0000575,
+      "due": 1784430041,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 2603.0,
+        "channel_at": 1784430041.0000575,
+        "ticker_receipt_at": 1784430039.4588084,
+        "available_at": 1784430039.4588084
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL2006301WINARC-2-1WIN",
+      "event_id": "KXCS2MAP-26JUL2006301WINARC-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430040,
+      "side": "no",
+      "limit": 37,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430041.0000575,
+      "due": 1784430041,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 2603.0,
+        "channel_at": 1784430041.0000575,
+        "ticker_receipt_at": 1784430039.4588084,
+        "available_at": 1784430039.4588084
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL210830NEMAST-1-NEM",
+      "event_id": "KXCS2MAP-26JUL210830NEMAST-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430040,
+      "side": "no",
+      "limit": 50,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430041.0000575,
+      "due": 1784430041,
+      "quote": {
+        "ask": 59.0,
+        "ask_depth": 2501.0,
+        "channel_at": 1784430041.0000575,
+        "ticker_receipt_at": 1784430038.2053952,
+        "available_at": 1784430038.2053952
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL210830NEMAST-1-NEM",
+      "event_id": "KXCS2MAP-26JUL210830NEMAST-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430040,
+      "side": "no",
+      "limit": 48,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430041.0000575,
+      "due": 1784430041,
+      "quote": {
+        "ask": 59.0,
+        "ask_depth": 2501.0,
+        "channel_at": 1784430041.0000575,
+        "ticker_receipt_at": 1784430038.2053952,
+        "available_at": 1784430038.2053952
+      }
+    },
+    {
+      "ticker": "KXMLBGAME-26JUL202140CINSEA-SEA",
+      "event_id": "KXMLBGAME-26JUL202140CINSEA",
+      "track": "v15_ioc",
+      "decision_at": 1784430040,
+      "side": "no",
+      "limit": 43,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430041.0000575,
+      "due": 1784430041,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 21.34,
+        "channel_at": 1784430041.0000575,
+        "ticker_receipt_at": 1784430040.5972157,
+        "available_at": 1784430040.5972157
+      }
+    },
+    {
+      "ticker": "KXMLBGAME-26JUL202140CINSEA-SEA",
+      "event_id": "KXMLBGAME-26JUL202140CINSEA",
+      "track": "frozen_v12",
+      "decision_at": 1784430040,
+      "side": "no",
+      "limit": 41,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430041.0000575,
+      "due": 1784430041,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 21.34,
+        "channel_at": 1784430041.0000575,
+        "ticker_receipt_at": 1784430040.5972157,
+        "available_at": 1784430040.5972157
+      }
+    },
+    {
+      "ticker": "KXMLBGAME-26JUL202140CINSEA-SEA",
+      "event_id": "KXMLBGAME-26JUL202140CINSEA",
+      "track": "frozen_v10",
+      "decision_at": 1784430040,
+      "side": "no",
+      "limit": 42,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430041.0000575,
+      "due": 1784430041,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 21.34,
+        "channel_at": 1784430041.0000575,
+        "ticker_receipt_at": 1784430040.5972157,
+        "available_at": 1784430040.5972157
+      }
+    },
+    {
+      "ticker": "KXMLBSPREAD-26JUL182207DETLAA-DET9",
+      "event_id": "KXMLBSPREAD-26JUL182207DETLAA",
+      "track": "v15_ioc",
+      "decision_at": 1784430040,
+      "side": "yes",
+      "limit": 30,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430041.0000575,
+      "due": 1784430041,
+      "quote": {
+        "ask": 35.0,
+        "ask_depth": 1247.97,
+        "channel_at": 1784430040.9771988,
+        "ticker_receipt_at": 1784430036.5850375,
+        "available_at": 1784430036.5850375
+      }
+    },
+    {
+      "ticker": "KXMLBSPREAD-26JUL182207DETLAA-DET9",
+      "event_id": "KXMLBSPREAD-26JUL182207DETLAA",
+      "track": "frozen_v12",
+      "decision_at": 1784430040,
+      "side": "yes",
+      "limit": 28,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430041.0000575,
+      "due": 1784430041,
+      "quote": {
+        "ask": 35.0,
+        "ask_depth": 1247.97,
+        "channel_at": 1784430040.9771988,
+        "ticker_receipt_at": 1784430036.5850375,
+        "available_at": 1784430036.5850375
+      }
+    },
+    {
+      "ticker": "KXNZNBLGAME-26JUL182300TUACAN-CAN",
+      "event_id": "KXNZNBLGAME-26JUL182300TUACAN",
+      "track": "v15_ioc",
+      "decision_at": 1784430045,
+      "side": "no",
+      "limit": 52,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430046.0003114,
+      "due": 1784430046,
+      "quote": {
+        "ask": 62.0,
+        "ask_depth": 175.0,
+        "channel_at": 1784430045.999997,
+        "ticker_receipt_at": 1784430044.8664556,
+        "available_at": 1784430044.8664556
+      }
+    },
+    {
+      "ticker": "KXNZNBLGAME-26JUL182300TUACAN-CAN",
+      "event_id": "KXNZNBLGAME-26JUL182300TUACAN",
+      "track": "frozen_v12",
+      "decision_at": 1784430045,
+      "side": "no",
+      "limit": 50,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430046.0003114,
+      "due": 1784430046,
+      "quote": {
+        "ask": 62.0,
+        "ask_depth": 175.0,
+        "channel_at": 1784430045.999997,
+        "ticker_receipt_at": 1784430044.8664556,
+        "available_at": 1784430044.8664556
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191200MWCHAMA-1-MW",
+      "event_id": "KXCS2MAP-26JUL191200MWCHAMA-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430050,
+      "side": "yes",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430051.1546333,
+      "due": 1784430051,
+      "quote": {
+        "ask": 48.0,
+        "ask_depth": 800.0,
+        "channel_at": 1784430051.1546333,
+        "ticker_receipt_at": 1784430047.119081,
+        "available_at": 1784430047.119081
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191200MWCHAMA-1-MW",
+      "event_id": "KXCS2MAP-26JUL191200MWCHAMA-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430050,
+      "side": "yes",
+      "limit": 36,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430051.1546333,
+      "due": 1784430051,
+      "quote": {
+        "ask": 48.0,
+        "ask_depth": 800.0,
+        "channel_at": 1784430051.1546333,
+        "ticker_receipt_at": 1784430047.119081,
+        "available_at": 1784430047.119081
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191800ODKPDAF-2-ODK",
+      "event_id": "KXCS2MAP-26JUL191800ODKPDAF-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430050,
+      "side": "yes",
+      "limit": 46,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430051.1546333,
+      "due": 1784430051,
+      "quote": {
+        "ask": 56.0,
+        "ask_depth": 768.0,
+        "channel_at": 1784430051.1546333,
+        "ticker_receipt_at": 1784430048.493089,
+        "available_at": 1784430048.493089
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191800ODKPDAF-2-ODK",
+      "event_id": "KXCS2MAP-26JUL191800ODKPDAF-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430050,
+      "side": "yes",
+      "limit": 44,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430051.1546333,
+      "due": 1784430051,
+      "quote": {
+        "ask": 56.0,
+        "ask_depth": 768.0,
+        "channel_at": 1784430051.1546333,
+        "ticker_receipt_at": 1784430048.493089,
+        "available_at": 1784430048.493089
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191200MWCHAMA-2-CHAMA",
+      "event_id": "KXCS2MAP-26JUL191200MWCHAMA-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430055,
+      "side": "yes",
+      "limit": 54,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430056.000318,
+      "due": 1784430056,
+      "quote": {
+        "ask": 64.0,
+        "ask_depth": 800.0,
+        "channel_at": 1784430056.000318,
+        "ticker_receipt_at": 1784430051.4803274,
+        "available_at": 1784430051.4803274
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191200MWCHAMA-2-CHAMA",
+      "event_id": "KXCS2MAP-26JUL191200MWCHAMA-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430055,
+      "side": "yes",
+      "limit": 52,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430056.000318,
+      "due": 1784430056,
+      "quote": {
+        "ask": 64.0,
+        "ask_depth": 800.0,
+        "channel_at": 1784430056.000318,
+        "ticker_receipt_at": 1784430051.4803274,
+        "available_at": 1784430051.4803274
+      }
+    },
+    {
+      "ticker": "KXLOLMAP-26JUL221330UCAMBAR-2-BAR",
+      "event_id": "KXLOLMAP-26JUL221330UCAMBAR-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430055,
+      "side": "no",
+      "limit": 53,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430056.000318,
+      "due": 1784430056,
+      "quote": {
+        "ask": 60.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430056.000318,
+        "ticker_receipt_at": 1784430054.2861392,
+        "available_at": 1784430054.2861392
+      }
+    },
+    {
+      "ticker": "KXLOLMAP-26JUL221330UCAMBAR-2-BAR",
+      "event_id": "KXLOLMAP-26JUL221330UCAMBAR-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430055,
+      "side": "no",
+      "limit": 51,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430056.000318,
+      "due": 1784430056,
+      "quote": {
+        "ask": 60.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430056.000318,
+        "ticker_receipt_at": 1784430054.2861392,
+        "available_at": 1784430054.2861392
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191510CINCOL-4",
+      "event_id": "KXMLBF5TOTAL-26JUL191510CINCOL",
+      "track": "v15_ioc",
+      "decision_at": 1784430055,
+      "side": "yes",
+      "limit": 73,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430056.000318,
+      "due": 1784430056,
+      "quote": {
+        "ask": 79.0,
+        "ask_depth": 369.0,
+        "channel_at": 1784430056.000318,
+        "ticker_receipt_at": 1784430055.9535143,
+        "available_at": 1784430055.9535143
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191510CINCOL-4",
+      "event_id": "KXMLBF5TOTAL-26JUL191510CINCOL",
+      "track": "frozen_v12",
+      "decision_at": 1784430055,
+      "side": "yes",
+      "limit": 71,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430056.000318,
+      "due": 1784430056,
+      "quote": {
+        "ask": 79.0,
+        "ask_depth": 369.0,
+        "channel_at": 1784430056.000318,
+        "ticker_receipt_at": 1784430055.9535143,
+        "available_at": 1784430055.9535143
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191510CINCOL-4",
+      "event_id": "KXMLBF5TOTAL-26JUL191510CINCOL",
+      "track": "frozen_v10",
+      "decision_at": 1784430055,
+      "side": "yes",
+      "limit": 73,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430056.000318,
+      "due": 1784430056,
+      "quote": {
+        "ask": 79.0,
+        "ask_depth": 369.0,
+        "channel_at": 1784430056.000318,
+        "ticker_receipt_at": 1784430055.9535143,
+        "available_at": 1784430055.9535143
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19FERVAN-VAN5",
+      "event_id": "KXATPGSPREAD-26JUL19FERVAN",
+      "track": "v15_ioc",
+      "decision_at": 1784430060,
+      "side": "no",
+      "limit": 41,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430061.00003,
+      "due": 1784430061,
+      "quote": {
+        "ask": 50.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430060.9952517,
+        "ticker_receipt_at": 1784430058.2134178,
+        "available_at": 1784430058.2134178
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19FERVAN-VAN5",
+      "event_id": "KXATPGSPREAD-26JUL19FERVAN",
+      "track": "frozen_v12",
+      "decision_at": 1784430060,
+      "side": "no",
+      "limit": 39,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430061.00003,
+      "due": 1784430061,
+      "quote": {
+        "ask": 50.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430060.9952517,
+        "ticker_receipt_at": 1784430058.2134178,
+        "available_at": 1784430058.2134178
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19MULNAV-20",
+      "event_id": "KXATPGTOTAL-26JUL19MULNAV",
+      "track": "v15_ioc",
+      "decision_at": 1784430060,
+      "side": "yes",
+      "limit": 51,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430061.00003,
+      "due": 1784430061,
+      "quote": {
+        "ask": 60.0,
+        "ask_depth": 25.0,
+        "channel_at": 1784430060.9952517,
+        "ticker_receipt_at": 1784430058.2791574,
+        "available_at": 1784430058.2791574
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19MULNAV-20",
+      "event_id": "KXATPGTOTAL-26JUL19MULNAV",
+      "track": "frozen_v12",
+      "decision_at": 1784430060,
+      "side": "yes",
+      "limit": 49,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430061.00003,
+      "due": 1784430061,
+      "quote": {
+        "ask": 60.0,
+        "ask_depth": 25.0,
+        "channel_at": 1784430060.9952517,
+        "ticker_receipt_at": 1784430058.2791574,
+        "available_at": 1784430058.2791574
+      }
+    },
+    {
+      "ticker": "KXMLBSPREAD-26JUL182205WSHATH-ATH9",
+      "event_id": "KXMLBSPREAD-26JUL182205WSHATH",
+      "track": "v15_ioc",
+      "decision_at": 1784430065,
+      "side": "no",
+      "limit": 73,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430066.0004463,
+      "due": 1784430066,
+      "quote": {
+        "ask": 82.0,
+        "ask_depth": 268.0,
+        "channel_at": 1784430065.9913385,
+        "ticker_receipt_at": 1784430065.5680652,
+        "available_at": 1784430065.5680652
+      }
+    },
+    {
+      "ticker": "KXMLBSPREAD-26JUL182205WSHATH-ATH9",
+      "event_id": "KXMLBSPREAD-26JUL182205WSHATH",
+      "track": "frozen_v12",
+      "decision_at": 1784430065,
+      "side": "no",
+      "limit": 71,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430066.0004463,
+      "due": 1784430066,
+      "quote": {
+        "ask": 82.0,
+        "ask_depth": 268.0,
+        "channel_at": 1784430065.9913385,
+        "ticker_receipt_at": 1784430065.5680652,
+        "available_at": 1784430065.5680652
+      }
+    },
+    {
+      "ticker": "KXMLBTOTAL-26JUL182205WSHATH-16",
+      "event_id": "KXMLBTOTAL-26JUL182205WSHATH",
+      "track": "v15_ioc",
+      "decision_at": 1784430065,
+      "side": "no",
+      "limit": 66,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430066.0004463,
+      "due": 1784430066,
+      "quote": {
+        "ask": 75.0,
+        "ask_depth": 250.0,
+        "channel_at": 1784430065.9913385,
+        "ticker_receipt_at": 1784430065.264607,
+        "available_at": 1784430065.264607
+      }
+    },
+    {
+      "ticker": "KXMLBTOTAL-26JUL182205WSHATH-16",
+      "event_id": "KXMLBTOTAL-26JUL182205WSHATH",
+      "track": "frozen_v12",
+      "decision_at": 1784430065,
+      "side": "no",
+      "limit": 64,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430066.0004463,
+      "due": 1784430066,
+      "quote": {
+        "ask": 75.0,
+        "ask_depth": 250.0,
+        "channel_at": 1784430065.9913385,
+        "ticker_receipt_at": 1784430065.264607,
+        "available_at": 1784430065.264607
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191500GHBSTA-1-BSTA",
+      "event_id": "KXCS2MAP-26JUL191500GHBSTA-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430075,
+      "side": "no",
+      "limit": 51,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430076.0005217,
+      "due": 1784430076,
+      "quote": {
+        "ask": 60.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430075.9999962,
+        "ticker_receipt_at": 1784430071.155521,
+        "available_at": 1784430071.155521
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191500GHBSTA-1-BSTA",
+      "event_id": "KXCS2MAP-26JUL191500GHBSTA-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430075,
+      "side": "no",
+      "limit": 49,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430076.0005217,
+      "due": 1784430076,
+      "quote": {
+        "ask": 60.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430075.9999962,
+        "ticker_receipt_at": 1784430071.155521,
+        "available_at": 1784430071.155521
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191800ODKPDAF-1-PDAF",
+      "event_id": "KXCS2MAP-26JUL191800ODKPDAF-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430075,
+      "side": "yes",
+      "limit": 46,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430076.0005217,
+      "due": 1784430076,
+      "quote": {
+        "ask": 55.0,
+        "ask_depth": 800.0,
+        "channel_at": 1784430075.9999962,
+        "ticker_receipt_at": 1784430071.0628848,
+        "available_at": 1784430071.0628848
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191800ODKPDAF-1-PDAF",
+      "event_id": "KXCS2MAP-26JUL191800ODKPDAF-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430075,
+      "side": "yes",
+      "limit": 44,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430076.0005217,
+      "due": 1784430076,
+      "quote": {
+        "ask": 55.0,
+        "ask_depth": 800.0,
+        "channel_at": 1784430075.9999962,
+        "ticker_receipt_at": 1784430071.0628848,
+        "available_at": 1784430071.0628848
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-ATH8",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182205WSHATH",
+      "track": "v15_ioc",
+      "decision_at": 1784430075,
+      "side": "no",
+      "limit": 21,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430076.0005217,
+      "due": 1784430076,
+      "quote": {
+        "ask": 26.0,
+        "ask_depth": 150.0,
+        "channel_at": 1784430075.9999962,
+        "ticker_receipt_at": 1784430075.8479686,
+        "available_at": 1784430075.8479686
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-ATH8",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182205WSHATH",
+      "track": "frozen_v12",
+      "decision_at": 1784430075,
+      "side": "no",
+      "limit": 19,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430076.0005217,
+      "due": 1784430076,
+      "quote": {
+        "ask": 26.0,
+        "ask_depth": 150.0,
+        "channel_at": 1784430075.9999962,
+        "ticker_receipt_at": 1784430075.8479686,
+        "available_at": 1784430075.8479686
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-ATH8",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182205WSHATH",
+      "track": "frozen_v10",
+      "decision_at": 1784430075,
+      "side": "no",
+      "limit": 22,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430076.0005217,
+      "due": 1784430076,
+      "quote": {
+        "ask": 26.0,
+        "ask_depth": 150.0,
+        "channel_at": 1784430075.9999962,
+        "ticker_receipt_at": 1784430075.8479686,
+        "available_at": 1784430075.8479686
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19CERTRU-CER6",
+      "event_id": "KXATPGSPREAD-26JUL19CERTRU",
+      "track": "v15_ioc",
+      "decision_at": 1784430080,
+      "side": "yes",
+      "limit": 23,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430081.0006433,
+      "due": 1784430081,
+      "quote": {
+        "ask": 32.0,
+        "ask_depth": 14.0,
+        "channel_at": 1784430080.9990058,
+        "ticker_receipt_at": 1784430078.313136,
+        "available_at": 1784430078.313136
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19CERTRU-CER6",
+      "event_id": "KXATPGSPREAD-26JUL19CERTRU",
+      "track": "frozen_v12",
+      "decision_at": 1784430080,
+      "side": "yes",
+      "limit": 21,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430081.0006433,
+      "due": 1784430081,
+      "quote": {
+        "ask": 32.0,
+        "ask_depth": 14.0,
+        "channel_at": 1784430080.9990058,
+        "ticker_receipt_at": 1784430078.313136,
+        "available_at": 1784430078.313136
+      }
+    },
+    {
+      "ticker": "KXLATENIGHTMENTION-26JUL19-TRUM",
+      "event_id": "KXLATENIGHTMENTION-26JUL19",
+      "track": "v15_ioc",
+      "decision_at": 1784430080,
+      "side": "no",
+      "limit": 55,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430081.0006433,
+      "due": 1784430081,
+      "quote": {
+        "ask": 63.0,
+        "ask_depth": 4.0,
+        "channel_at": 1784430080.9990058,
+        "ticker_receipt_at": 1784430080.6132426,
+        "available_at": 1784430080.6132426
+      }
+    },
+    {
+      "ticker": "KXLATENIGHTMENTION-26JUL19-TRUM",
+      "event_id": "KXLATENIGHTMENTION-26JUL19",
+      "track": "frozen_v12",
+      "decision_at": 1784430080,
+      "side": "no",
+      "limit": 53,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430081.0006433,
+      "due": 1784430081,
+      "quote": {
+        "ask": 63.0,
+        "ask_depth": 4.0,
+        "channel_at": 1784430080.9990058,
+        "ticker_receipt_at": 1784430080.6132426,
+        "available_at": 1784430080.6132426
+      }
+    },
+    {
+      "ticker": "KXLATENIGHTMENTION-26JUL19-TRUM",
+      "event_id": "KXLATENIGHTMENTION-26JUL19",
+      "track": "frozen_v10",
+      "decision_at": 1784430080,
+      "side": "no",
+      "limit": 57,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430081.0006433,
+      "due": 1784430081,
+      "quote": {
+        "ask": 63.0,
+        "ask_depth": 4.0,
+        "channel_at": 1784430080.9990058,
+        "ticker_receipt_at": 1784430080.6132426,
+        "available_at": 1784430080.6132426
+      }
+    },
+    {
+      "ticker": "KXWNBATOTAL-26JUL20NYDAL-176",
+      "event_id": "KXWNBATOTAL-26JUL20NYDAL",
+      "track": "v15_ioc",
+      "decision_at": 1784430085,
+      "side": "yes",
+      "limit": 50,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430086.0013251,
+      "due": 1784430086,
+      "quote": {
+        "ask": 60.0,
+        "ask_depth": 35.0,
+        "channel_at": 1784430085.9970498,
+        "ticker_receipt_at": 1784430083.8015852,
+        "available_at": 1784430083.8015852
+      }
+    },
+    {
+      "ticker": "KXWNBATOTAL-26JUL20NYDAL-176",
+      "event_id": "KXWNBATOTAL-26JUL20NYDAL",
+      "track": "frozen_v12",
+      "decision_at": 1784430085,
+      "side": "yes",
+      "limit": 48,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430086.0013251,
+      "due": 1784430086,
+      "quote": {
+        "ask": 60.0,
+        "ask_depth": 35.0,
+        "channel_at": 1784430085.9970498,
+        "ticker_receipt_at": 1784430083.8015852,
+        "available_at": 1784430083.8015852
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191920LADNYY-NYY3",
+      "event_id": "KXMLBF5SPREAD-26JUL191920LADNYY",
+      "track": "v15_ioc",
+      "decision_at": 1784430090,
+      "side": "yes",
+      "limit": 18,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430091.0000787,
+      "due": 1784430091,
+      "quote": {
+        "ask": 27.0,
+        "ask_depth": 70.0,
+        "channel_at": 1784430090.9971743,
+        "ticker_receipt_at": 1784430089.6080563,
+        "available_at": 1784430089.6080563
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191920LADNYY-NYY3",
+      "event_id": "KXMLBF5SPREAD-26JUL191920LADNYY",
+      "track": "frozen_v12",
+      "decision_at": 1784430090,
+      "side": "yes",
+      "limit": 16,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430091.0000787,
+      "due": 1784430091,
+      "quote": {
+        "ask": 27.0,
+        "ask_depth": 70.0,
+        "channel_at": 1784430090.9971743,
+        "ticker_receipt_at": 1784430089.6080563,
+        "available_at": 1784430089.6080563
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL182008SFSEA-SEA4",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182008SFSEA",
+      "track": "v15_ioc",
+      "decision_at": 1784430095,
+      "side": "yes",
+      "limit": 77,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430096.0000072,
+      "due": 1784430096,
+      "quote": {
+        "ask": 80.0,
+        "ask_depth": 50.0,
+        "channel_at": 1784430095.9995615,
+        "ticker_receipt_at": 1784430095.7842383,
+        "available_at": 1784430095.7842383
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL182008SFSEA-SEA4",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182008SFSEA",
+      "track": "frozen_v12",
+      "decision_at": 1784430095,
+      "side": "yes",
+      "limit": 75,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430096.0000072,
+      "due": 1784430096,
+      "quote": {
+        "ask": 80.0,
+        "ask_depth": 50.0,
+        "channel_at": 1784430095.9995615,
+        "ticker_receipt_at": 1784430095.7842383,
+        "available_at": 1784430095.7842383
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL182008SFSEA-SEA4",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182008SFSEA",
+      "track": "frozen_v10",
+      "decision_at": 1784430095,
+      "side": "yes",
+      "limit": 78,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430096.0000072,
+      "due": 1784430096,
+      "quote": {
+        "ask": 80.0,
+        "ask_depth": 50.0,
+        "channel_at": 1784430095.9995615,
+        "ticker_receipt_at": 1784430095.7842383,
+        "available_at": 1784430095.7842383
+      }
+    },
+    {
+      "ticker": "KXWCAWARD-26BBALL-JBELL",
+      "event_id": "KXWCAWARD-26BBALL",
+      "track": "v15_ioc",
+      "decision_at": 1784430130,
+      "side": "yes",
+      "limit": 48,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430131.0001087,
+      "due": 1784430131,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 5.0,
+        "channel_at": 1784430131.0001087,
+        "ticker_receipt_at": 1784430130.958342,
+        "available_at": 1784430130.958342
+      }
+    },
+    {
+      "ticker": "KXWCAWARD-26BBALL-JBELL",
+      "event_id": "KXWCAWARD-26BBALL",
+      "track": "frozen_v12",
+      "decision_at": 1784430130,
+      "side": "yes",
+      "limit": 46,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430131.0001087,
+      "due": 1784430131,
+      "quote": {
+        "ask": 54.0,
+        "ask_depth": 5.0,
+        "channel_at": 1784430131.0001087,
+        "ticker_receipt_at": 1784430130.958342,
+        "available_at": 1784430130.958342
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL182207DETLAA-DET8",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182207DETLAA",
+      "track": "v15_ioc",
+      "decision_at": 1784430135,
+      "side": "yes",
+      "limit": 65,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430136.000275,
+      "due": 1784430136,
+      "quote": {
+        "ask": 85.0,
+        "ask_depth": 413.0,
+        "channel_at": 1784430136.000275,
+        "ticker_receipt_at": 1784430135.0459795,
+        "available_at": 1784430135.0459795
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL182207DETLAA-DET8",
+      "event_id": "KXMLBTEAMTOTAL-26JUL182207DETLAA",
+      "track": "frozen_v12",
+      "decision_at": 1784430135,
+      "side": "yes",
+      "limit": 63,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430136.000275,
+      "due": 1784430136,
+      "quote": {
+        "ask": 85.0,
+        "ask_depth": 413.0,
+        "channel_at": 1784430136.000275,
+        "ticker_receipt_at": 1784430135.0459795,
+        "available_at": 1784430135.0459795
+      }
+    },
+    {
+      "ticker": "KXMLBTOTAL-26JUL182008SFSEA-9",
+      "event_id": "KXMLBTOTAL-26JUL182008SFSEA",
+      "track": "v15_ioc",
+      "decision_at": 1784430145,
+      "side": "yes",
+      "limit": 31,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430146.0002854,
+      "due": 1784430146,
+      "quote": {
+        "ask": 37.0,
+        "ask_depth": 20.0,
+        "channel_at": 1784430145.9993663,
+        "ticker_receipt_at": 1784430145.4195282,
+        "available_at": 1784430145.4195282
+      }
+    },
+    {
+      "ticker": "KXMLBTOTAL-26JUL182008SFSEA-9",
+      "event_id": "KXMLBTOTAL-26JUL182008SFSEA",
+      "track": "frozen_v12",
+      "decision_at": 1784430145,
+      "side": "yes",
+      "limit": 29,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430146.0002854,
+      "due": 1784430146,
+      "quote": {
+        "ask": 37.0,
+        "ask_depth": 20.0,
+        "channel_at": 1784430145.9993663,
+        "ticker_receipt_at": 1784430145.4195282,
+        "available_at": 1784430145.4195282
+      }
+    },
+    {
+      "ticker": "KXT20MATCH-26JUL191000COLKAN-COL",
+      "event_id": "KXT20MATCH-26JUL191000COLKAN",
+      "track": "v15_ioc",
+      "decision_at": 1784430150,
+      "side": "yes",
+      "limit": 40,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430151.0010235,
+      "due": 1784430151,
+      "quote": {
+        "ask": 47.0,
+        "ask_depth": 10.0,
+        "channel_at": 1784430151.0010235,
+        "ticker_receipt_at": 1784430150.030254,
+        "available_at": 1784430150.030254
+      }
+    },
+    {
+      "ticker": "KXT20MATCH-26JUL191000COLKAN-COL",
+      "event_id": "KXT20MATCH-26JUL191000COLKAN",
+      "track": "frozen_v12",
+      "decision_at": 1784430150,
+      "side": "yes",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430151.0010235,
+      "due": 1784430151,
+      "quote": {
+        "ask": 47.0,
+        "ask_depth": 10.0,
+        "channel_at": 1784430151.0010235,
+        "ticker_receipt_at": 1784430150.030254,
+        "available_at": 1784430150.030254
+      }
+    },
+    {
+      "ticker": "KXT20MATCH-26JUL191000COLKAN-COL",
+      "event_id": "KXT20MATCH-26JUL191000COLKAN",
+      "track": "frozen_v10",
+      "decision_at": 1784430150,
+      "side": "yes",
+      "limit": 41,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430151.0010235,
+      "due": 1784430151,
+      "quote": {
+        "ask": 47.0,
+        "ask_depth": 10.0,
+        "channel_at": 1784430151.0010235,
+        "ticker_receipt_at": 1784430150.030254,
+        "available_at": 1784430150.030254
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL182207DETLAA-7",
+      "event_id": "KXMLBF5TOTAL-26JUL182207DETLAA",
+      "track": "v15_ioc",
+      "decision_at": 1784430155,
+      "side": "yes",
+      "limit": 59,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430156.0001242,
+      "due": 1784430156,
+      "quote": {
+        "ask": 65.0,
+        "ask_depth": 42.0,
+        "channel_at": 1784430156.0001242,
+        "ticker_receipt_at": 1784430155.3731055,
+        "available_at": 1784430155.3731055
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL182207DETLAA-7",
+      "event_id": "KXMLBF5TOTAL-26JUL182207DETLAA",
+      "track": "frozen_v12",
+      "decision_at": 1784430155,
+      "side": "yes",
+      "limit": 57,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430156.0001242,
+      "due": 1784430156,
+      "quote": {
+        "ask": 65.0,
+        "ask_depth": 42.0,
+        "channel_at": 1784430156.0001242,
+        "ticker_receipt_at": 1784430155.3731055,
+        "available_at": 1784430155.3731055
+      }
+    },
+    {
+      "ticker": "KXLOLMAP-26JUL221330UCAMBAR-1-BAR",
+      "event_id": "KXLOLMAP-26JUL221330UCAMBAR-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430165,
+      "side": "yes",
+      "limit": 40,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430166.0009143,
+      "due": 1784430166,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 19.0,
+        "channel_at": 1784430166.0009143,
+        "ticker_receipt_at": 1784430163.8495345,
+        "available_at": 1784430163.8495345
+      }
+    },
+    {
+      "ticker": "KXLOLMAP-26JUL221330UCAMBAR-1-BAR",
+      "event_id": "KXLOLMAP-26JUL221330UCAMBAR-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430165,
+      "side": "yes",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430166.0009143,
+      "due": 1784430166,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 19.0,
+        "channel_at": 1784430166.0009143,
+        "ticker_receipt_at": 1784430163.8495345,
+        "available_at": 1784430163.8495345
+      }
+    },
+    {
+      "ticker": "KXMLBKS-26JUL182207DETLAA-DETTSKUBAL29-9",
+      "event_id": "KXMLBKS-26JUL182207DETLAA",
+      "track": "v15_ioc",
+      "decision_at": 1784430205,
+      "side": "no",
+      "limit": 55,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430206.000057,
+      "due": 1784430206,
+      "quote": {
+        "ask": 62.0,
+        "ask_depth": 75.0,
+        "channel_at": 1784430206.000057,
+        "ticker_receipt_at": 1784430205.747942,
+        "available_at": 1784430205.747942
+      }
+    },
+    {
+      "ticker": "KXMLBKS-26JUL182207DETLAA-DETTSKUBAL29-9",
+      "event_id": "KXMLBKS-26JUL182207DETLAA",
+      "track": "frozen_v12",
+      "decision_at": 1784430205,
+      "side": "no",
+      "limit": 53,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430206.000057,
+      "due": 1784430206,
+      "quote": {
+        "ask": 62.0,
+        "ask_depth": 75.0,
+        "channel_at": 1784430206.000057,
+        "ticker_receipt_at": 1784430205.747942,
+        "available_at": 1784430205.747942
+      }
+    },
+    {
+      "ticker": "KXMLBKS-26JUL182205WSHATH-ATHJGINN35-7",
+      "event_id": "KXMLBKS-26JUL182205WSHATH",
+      "track": "v15_ioc",
+      "decision_at": 1784430235,
+      "side": "no",
+      "limit": 35,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430236.0000355,
+      "due": 1784430236,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 24.43,
+        "channel_at": 1784430236.0000355,
+        "ticker_receipt_at": 1784430234.4397867,
+        "available_at": 1784430234.4397867
+      }
+    },
+    {
+      "ticker": "KXMLBKS-26JUL182205WSHATH-ATHJGINN35-7",
+      "event_id": "KXMLBKS-26JUL182205WSHATH",
+      "track": "frozen_v12",
+      "decision_at": 1784430235,
+      "side": "no",
+      "limit": 33,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430236.0000355,
+      "due": 1784430236,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 24.43,
+        "channel_at": 1784430236.0000355,
+        "ticker_receipt_at": 1784430234.4397867,
+        "available_at": 1784430234.4397867
+      }
+    },
+    {
+      "ticker": "KXUFCDISTANCE-26JUL18DUUSM-DIST",
+      "event_id": "KXUFCDISTANCE-26JUL18DUUSM",
+      "track": "v15_ioc",
+      "decision_at": 1784430250,
+      "side": "no",
+      "limit": 18,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430251.00013,
+      "due": 1784430251,
+      "quote": {
+        "ask": 25.0,
+        "ask_depth": 233.45,
+        "channel_at": 1784430250.9998968,
+        "ticker_receipt_at": 1784430250.9998968,
+        "available_at": 1784430250.9998968
+      }
+    },
+    {
+      "ticker": "KXUFCDISTANCE-26JUL18DUUSM-DIST",
+      "event_id": "KXUFCDISTANCE-26JUL18DUUSM",
+      "track": "frozen_v12",
+      "decision_at": 1784430250,
+      "side": "no",
+      "limit": 16,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430251.00013,
+      "due": 1784430251,
+      "quote": {
+        "ask": 25.0,
+        "ask_depth": 233.45,
+        "channel_at": 1784430250.9998968,
+        "ticker_receipt_at": 1784430250.9998968,
+        "available_at": 1784430250.9998968
+      }
+    },
+    {
+      "ticker": "KXMLBTOTAL-26JUL182207DETLAA-13",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "track": "v15_ioc",
+      "decision_at": 1784430260,
+      "side": "yes",
+      "limit": 35,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430261.000018,
+      "due": 1784430261,
+      "quote": {
+        "ask": 42.0,
+        "ask_depth": 11.0,
+        "channel_at": 1784430260.999911,
+        "ticker_receipt_at": 1784430260.0063057,
+        "available_at": 1784430260.0063057
+      }
+    },
+    {
+      "ticker": "KXMLBTOTAL-26JUL182207DETLAA-13",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "track": "frozen_v12",
+      "decision_at": 1784430260,
+      "side": "yes",
+      "limit": 33,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430261.000018,
+      "due": 1784430261,
+      "quote": {
+        "ask": 42.0,
+        "ask_depth": 11.0,
+        "channel_at": 1784430260.999911,
+        "ticker_receipt_at": 1784430260.0063057,
+        "available_at": 1784430260.0063057
+      }
+    },
+    {
+      "ticker": "KXMLBTOTAL-26JUL182207DETLAA-13",
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "track": "frozen_v10",
+      "decision_at": 1784430260,
+      "side": "yes",
+      "limit": 36,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430261.000018,
+      "due": 1784430261,
+      "quote": {
+        "ask": 42.0,
+        "ask_depth": 11.0,
+        "channel_at": 1784430260.999911,
+        "ticker_receipt_at": 1784430260.0063057,
+        "available_at": 1784430260.0063057
+      }
+    },
+    {
+      "ticker": "KXWCSTART-26JUL19ESPARG-ARG-GSIMEO17",
+      "event_id": "KXWCSTART-26JUL19ESPARG-ARG",
+      "track": "v15_ioc",
+      "decision_at": 1784430280,
+      "side": "yes",
+      "limit": 43,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430281.00001,
+      "due": 1784430281,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 60.0,
+        "channel_at": 1784430280.99774,
+        "ticker_receipt_at": 1784430280.4420636,
+        "available_at": 1784430280.4420636
+      }
+    },
+    {
+      "ticker": "KXWCSTART-26JUL19ESPARG-ARG-GSIMEO17",
+      "event_id": "KXWCSTART-26JUL19ESPARG-ARG",
+      "track": "frozen_v12",
+      "decision_at": 1784430280,
+      "side": "yes",
+      "limit": 41,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430281.00001,
+      "due": 1784430281,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 60.0,
+        "channel_at": 1784430280.99774,
+        "ticker_receipt_at": 1784430280.4420636,
+        "available_at": 1784430280.4420636
+      }
+    },
+    {
+      "ticker": "KXWCSTART-26JUL19ESPARG-ARG-GSIMEO17",
+      "event_id": "KXWCSTART-26JUL19ESPARG-ARG",
+      "track": "frozen_v10",
+      "decision_at": 1784430280,
+      "side": "yes",
+      "limit": 44,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430281.00001,
+      "due": 1784430281,
+      "quote": {
+        "ask": 49.0,
+        "ask_depth": 60.0,
+        "channel_at": 1784430280.99774,
+        "ticker_receipt_at": 1784430280.4420636,
+        "available_at": 1784430280.4420636
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19RUBDAR-DAR2",
+      "event_id": "KXATPGSPREAD-26JUL19RUBDAR",
+      "track": "v15_ioc",
+      "decision_at": 1784430315,
+      "side": "no",
+      "limit": 56,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430316.0000103,
+      "due": 1784430316,
+      "quote": {
+        "ask": 64.0,
+        "ask_depth": 15.0,
+        "channel_at": 1784430315.9998915,
+        "ticker_receipt_at": 1784430310.7799027,
+        "available_at": 1784430310.7799027
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19RUBDAR-DAR2",
+      "event_id": "KXATPGSPREAD-26JUL19RUBDAR",
+      "track": "frozen_v12",
+      "decision_at": 1784430315,
+      "side": "no",
+      "limit": 54,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430316.0000103,
+      "due": 1784430316,
+      "quote": {
+        "ask": 64.0,
+        "ask_depth": 15.0,
+        "channel_at": 1784430315.9998915,
+        "ticker_receipt_at": 1784430310.7799027,
+        "available_at": 1784430310.7799027
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182008SFSEA-SEAJRODRGUEZ44-1",
+      "event_id": "KXMLBHIT-26JUL182008SFSEA",
+      "track": "v15_ioc",
+      "decision_at": 1784430325,
+      "side": "no",
+      "limit": 76,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430326.0009146,
+      "due": 1784430326,
+      "quote": {
+        "ask": 85.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430326.0009146,
+        "ticker_receipt_at": 1784430321.2222614,
+        "available_at": 1784430321.2222614
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182008SFSEA-SEAJRODRGUEZ44-1",
+      "event_id": "KXMLBHIT-26JUL182008SFSEA",
+      "track": "frozen_v12",
+      "decision_at": 1784430325,
+      "side": "no",
+      "limit": 74,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430326.0009146,
+      "due": 1784430326,
+      "quote": {
+        "ask": 85.0,
+        "ask_depth": 100.0,
+        "channel_at": 1784430326.0009146,
+        "ticker_receipt_at": 1784430321.2222614,
+        "available_at": 1784430321.2222614
+      }
+    },
+    {
+      "ticker": "KXITFMATCH-26JUL18STOZAP-ZAP",
+      "event_id": "KXITFMATCH-26JUL18STOZAP",
+      "track": "v15_ioc",
+      "decision_at": 1784430345,
+      "side": "no",
+      "limit": 70,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430346.0005414,
+      "due": 1784430346,
+      "quote": {
+        "ask": 80.0,
+        "ask_depth": 8.0,
+        "channel_at": 1784430345.998347,
+        "ticker_receipt_at": 1784430341.1159272,
+        "available_at": 1784430341.1159272
+      }
+    },
+    {
+      "ticker": "KXITFMATCH-26JUL18STOZAP-ZAP",
+      "event_id": "KXITFMATCH-26JUL18STOZAP",
+      "track": "frozen_v12",
+      "decision_at": 1784430345,
+      "side": "no",
+      "limit": 68,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430346.0005414,
+      "due": 1784430346,
+      "quote": {
+        "ask": 80.0,
+        "ask_depth": 8.0,
+        "channel_at": 1784430345.998347,
+        "ticker_receipt_at": 1784430341.1159272,
+        "available_at": 1784430341.1159272
+      }
+    },
+    {
+      "ticker": "KXT20MATCH-26JUL190400VCCHER-VCC",
+      "event_id": "KXT20MATCH-26JUL190400VCCHER",
+      "track": "v15_ioc",
+      "decision_at": 1784430390,
+      "side": "yes",
+      "limit": 56,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430391.000413,
+      "due": 1784430391,
+      "quote": {
+        "ask": 65.0,
+        "ask_depth": 79.0,
+        "channel_at": 1784430390.999703,
+        "ticker_receipt_at": 1784430388.0446994,
+        "available_at": 1784430388.0446994
+      }
+    },
+    {
+      "ticker": "KXT20MATCH-26JUL190400VCCHER-VCC",
+      "event_id": "KXT20MATCH-26JUL190400VCCHER",
+      "track": "frozen_v12",
+      "decision_at": 1784430390,
+      "side": "yes",
+      "limit": 54,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430391.000413,
+      "due": 1784430391,
+      "quote": {
+        "ask": 65.0,
+        "ask_depth": 79.0,
+        "channel_at": 1784430390.999703,
+        "ticker_receipt_at": 1784430388.0446994,
+        "available_at": 1784430388.0446994
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL211100NTRMOUZ-2-NTR",
+      "event_id": "KXCS2MAP-26JUL211100NTRMOUZ-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430395,
+      "side": "no",
+      "limit": 72,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430396.0022228,
+      "due": 1784430396,
+      "quote": {
+        "ask": 80.0,
+        "ask_depth": 326.0,
+        "channel_at": 1784430395.9984088,
+        "ticker_receipt_at": 1784430391.3639996,
+        "available_at": 1784430391.3639996
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL211100NTRMOUZ-2-NTR",
+      "event_id": "KXCS2MAP-26JUL211100NTRMOUZ-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430395,
+      "side": "no",
+      "limit": 70,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430396.0022228,
+      "due": 1784430396,
+      "quote": {
+        "ask": 80.0,
+        "ask_depth": 326.0,
+        "channel_at": 1784430395.9984088,
+        "ticker_receipt_at": 1784430391.3639996,
+        "available_at": 1784430391.3639996
+      }
+    },
+    {
+      "ticker": "KXUFCMOV-26JUL18DUUSM-DUDEC",
+      "event_id": "KXUFCMOV-26JUL18DUUSM",
+      "track": "v15_ioc",
+      "decision_at": 1784430410,
+      "side": "no",
+      "limit": 40,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430411.0002387,
+      "due": 1784430411,
+      "quote": {
+        "ask": 47.0,
+        "ask_depth": 528.19,
+        "channel_at": 1784430410.9960973,
+        "ticker_receipt_at": 1784430410.9860363,
+        "available_at": 1784430410.9860363
+      }
+    },
+    {
+      "ticker": "KXUFCMOV-26JUL18DUUSM-DUDEC",
+      "event_id": "KXUFCMOV-26JUL18DUUSM",
+      "track": "frozen_v12",
+      "decision_at": 1784430410,
+      "side": "no",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430411.0002387,
+      "due": 1784430411,
+      "quote": {
+        "ask": 47.0,
+        "ask_depth": 528.19,
+        "channel_at": 1784430410.9960973,
+        "ticker_receipt_at": 1784430410.9860363,
+        "available_at": 1784430410.9860363
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191335TEXATL-6",
+      "event_id": "KXMLBF5TOTAL-26JUL191335TEXATL",
+      "track": "v15_ioc",
+      "decision_at": 1784430430,
+      "side": "no",
+      "limit": 58,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430431.001057,
+      "due": 1784430431,
+      "quote": {
+        "ask": 67.0,
+        "ask_depth": 647.0,
+        "channel_at": 1784430430.995096,
+        "ticker_receipt_at": 1784430429.605082,
+        "available_at": 1784430429.605082
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191335TEXATL-6",
+      "event_id": "KXMLBF5TOTAL-26JUL191335TEXATL",
+      "track": "frozen_v12",
+      "decision_at": 1784430430,
+      "side": "no",
+      "limit": 56,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430431.001057,
+      "due": 1784430431,
+      "quote": {
+        "ask": 67.0,
+        "ask_depth": 647.0,
+        "channel_at": 1784430430.995096,
+        "ticker_receipt_at": 1784430429.605082,
+        "available_at": 1784430429.605082
+      }
+    },
+    {
+      "ticker": "KXLOLMAP-26JUL220700WETES-2-WE",
+      "event_id": "KXLOLMAP-26JUL220700WETES-2",
+      "track": "v15_ioc",
+      "decision_at": 1784430490,
+      "side": "yes",
+      "limit": 36,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430491.0006704,
+      "due": 1784430491,
+      "quote": {
+        "ask": 42.0,
+        "ask_depth": 300.0,
+        "channel_at": 1784430491.0006704,
+        "ticker_receipt_at": 1784430488.9917748,
+        "available_at": 1784430488.9917748
+      }
+    },
+    {
+      "ticker": "KXLOLMAP-26JUL220700WETES-2-WE",
+      "event_id": "KXLOLMAP-26JUL220700WETES-2",
+      "track": "frozen_v12",
+      "decision_at": 1784430490,
+      "side": "yes",
+      "limit": 34,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430491.0006704,
+      "due": 1784430491,
+      "quote": {
+        "ask": 42.0,
+        "ask_depth": 300.0,
+        "channel_at": 1784430491.0006704,
+        "ticker_receipt_at": 1784430488.9917748,
+        "available_at": 1784430488.9917748
+      }
+    },
+    {
+      "ticker": "KXLOLMAP-26JUL220700WETES-2-WE",
+      "event_id": "KXLOLMAP-26JUL220700WETES-2",
+      "track": "frozen_v10",
+      "decision_at": 1784430490,
+      "side": "yes",
+      "limit": 36,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430491.0006704,
+      "due": 1784430491,
+      "quote": {
+        "ask": 42.0,
+        "ask_depth": 300.0,
+        "channel_at": 1784430491.0006704,
+        "ticker_receipt_at": 1784430488.9917748,
+        "available_at": 1784430488.9917748
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191610STLAZ-STL2",
+      "event_id": "KXMLBF5SPREAD-26JUL191610STLAZ",
+      "track": "v15_ioc",
+      "decision_at": 1784430625,
+      "side": "no",
+      "limit": 66,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430626.000958,
+      "due": 1784430626,
+      "quote": {
+        "ask": 72.0,
+        "ask_depth": 71.0,
+        "channel_at": 1784430625.9985144,
+        "ticker_receipt_at": 1784430623.4936438,
+        "available_at": 1784430623.4936438
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191610STLAZ-STL2",
+      "event_id": "KXMLBF5SPREAD-26JUL191610STLAZ",
+      "track": "frozen_v12",
+      "decision_at": 1784430625,
+      "side": "no",
+      "limit": 64,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430626.000958,
+      "due": 1784430626,
+      "quote": {
+        "ask": 72.0,
+        "ask_depth": 71.0,
+        "channel_at": 1784430625.9985144,
+        "ticker_receipt_at": 1784430623.4936438,
+        "available_at": 1784430623.4936438
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191610STLAZ-STL2",
+      "event_id": "KXMLBF5SPREAD-26JUL191610STLAZ",
+      "track": "frozen_v10",
+      "decision_at": 1784430625,
+      "side": "no",
+      "limit": 66,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430626.000958,
+      "due": 1784430626,
+      "quote": {
+        "ask": 72.0,
+        "ask_depth": 71.0,
+        "channel_at": 1784430625.9985144,
+        "ticker_receipt_at": 1784430623.4936438,
+        "available_at": 1784430623.4936438
+      }
+    },
+    {
+      "ticker": "KXLIGAMXGAME-26JUL18QUEAME-AME",
+      "event_id": "KXLIGAMXGAME-26JUL18QUEAME",
+      "track": "v15_ioc",
+      "decision_at": 1784430655,
+      "side": "no",
+      "limit": 40,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430656.000049,
+      "due": 1784430656,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 571.5,
+        "channel_at": 1784430655.9834213,
+        "ticker_receipt_at": 1784430655.9688973,
+        "available_at": 1784430655.9688973
+      }
+    },
+    {
+      "ticker": "KXLIGAMXGAME-26JUL18QUEAME-AME",
+      "event_id": "KXLIGAMXGAME-26JUL18QUEAME",
+      "track": "frozen_v12",
+      "decision_at": 1784430655,
+      "side": "no",
+      "limit": 38,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430656.000049,
+      "due": 1784430656,
+      "quote": {
+        "ask": 44.0,
+        "ask_depth": 571.5,
+        "channel_at": 1784430655.9834213,
+        "ticker_receipt_at": 1784430655.9688973,
+        "available_at": 1784430655.9688973
+      }
+    },
+    {
+      "ticker": "KXNBASUMMERSPREAD-26JUL18SASPHX-SAS10",
+      "event_id": "KXNBASUMMERSPREAD-26JUL18SASPHX",
+      "track": "v15_ioc",
+      "decision_at": 1784430725,
+      "side": "yes",
+      "limit": 30,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430726.0002291,
+      "due": 1784430726,
+      "quote": {
+        "ask": 39.0,
+        "ask_depth": 261.0,
+        "channel_at": 1784430725.9999013,
+        "ticker_receipt_at": 1784430725.8466117,
+        "available_at": 1784430725.8466117
+      }
+    },
+    {
+      "ticker": "KXNBASUMMERSPREAD-26JUL18SASPHX-SAS10",
+      "event_id": "KXNBASUMMERSPREAD-26JUL18SASPHX",
+      "track": "frozen_v12",
+      "decision_at": 1784430725,
+      "side": "yes",
+      "limit": 28,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430726.0002291,
+      "due": 1784430726,
+      "quote": {
+        "ask": 39.0,
+        "ask_depth": 261.0,
+        "channel_at": 1784430725.9999013,
+        "ticker_receipt_at": 1784430725.8466117,
+        "available_at": 1784430725.8466117
+      }
+    },
+    {
+      "ticker": "KXZEC15M-26JUL182315-15",
+      "event_id": "KXZEC15M-26JUL182315",
+      "track": "v15_ioc",
+      "decision_at": 1784430730,
+      "side": "no",
+      "limit": 61,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430731.0009608,
+      "due": 1784430731,
+      "quote": {
+        "ask": 70.0,
+        "ask_depth": 5.0,
+        "channel_at": 1784430730.9974575,
+        "ticker_receipt_at": 1784430730.9714482,
+        "available_at": 1784430730.9714482
+      }
+    },
+    {
+      "ticker": "KXZEC15M-26JUL182315-15",
+      "event_id": "KXZEC15M-26JUL182315",
+      "track": "frozen_v12",
+      "decision_at": 1784430730,
+      "side": "no",
+      "limit": 59,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430731.0009608,
+      "due": 1784430731,
+      "quote": {
+        "ask": 70.0,
+        "ask_depth": 5.0,
+        "channel_at": 1784430730.9974575,
+        "ticker_receipt_at": 1784430730.9714482,
+        "available_at": 1784430730.9714482
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL200400WALJUS-1-WAL",
+      "event_id": "KXCS2MAP-26JUL200400WALJUS-1",
+      "track": "v15_ioc",
+      "decision_at": 1784430755,
+      "side": "yes",
+      "limit": 61,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430756.0003364,
+      "due": 1784430756,
+      "quote": {
+        "ask": 68.0,
+        "ask_depth": 300.0,
+        "channel_at": 1784430756.0003364,
+        "ticker_receipt_at": 1784430751.1086366,
+        "available_at": 1784430751.1086366
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL200400WALJUS-1-WAL",
+      "event_id": "KXCS2MAP-26JUL200400WALJUS-1",
+      "track": "frozen_v12",
+      "decision_at": 1784430755,
+      "side": "yes",
+      "limit": 59,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430756.0003364,
+      "due": 1784430756,
+      "quote": {
+        "ask": 68.0,
+        "ask_depth": 300.0,
+        "channel_at": 1784430756.0003364,
+        "ticker_receipt_at": 1784430751.1086366,
+        "available_at": 1784430751.1086366
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL200400WALJUS-1-WAL",
+      "event_id": "KXCS2MAP-26JUL200400WALJUS-1",
+      "track": "frozen_v10",
+      "decision_at": 1784430755,
+      "side": "yes",
+      "limit": 62,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430756.0003364,
+      "due": 1784430756,
+      "quote": {
+        "ask": 68.0,
+        "ask_depth": 300.0,
+        "channel_at": 1784430756.0003364,
+        "ticker_receipt_at": 1784430751.1086366,
+        "available_at": 1784430751.1086366
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL182205WSHATH-7",
+      "event_id": "KXMLBF5TOTAL-26JUL182205WSHATH",
+      "track": "v15_ioc",
+      "decision_at": 1784430790,
+      "side": "yes",
+      "limit": 61,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430791.0003338,
+      "due": 1784430791,
+      "quote": {
+        "ask": 70.0,
+        "ask_depth": 101.0,
+        "channel_at": 1784430791.0003338,
+        "ticker_receipt_at": 1784430790.5354054,
+        "available_at": 1784430790.5354054
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL182205WSHATH-7",
+      "event_id": "KXMLBF5TOTAL-26JUL182205WSHATH",
+      "track": "frozen_v12",
+      "decision_at": 1784430790,
+      "side": "yes",
+      "limit": 59,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430791.0003338,
+      "due": 1784430791,
+      "quote": {
+        "ask": 70.0,
+        "ask_depth": 101.0,
+        "channel_at": 1784430791.0003338,
+        "ticker_receipt_at": 1784430790.5354054,
+        "available_at": 1784430790.5354054
+      }
+    },
+    {
+      "ticker": "KXWNBATOTAL-26JUL20MINSEA-167",
+      "event_id": "KXWNBATOTAL-26JUL20MINSEA",
+      "track": "v15_ioc",
+      "decision_at": 1784430800,
+      "side": "no",
+      "limit": 30,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430801.0003717,
+      "due": 1784430801,
+      "quote": {
+        "ask": 35.0,
+        "ask_depth": 15.0,
+        "channel_at": 1784430800.9955282,
+        "ticker_receipt_at": 1784430797.0156834,
+        "available_at": 1784430797.0156834
+      }
+    },
+    {
+      "ticker": "KXWNBATOTAL-26JUL20MINSEA-167",
+      "event_id": "KXWNBATOTAL-26JUL20MINSEA",
+      "track": "frozen_v12",
+      "decision_at": 1784430800,
+      "side": "no",
+      "limit": 28,
+      "reported_state": "entry_limit_not_marketable_after_slippage",
+      "independent_state": "entry_limit_not_marketable_after_slippage",
+      "observed_at": 1784430801.0003717,
+      "due": 1784430801,
+      "quote": {
+        "ask": 35.0,
+        "ask_depth": 15.0,
+        "channel_at": 1784430800.9955282,
+        "ticker_receipt_at": 1784430797.0156834,
+        "available_at": 1784430797.0156834
+      }
+    }
+  ],
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "profitability_proven": false,
+  "limitation": "Independent entry-observation loop; shared audited source decoder, not independent vendor or broker verification."
+}

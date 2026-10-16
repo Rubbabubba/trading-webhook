@@ -2,6 +2,8 @@ from fractions import Fraction
 from research.v15_delayed_ioc_20261016.replay import decision, step
 from opportunity_lab.kalshi_maker_v12 import shadow_decision
 from research.v15_delayed_ioc_20261016.review import account
+from research.v15_delayed_ioc_20261016.trade_contract import validate
+import pytest
 
 
 def frame():
@@ -81,3 +83,24 @@ def test_independent_cash_accounting_preserves_missing_exits_and_unfilled_nulls(
     no_entry = account([{'state': 'entry_limit_not_marketable_after_slippage'}])
     assert no_entry['horizons']['5']['gross_cents'] is None
     assert no_entry['horizons']['5']['scenarios']['0']['complete_net_cents'] is None
+
+
+def public_trade(**changes):
+    return dict(trade_id='synthetic', ticker='T', count_fp='1.00',
+        yes_price_dollars='0.40', no_price_dollars='0.60',
+        taker_outcome_side='no', taker_book_side='ask', taker_side='no',
+        created_time='2026-07-19T03:00:30Z', is_block_trade=False) | changes
+
+
+def test_public_trade_canonical_direction_and_explicit_price_scales():
+    row = validate(public_trade(), 1784430024, 1784430084)
+    assert row['taker_outcome_side']=='no' and row['yes_price']=='0.40'
+    assert row['no_price']=='0.60' and row['owned_fill'] is False
+
+
+@pytest.mark.parametrize('changes', [dict(taker_book_side='bid'), dict(taker_side='yes'),
+    dict(is_block_trade=True), dict(count_fp='NaN'), dict(no_price_dollars='0.40'),
+    dict(created_time='2026-07-19T03:05:30Z')])
+def test_ambiguous_or_invalid_trade_never_becomes_fill_evidence(changes):
+    with pytest.raises((ValueError, ArithmeticError)):
+        validate(public_trade(**changes), 1784430024, 1784430084)
