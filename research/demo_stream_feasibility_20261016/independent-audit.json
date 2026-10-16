@@ -1,0 +1,15 @@
+{
+  "schema": "demo_stream_independent_prefix_audit_v1",
+  "raw_capture_sha256": "c10134fbb03e6e80e024d47a3fddc5612feaad44023edd108ec3627858634fb6",
+  "reconstructed_states_checked": 477,
+  "book_subscription_final_sequences": {
+    "1": 477
+  },
+  "markets": 8,
+  "reconstructed_state_chain_sha256": "b292e25564b950fc4af71783708b438531ef08b023c19cdab8e4907692430ef3",
+  "public_trades": 0,
+  "market_data_only": true,
+  "actual_fills": 0,
+  "profitability_proven": false,
+  "result": "captured sequence prefix and full book reconstruction consistent; trade/activation coverage unverified"
+}

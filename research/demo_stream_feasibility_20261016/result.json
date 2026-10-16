@@ -1,0 +1,36 @@
+{
+  "schema": "demo_book_trade_stream_feasibility_v1",
+  "endpoint": "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2",
+  "tickers": [
+    "KXLIGAMXGAME-26OCT21TOLTIJ-TOL",
+    "KXLIVCOMPETE-27APR-JRAH",
+    "KXLPGATOUR-BUILS26-HYECHO",
+    "KXMLSGAME-25JUN28MIAATL-ATL",
+    "KXMLSGAME-26OCT17ATLMIA-ATL",
+    "KXMLSGAME-26OCT17ATXVAN-ATX",
+    "KXMLSGAME-26OCT17HOUDAL-DAL",
+    "KXMLSGAME-26OCT17LAGSD-LAG"
+  ],
+  "started_at": 1792123318.369102,
+  "connection_attempts": 1,
+  "connected": true,
+  "execution_enabled": false,
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "profitability_proven": false,
+  "continuous_coverage_proven": false,
+  "connected_at": 1792123318.872084,
+  "state": "observed",
+  "completed_at": 1792123378.876953,
+  "messages": 479,
+  "raw_bytes": 176025,
+  "message_types": {
+    "subscribed": 2,
+    "orderbook_snapshot": 8,
+    "orderbook_delta": 469
+  },
+  "raw_lines_sha256": "763e397d1ff476dee5801d62d6bf8293ceb6dd9dae28f8093f7b977450136224",
+  "compressed_sha256": "c10134fbb03e6e80e024d47a3fddc5612feaad44023edd108ec3627858634fb6",
+  "compressed_bytes": 5395,
+  "archive": "/var/data/kalshi-demo-v9/stream-feasibility-v1-20261016.jsonl.gz"
+}

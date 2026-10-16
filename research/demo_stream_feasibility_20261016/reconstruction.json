@@ -1,0 +1,26 @@
+{
+  "schema": "demo_stream_captured_reconstruction_v1",
+  "capture_sha256": "c10134fbb03e6e80e024d47a3fddc5612feaad44023edd108ec3627858634fb6",
+  "messages": 479,
+  "types": {
+    "subscribed": 2,
+    "orderbook_snapshot": 8,
+    "orderbook_delta": 469
+  },
+  "final_sequences": {
+    "1": 477
+  },
+  "reconstructed_markets": 8,
+  "reconstructed_usable_book_observations": 477,
+  "source_timestamp_to_local_receipt_lag_ms": {
+    "minimum": 0.589599609375,
+    "maximum": 56.23291015625
+  },
+  "clock_synchronization_verified": false,
+  "source_faults": 0,
+  "public_trades": 0,
+  "actual_fills": 0,
+  "profitability_proven": false,
+  "continuous_coverage_proven": false,
+  "worker_integrated": false
+}
