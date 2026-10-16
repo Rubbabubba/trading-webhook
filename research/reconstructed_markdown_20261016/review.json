@@ -1,0 +1,734 @@
+{
+  "schema": "reconstructed_markdown_review_v2",
+  "source_fault": null,
+  "complete_registered_window": true,
+  "preliminary_signals": 101,
+  "selected_event_attempts": 18,
+  "states": {
+    "conditional_settlement_complete": 6,
+    "entry_unfilled_late": 9,
+    "entry_price_guard_rejected": 3
+  },
+  "families": {
+    "KXMLBSPREAD": 2,
+    "KXNBASUMMERSPREAD": 1,
+    "KXBNB15M": 1,
+    "KXWCSTART": 1,
+    "KXMLBHR": 1,
+    "KXMLBTEAMTOTAL": 1,
+    "KXMLBHIT": 3,
+    "KXUFCMOV": 1,
+    "KXUSLGAME": 1,
+    "KXAAAGASD": 1,
+    "KXUFCDISTANCE": 1,
+    "KXLATENIGHTMENTION": 1,
+    "KXWCAWARD": 1,
+    "KXZEC15M": 1,
+    "KXDOGE15M": 1
+  },
+  "rejections": {
+    "prior_experiment_event": 52,
+    "outside_official_trading_window": 8,
+    "duplicate_event_attempt": 23
+  },
+  "scenarios": {
+    "0": {
+      "complete_net_cents": -101,
+      "unresolved_full_principal_stress_cents": 0,
+      "net_with_unresolved_stress_cents": -101,
+      "event_mean_cents": -16.833333333333332,
+      "normal_official_event_proxy_lcb_cents": -69.1972969385117,
+      "session_cluster_lcb_cents": null
+    },
+    "2": {
+      "complete_net_cents": -113,
+      "unresolved_full_principal_stress_cents": 0,
+      "net_with_unresolved_stress_cents": -113,
+      "event_mean_cents": -18.833333333333332,
+      "normal_official_event_proxy_lcb_cents": -71.1972969385117,
+      "session_cluster_lcb_cents": null
+    },
+    "5": {
+      "complete_net_cents": -131,
+      "unresolved_full_principal_stress_cents": 0,
+      "net_with_unresolved_stress_cents": -131,
+      "event_mean_cents": -21.833333333333332,
+      "normal_official_event_proxy_lcb_cents": -74.1972969385117,
+      "session_cluster_lcb_cents": null
+    }
+  },
+  "selected": [
+    {
+      "ticker": "KXMLBSPREAD-26JUL182207DETLAA-DET3",
+      "side": "no",
+      "decision_at": 1784428630,
+      "subscription": [
+        0,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 90.0,
+        "ya": 91.0,
+        "nb": 9.0,
+        "na": 10.0,
+        "mid": 90.5,
+        "imbalance": 0.5807505444798123
+      },
+      "prior_quote": {
+        "yb": 86.0,
+        "ya": 92.0,
+        "nb": 8.0,
+        "na": 14.0,
+        "mid": 89.0,
+        "imbalance": 0.9
+      },
+      "decision_receipt_at": 1784428629.9996808,
+      "decision_available_at": 1784428629.9996808,
+      "decision_ask": 10.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428631.8447068,
+      "entry_price": 10,
+      "event_id": "KXMLBSPREAD-26JUL182207DETLAA",
+      "family": "KXMLBSPREAD",
+      "payout_cents": 0,
+      "official_result": "yes",
+      "net_cents_by_extra_stress": {
+        "0": -16,
+        "2": -18,
+        "5": -21
+      }
+    },
+    {
+      "ticker": "KXNBASUMMERSPREAD-26JUL18SASPHX-SAS10",
+      "side": "yes",
+      "decision_at": 1784428630,
+      "subscription": [
+        17,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 28.0,
+        "ya": 30.0,
+        "nb": 70.0,
+        "na": 72.0,
+        "mid": 29.0,
+        "imbalance": 0.0008528784648187633
+      },
+      "prior_quote": {
+        "yb": 21.0,
+        "ya": 36.0,
+        "nb": 64.0,
+        "na": 79.0,
+        "mid": 28.5,
+        "imbalance": 0.5004310344827586
+      },
+      "decision_receipt_at": 1784428629.727398,
+      "decision_available_at": 1784428629.727398,
+      "decision_ask": 30.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428631.1757267,
+      "entry_price": 30,
+      "event_id": "KXNBASUMMERSPREAD-26JUL18SASPHX",
+      "family": "KXNBASUMMERSPREAD",
+      "payout_cents": 0,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": -36,
+        "2": -38,
+        "5": -41
+      }
+    },
+    {
+      "ticker": "KXBNB15M-26JUL182245-45",
+      "side": "no",
+      "decision_at": 1784428645,
+      "subscription": [
+        17,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 89.0,
+        "ya": 90.0,
+        "nb": 10.0,
+        "na": 11.0,
+        "mid": 89.5,
+        "imbalance": 0.021739130434782608
+      },
+      "prior_quote": {
+        "yb": 86.0,
+        "ya": 90.0,
+        "nb": 10.0,
+        "na": 14.0,
+        "mid": 88.0,
+        "imbalance": 0.27703875072296125
+      },
+      "decision_receipt_at": 1784428644.955315,
+      "decision_available_at": 1784428644.955315,
+      "decision_ask": 11.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428646.0415623,
+      "entry_price": 11,
+      "event_id": "KXBNB15M-26JUL182245",
+      "family": "KXBNB15M",
+      "payout_cents": 100,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": 83,
+        "2": 81,
+        "5": 78
+      }
+    },
+    {
+      "ticker": "KXWCSTART-26JUL19ESPARG-ARG-LMARTI22",
+      "side": "no",
+      "decision_at": 1784428655,
+      "subscription": [
+        17,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 11.0,
+        "ya": 13.0,
+        "nb": 87.0,
+        "na": 89.0,
+        "mid": 12.0,
+        "imbalance": 0.5
+      },
+      "prior_quote": {
+        "yb": 5.0,
+        "ya": 15.0,
+        "nb": 85.0,
+        "na": 95.0,
+        "mid": 10.0,
+        "imbalance": 0.4
+      },
+      "decision_receipt_at": 1784428654.1956313,
+      "decision_available_at": 1784428654.1956313,
+      "decision_ask": 89.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXWCSTART-26JUL19ESPARG-ARG",
+      "family": "KXWCSTART"
+    },
+    {
+      "ticker": "KXMLBHR-26JUL182207DETLAA-DETRGREENE31-1",
+      "side": "yes",
+      "decision_at": 1784428660,
+      "subscription": [
+        0,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 23.0,
+        "ya": 24.0,
+        "nb": 76.0,
+        "na": 77.0,
+        "mid": 23.5,
+        "imbalance": 0.0005988023952095808
+      },
+      "prior_quote": {
+        "yb": 23.0,
+        "ya": 31.0,
+        "nb": 69.0,
+        "na": 77.0,
+        "mid": 27.0,
+        "imbalance": 0.3333333333333333
+      },
+      "decision_receipt_at": 1784428659.3321211,
+      "decision_available_at": 1784428659.3321211,
+      "decision_ask": 24.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXMLBHR-26JUL182207DETLAA",
+      "family": "KXMLBHR"
+    },
+    {
+      "ticker": "KXMLBSPREAD-26JUL182205WSHATH-ATH6",
+      "side": "no",
+      "decision_at": 1784428665,
+      "subscription": [
+        17,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 46.0,
+        "ya": 49.0,
+        "nb": 51.0,
+        "na": 54.0,
+        "mid": 47.5,
+        "imbalance": 0.5245325734806199
+      },
+      "prior_quote": {
+        "yb": 43.0,
+        "ya": 51.0,
+        "nb": 49.0,
+        "na": 57.0,
+        "mid": 47.0,
+        "imbalance": 0.023735350838154576
+      },
+      "decision_receipt_at": 1784428664.742919,
+      "decision_available_at": 1784428664.742919,
+      "decision_ask": 54.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXMLBSPREAD-26JUL182205WSHATH",
+      "family": "KXMLBSPREAD"
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL182205WSHATH-WSH7",
+      "side": "yes",
+      "decision_at": 1784428675,
+      "subscription": [
+        0,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 21.0,
+        "ya": 23.0,
+        "nb": 77.0,
+        "na": 79.0,
+        "mid": 22.0,
+        "imbalance": 0.8
+      },
+      "prior_quote": {
+        "yb": 21.0,
+        "ya": 27.0,
+        "nb": 73.0,
+        "na": 79.0,
+        "mid": 24.0,
+        "imbalance": 0.3076923076923077
+      },
+      "decision_receipt_at": 1784428674.7630956,
+      "decision_available_at": 1784428674.7630956,
+      "decision_ask": 23.0,
+      "state": "entry_price_guard_rejected",
+      "fill_assumed": false,
+      "event_id": "KXMLBTEAMTOTAL-26JUL182205WSHATH",
+      "family": "KXMLBTEAMTOTAL"
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182205WSHATH-WSHDCREWS3-1",
+      "side": "yes",
+      "decision_at": 1784428690,
+      "subscription": [
+        0,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 64.0,
+        "ya": 67.0,
+        "nb": 33.0,
+        "na": 36.0,
+        "mid": 65.5,
+        "imbalance": 0.054820415879017016
+      },
+      "prior_quote": {
+        "yb": 64.0,
+        "ya": 70.0,
+        "nb": 30.0,
+        "na": 36.0,
+        "mid": 67.0,
+        "imbalance": 0.23076923076923078
+      },
+      "decision_receipt_at": 1784428689.1042435,
+      "decision_available_at": 1784428689.1042435,
+      "decision_ask": 67.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428691.6274421,
+      "entry_price": 66,
+      "event_id": "KXMLBHIT-26JUL182205WSHATH",
+      "family": "KXMLBHIT",
+      "payout_cents": 0,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": -72,
+        "2": -74,
+        "5": -77
+      }
+    },
+    {
+      "ticker": "KXUFCMOV-26JUL18DUUSM-DUKOTKODQ",
+      "side": "no",
+      "decision_at": 1784428785,
+      "subscription": [
+        18,
+        1,
+        0
+      ],
+      "decision_quote": {
+        "yb": 38.0,
+        "ya": 39.0,
+        "nb": 61.0,
+        "na": 62.0,
+        "mid": 38.5,
+        "imbalance": 0.3606628647418357
+      },
+      "prior_quote": {
+        "yb": 35.0,
+        "ya": 39.0,
+        "nb": 61.0,
+        "na": 65.0,
+        "mid": 37.0,
+        "imbalance": 0.44351697273233165
+      },
+      "decision_receipt_at": 1784428784.8658216,
+      "decision_available_at": 1784428784.8658216,
+      "decision_ask": 62.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428786.182798,
+      "entry_price": 62,
+      "event_id": "KXUFCMOV-26JUL18DUUSM",
+      "family": "KXUFCMOV",
+      "payout_cents": 100,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": 32,
+        "2": 30,
+        "5": 27
+      }
+    },
+    {
+      "ticker": "KXUSLGAME-26JUL18PHOMON-MON",
+      "side": "yes",
+      "decision_at": 1784428915,
+      "subscription": [
+        17,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 23.0,
+        "ya": 24.0,
+        "nb": 76.0,
+        "na": 77.0,
+        "mid": 23.5,
+        "imbalance": 0.9997424021514573
+      },
+      "prior_quote": {
+        "yb": 23.0,
+        "ya": 27.0,
+        "nb": 73.0,
+        "na": 77.0,
+        "mid": 25.0,
+        "imbalance": 0.7452910878255922
+      },
+      "decision_receipt_at": 1784428914.5954568,
+      "decision_available_at": 1784428914.5954568,
+      "decision_ask": 24.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXUSLGAME-26JUL18PHOMON",
+      "family": "KXUSLGAME"
+    },
+    {
+      "ticker": "KXAAAGASD-26JUL19-3.995",
+      "side": "yes",
+      "decision_at": 1784428920,
+      "subscription": [
+        0,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 71.0,
+        "ya": 74.0,
+        "nb": 26.0,
+        "na": 29.0,
+        "mid": 72.5,
+        "imbalance": 0.9814814814814815
+      },
+      "prior_quote": {
+        "yb": 71.0,
+        "ya": 81.0,
+        "nb": 19.0,
+        "na": 29.0,
+        "mid": 76.0,
+        "imbalance": 0.11827956989247312
+      },
+      "decision_receipt_at": 1784428919.4202433,
+      "decision_available_at": 1784428919.4202433,
+      "decision_ask": 74.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXAAAGASD-26JUL19",
+      "family": "KXAAAGASD"
+    },
+    {
+      "ticker": "KXUFCDISTANCE-26JUL18DUUSM-DIST",
+      "side": "no",
+      "decision_at": 1784428925,
+      "subscription": [
+        18,
+        1,
+        0
+      ],
+      "decision_quote": {
+        "yb": 29.0,
+        "ya": 31.0,
+        "nb": 69.0,
+        "na": 71.0,
+        "mid": 30.0,
+        "imbalance": 0.9421009740385735
+      },
+      "prior_quote": {
+        "yb": 25.0,
+        "ya": 32.0,
+        "nb": 68.0,
+        "na": 75.0,
+        "mid": 28.5,
+        "imbalance": 0.004279047050523688
+      },
+      "decision_receipt_at": 1784428924.9400313,
+      "decision_available_at": 1784428924.9400313,
+      "decision_ask": 71.0,
+      "state": "entry_price_guard_rejected",
+      "fill_assumed": false,
+      "event_id": "KXUFCDISTANCE-26JUL18DUUSM",
+      "family": "KXUFCDISTANCE"
+    },
+    {
+      "ticker": "KXLATENIGHTMENTION-26JUL19-TRUM",
+      "side": "yes",
+      "decision_at": 1784428960,
+      "subscription": [
+        0,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 46.0,
+        "ya": 48.0,
+        "nb": 52.0,
+        "na": 54.0,
+        "mid": 47.0,
+        "imbalance": 0.5
+      },
+      "prior_quote": {
+        "yb": 44.0,
+        "ya": 51.0,
+        "nb": 49.0,
+        "na": 56.0,
+        "mid": 47.5,
+        "imbalance": 0.047619047619047616
+      },
+      "decision_receipt_at": 1784428959.8194396,
+      "decision_available_at": 1784428959.8194396,
+      "decision_ask": 48.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXLATENIGHTMENTION-26JUL19",
+      "family": "KXLATENIGHTMENTION"
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182207DETLAA-DETMVIERLING8-1",
+      "side": "no",
+      "decision_at": 1784428965,
+      "subscription": [
+        0,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 53.0,
+        "ya": 56.0,
+        "nb": 44.0,
+        "na": 47.0,
+        "mid": 54.5,
+        "imbalance": 0.10040160642570281
+      },
+      "prior_quote": {
+        "yb": 50.0,
+        "ya": 56.0,
+        "nb": 44.0,
+        "na": 50.0,
+        "mid": 53.0,
+        "imbalance": 0.06925207756232687
+      },
+      "decision_receipt_at": 1784428964.888881,
+      "decision_available_at": 1784428964.888881,
+      "decision_ask": 47.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXMLBHIT-26JUL182207DETLAA",
+      "family": "KXMLBHIT"
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182008SFSEA-SEAJNAYLOR12-1",
+      "side": "yes",
+      "decision_at": 1784429145,
+      "subscription": [
+        0,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 13.0,
+        "ya": 15.0,
+        "nb": 85.0,
+        "na": 87.0,
+        "mid": 14.0,
+        "imbalance": 0.02912621359223301
+      },
+      "prior_quote": {
+        "yb": 2.0,
+        "ya": 25.0,
+        "nb": 75.0,
+        "na": 98.0,
+        "mid": 13.5,
+        "imbalance": 0.03094606542882405
+      },
+      "decision_receipt_at": 1784429144.7710612,
+      "decision_available_at": 1784429144.7710612,
+      "decision_ask": 15.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXMLBHIT-26JUL182008SFSEA",
+      "family": "KXMLBHIT"
+    },
+    {
+      "ticker": "KXWCAWARD-26BBALL-JBELL",
+      "side": "no",
+      "decision_at": 1784429245,
+      "subscription": [
+        17,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 57.0,
+        "ya": 58.0,
+        "nb": 42.0,
+        "na": 43.0,
+        "mid": 57.5,
+        "imbalance": 0.059119075531736724
+      },
+      "prior_quote": {
+        "yb": 54.0,
+        "ya": 58.0,
+        "nb": 42.0,
+        "na": 46.0,
+        "mid": 56.0,
+        "imbalance": 0.0025363973012732717
+      },
+      "decision_receipt_at": 1784429244.757166,
+      "decision_available_at": 1784429244.757166,
+      "decision_ask": 43.0,
+      "state": "entry_price_guard_rejected",
+      "fill_assumed": false,
+      "event_id": "KXWCAWARD-26BBALL",
+      "family": "KXWCAWARD"
+    },
+    {
+      "ticker": "KXZEC15M-26JUL182300-00",
+      "side": "no",
+      "decision_at": 1784429275,
+      "subscription": [
+        18,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 14.0,
+        "ya": 16.0,
+        "nb": 84.0,
+        "na": 86.0,
+        "mid": 15.0,
+        "imbalance": 0.07407407407407407
+      },
+      "prior_quote": {
+        "yb": 8.9,
+        "ya": 16.0,
+        "nb": 84.0,
+        "na": 91.1,
+        "mid": 12.45,
+        "imbalance": 0.9099099099099099
+      },
+      "decision_receipt_at": 1784429274.4371016,
+      "decision_available_at": 1784429274.4371016,
+      "decision_ask": 86.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784429276.0160918,
+      "entry_price": 86,
+      "event_id": "KXZEC15M-26JUL182300",
+      "family": "KXZEC15M",
+      "payout_cents": 0,
+      "official_result": "yes",
+      "net_cents_by_extra_stress": {
+        "0": -92,
+        "2": -94,
+        "5": -97
+      }
+    },
+    {
+      "ticker": "KXDOGE15M-26JUL182300-00",
+      "side": "yes",
+      "decision_at": 1784429285,
+      "subscription": [
+        18,
+        1,
+        1
+      ],
+      "decision_quote": {
+        "yb": 21.0,
+        "ya": 23.0,
+        "nb": 77.0,
+        "na": 79.0,
+        "mid": 22.0,
+        "imbalance": 0.9466533892880006
+      },
+      "prior_quote": {
+        "yb": 21.0,
+        "ya": 26.0,
+        "nb": 74.0,
+        "na": 79.0,
+        "mid": 23.5,
+        "imbalance": 0.48610795177590743
+      },
+      "decision_receipt_at": 1784429284.6458178,
+      "decision_available_at": 1784429284.6458178,
+      "decision_ask": 23.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXDOGE15M-26JUL182300",
+      "family": "KXDOGE15M"
+    }
+  ],
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "execution_enabled": false,
+  "promotion_ready": false,
+  "profitability_proven": false,
+  "decision": "do_not_advance_without_all_original_evidence_gates",
+  "limitations": [
+    "One short unused window from same date; not independent multi-date holdout",
+    "Recorder clocks and modern official rule metadata do not prove our latency or original rule publication",
+    "5c fee and1c slippage reserves are assumptions; actual historical fees unverified",
+    "Raw-reconstructed depth and settlement accounting are conditional, never actual fills",
+    "Source license other, no production rights assumed",
+    "Unfilled attempts and unknown settlements remain retained",
+    "A fatal source fault truncates the registered window; retained clock fences are modeled availability only",
+    "Global high-water availability is modeled, not measured execution; inferred epochs have no source UUID",
+    "Related official event IDs may share parent outcomes; normal proxy is not valid parent/session-cluster inference",
+    "All records come from one date; no valid session-cluster confidence interval"
+  ],
+  "decision_sessions_utc": [
+    "2026-07-19"
+  ],
+  "parent_event_independence_verified": false,
+  "historical_fee_terms_verified": false,
+  "contemporaneous_rule_publication_verified": false
+}

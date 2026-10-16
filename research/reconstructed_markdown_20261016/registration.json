@@ -1,0 +1,253 @@
+{
+  "id": "external_ask_markdown_reconstructed_feed_v2_20261016",
+  "registered_at": "2026-10-16T00:27:12.752539+00:00",
+  "hypothesis": "A transient ask markdown of at least3c with an unchanged or stronger bid may offer a settlement-value entry; this is distinct from directional momentum and is not an inversion of its losses.",
+  "source_grounding": "Existing Transient Ask Markdown Fill Test engineering queue; independent unvalidated hypothesis, not published profitability.",
+  "files": [
+    {
+      "type": "file",
+      "oid": "d16ea98fe71e7980ec39d13c7300f85c951d5ac8",
+      "size": 26009864,
+      "lfs": {
+        "oid": "2d95103808c22e7284f722f4edf66b1cc0194b519f363918c5199fff7df9951a",
+        "size": 26009864,
+        "pointerSize": 133
+      },
+      "xetHash": "4e841e98653e5f3cccd000d758eb60da560e2bc0d78bc68997ba67e730129572",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T022023.251189Z_ip-172-31-3-129_04de9e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "5a8878b3350bd7b360b758deeb45ab61d22979c4",
+      "size": 67944837,
+      "lfs": {
+        "oid": "bf5b66483b259275ef4de242ea94a03f098a4856dfecc3277ee8912e0bf1f314",
+        "size": 67944837,
+        "pointerSize": 133
+      },
+      "xetHash": "9885fcd64a0bc204cbdb75686c3d5771434c766d62fd35cf3fde904bf32b872d",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T022523.296675Z_ip-172-31-3-129_f9616e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7fac51f37ee274db6b301c6bf52cfd83730e4e7d",
+      "size": 69106452,
+      "lfs": {
+        "oid": "50a3714759d2d7e8ca9b7e64cfd449e31e90aa6f0f667014050485fd04ad3d41",
+        "size": 69106452,
+        "pointerSize": 133
+      },
+      "xetHash": "634eec6ad9f2cd978552a49b24d42d0c0ce50e67cd1de3d274556ebbee705148",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T022802.195407Z_ip-172-31-3-129_5460e1.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "6d2f913338b6e39dab7c5fff2315ed8148724110",
+      "size": 69139698,
+      "lfs": {
+        "oid": "242a2f393849fa2c073a26804dc4e83e9844b610eb681bd5198dad658a0555de",
+        "size": 69139698,
+        "pointerSize": 133
+      },
+      "xetHash": "b6c5ab45677ed02256f5bc97a42c43e2cf1a7e5a1e49d59930dc25e941126645",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023018.532199Z_ip-172-31-3-129_81630c.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "181a90d9f46c6e745eb7bc70f5e3a3f76195dc86",
+      "size": 68117533,
+      "lfs": {
+        "oid": "0c1cbb33bb05287ab5932652318b338fa94367444b9fd0bd72ffdfce4eb71840",
+        "size": 68117533,
+        "pointerSize": 133
+      },
+      "xetHash": "70b799bf56143572636b85739d2c2c9a0bcd4648df7b0fcdbedb767de6cb7bb4",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023240.256013Z_ip-172-31-3-129_98b415.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7ccb23e9f5b77cc09b4f3e22ec9ce4095c6df8b0",
+      "size": 59965899,
+      "lfs": {
+        "oid": "5b1605514724e7823152008cfd70f8c86b893d6778cf466314c9036c3d6a6d3c",
+        "size": 59965899,
+        "pointerSize": 133
+      },
+      "xetHash": "2f7ff69ae844558f5381f16e14dd8a1d70bea483867509a382f15b14ed471c61",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023456.569561Z_ip-172-31-3-129_50db72.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "865ad79a494dc559fc1528ab3f4c64213deecf81",
+      "size": 68889918,
+      "lfs": {
+        "oid": "b2db6743a491d9a91a59b082cffd53add073a07e05c494b9c66e4d98882725dc",
+        "size": 68889918,
+        "pointerSize": 133
+      },
+      "xetHash": "8d77480eac4fd7374df7af52ab95cb50801583eb7a77bf78eaf88d2b99e3c358",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023643.137774Z_ip-172-31-3-129_6c297a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9bea31f43c6bc3c9e6d65fb8d7bd2bbaa5788486",
+      "size": 67241627,
+      "lfs": {
+        "oid": "6637b8ea90bc23cc9399a1d521c36927811a4ac4030efdf97bda192d1702c040",
+        "size": 67241627,
+        "pointerSize": 133
+      },
+      "xetHash": "1216cbb5ddbfbd0e785dcb67f803816aa4520e3321c36febbe8e74046e9d2f95",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023842.827028Z_ip-172-31-3-129_e1d9fc.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "da5021d1a0749af5fe7499318bfd63583b905177",
+      "size": 69186152,
+      "lfs": {
+        "oid": "ed37d8242a466e04a2dbf6ea5ea6d501e83c8292a638e43e375881f32fd82b74",
+        "size": 69186152,
+        "pointerSize": 133
+      },
+      "xetHash": "e607fbc167e9c4b83cddcf69d6e1299b0da33425d539c7c5cda97ea132ec227b",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024048.345029Z_ip-172-31-3-129_44c640.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "da510b4e5e3d84595d7b420fd955f22faccbaae0",
+      "size": 69522651,
+      "lfs": {
+        "oid": "26d45a6e16d769f3438ddeacb4021cb1ccbd88b7d54679b2f666a55f7908478c",
+        "size": 69522651,
+        "pointerSize": 133
+      },
+      "xetHash": "82e1f785b5b4e8398ae607bdcdc39abe2174b1c2c12c14068f91ca96bdd46d7e",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024249.072705Z_ip-172-31-3-129_abce9a.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "9a9a34257b587fa369be9e8add4f55fb681628a8",
+      "size": 67410745,
+      "lfs": {
+        "oid": "72407969ced6ff377461ca4cb1634af8088cb98c3dfb997216853f2b7229136d",
+        "size": 67410745,
+        "pointerSize": 133
+      },
+      "xetHash": "5d92bda6c7582a56e3a02d62040a5e6e0a8abafa8ae4ee56b3e8dc2e389b40df",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024448.218443Z_ip-172-31-3-129_633c3b.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "3ae524c23c63664e37b2b92609f91a896ca7e8f7",
+      "size": 60218701,
+      "lfs": {
+        "oid": "f37399b6094149dca6849c493d758e96c6b6875693be43815f99ae9ddf3c9f4b",
+        "size": 60218701,
+        "pointerSize": 133
+      },
+      "xetHash": "d911150844a48908d95a10067b1c983a140d9889003bad731cafdc41e3ab0eb2",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T024651.836112Z_ip-172-31-3-129_efc183.jsonl.gz"
+    }
+  ],
+  "warmup_files": 6,
+  "decision_files": [
+    7,
+    8,
+    9,
+    10,
+    11,
+    12
+  ],
+  "selection": "Next six uninspected chronological files fixed before download. First six cached files solely initialize raw ladders and sequence history. No outcome-driven extension. Exclude previously attempted official events listed below; no independence inferred from elapsed minutes.",
+  "signal": {
+    "grid_seconds": 5,
+    "lookback_seconds": 10,
+    "lookback_tolerance_seconds": 2,
+    "minimum_ask_drop_cents": 3,
+    "minimum_bid_change_cents": 0,
+    "maximum_spread_cents": 3,
+    "entry_cents": [
+      10,
+      90
+    ],
+    "quote_age_seconds": 1,
+    "sides": [
+      "yes",
+      "no"
+    ],
+    "ticker_attempt_cap": 1,
+    "event_attempt_cap": 1,
+    "eligible_event_cap": 100
+  },
+  "entry": {
+    "delay_seconds": 1,
+    "maximum_lateness_seconds": 1,
+    "minimum_displayed_contracts": 1,
+    "price_guard": "Delayed ask must not exceed decision ask and must remain10–90c",
+    "require_snapshot_initialized_unbroken_sequence": true
+  },
+  "outcome": {
+    "type": "hold_to_official_settlement",
+    "fee_reserve_cents": 5,
+    "slippage_cents": 1,
+    "additional_stress_cents": [
+      0,
+      2,
+      5
+    ],
+    "unverified_or_unresolved": "Retain unknown; full-principal-loss stress; do not drop"
+  },
+  "metadata": "Official binary contract/event/rules and open/earliest close, occurrence, expected expiration required. Exclude entries outside trading windows; one earliest chronological attempt per official event even if entry fails. Modern metadata does not prove contemporaneous rule availability.",
+  "gate": "Exploratory one-date diagnostic cannot qualify. Require100complete signals,40independent events,5families and positive stressed event-cluster95%lower bound on unused multi-date holdout, fee/source verification and authentic operational evidence before separately authorized Demo trial.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "actual_orders": 0,
+  "prior_failed_results_preserved": true,
+  "no_optimization_on_inspected_data": true,
+  "excluded_prior_events": [
+    "KXBTC-26JUL1823",
+    "KXBTCD-26JUL1823",
+    "KXCFLGAME-26JUL18TORHAM",
+    "KXETHD-26JUL1823",
+    "KXETHD-26JUL1917",
+    "KXETHD-26JUL2417",
+    "KXITFMATCH-26JUL18CRIKAM",
+    "KXLOLMAP-26JUL182200KITSPLS-2",
+    "KXMLBF5SPREAD-26JUL182205WSHATH",
+    "KXMLBF5SPREAD-26JUL182207DETLAA",
+    "KXMLBF5TOTAL-26JUL182205WSHATH",
+    "KXMLBF5TOTAL-26JUL182207DETLAA",
+    "KXMLBGAME-26JUL182008SFSEA",
+    "KXMLBHR-26JUL182205WSHATH",
+    "KXMLBSPREAD-26JUL182008SFSEA",
+    "KXMLBTEAMTOTAL-26JUL182207DETLAA",
+    "KXMLBTEAMTOTAL-26JUL191610SFSEA",
+    "KXMLBTOTAL-26JUL182008SFSEA",
+    "KXMLBTOTAL-26JUL182205WSHATH",
+    "KXMLBTOTAL-26JUL182207DETLAA",
+    "KXNBASUMMERGAME-26JUL18GSWLAL",
+    "KXNBASUMMERSPREAD-26JUL18INDNOP",
+    "KXNBASUMMERTOTAL-26JUL18GSWLAL",
+    "KXNBASUMMERTOTAL-26JUL18INDNOP",
+    "KXNBASUMMERTOTAL-26JUL18SASPHX",
+    "KXNWSLGAME-26JUL18RACHDA",
+    "KXSOLD-26JUL1823",
+    "KXSOLD-26JUL1917",
+    "KXSOLD-26JUL2417",
+    "KXT20MATCH-26JUL181930WASLOS",
+    "KXUSLGAME-26JUL18SANLAS",
+    "KXWCSTART-26JUL19ESPARG-ESP",
+    "KXXRPD-26JUL1823"
+  ],
+  "feed": {
+    "version": "raw_positive_ladders_serialized_availability_v1",
+    "epoch": "Explicit seq1 snapshot after priorseq>1 infers new epoch; other gaps invalidate until next explicit restart. Each ticker needs current-epoch raw snapshot; old snapshots never carried forward.",
+    "depth": "Independently rebuild full positive ladders and validate every raw delta; strict derivedtop3 match required except diagnostically proven zero-quantity truncation with exact positive-price/quantity prefix match. All other disagreement invalidates ticker until snapshot. Quantity tolerance0.000001, exact prices.",
+    "availability": "Preserve serialized file order. Each row is usable no earlier than maximum receipt timestamp seen at this or any prior row. Retain original receipt clock. Freshness compares decision against original receipt as well as availability. No hindsight sorting. Within-channel clock regression invalidates channel until explicit restart.",
+    "clock_limitation": "High-water mark is a conservative modeled availability fence, not measured execution or a verified connection UUID."
+  },
+  "limits": {
+    "maximum_records": 10000000,
+    "maximum_ladder_levels": 3000000
+  }
+}

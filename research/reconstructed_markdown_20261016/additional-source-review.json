@@ -1,0 +1,20 @@
+{
+  "reviewed_at": "2026-10-16",
+  "sources": [
+    {
+      "url": "https://huggingface.co/datasets/Coyevans/mlb-polymarket-kalshi-matched-book-sample",
+      "license": "cc-by-nc-4.0",
+      "scope": "Single ARI/MIN June21 game,1204asofjoined30-60second observations; no displayed quantities or independently available full multi-day archive verified",
+      "decision": "Not independent multi-day executable-depth evidence; noncommercial restriction not a production trading grant",
+      "producer_negative_result": "Card reports its larger16day study loses naive crossvenue trade after spread/one-snapshot latency; not independently replicated here",
+      "additional_archive": "Paid tryout/fullarchive advertised, no purchase authorized or made"
+    },
+    {
+      "url": "https://promethean.markets/datasets/kalshi/",
+      "scope": "Vendor describes12collecteddays asofJuly18 but currentpage says re-inception/certification in progress and priorchainwithdrawn",
+      "decision": "No public released full archive verified. Requestaccess exists; no signup/purchase performed"
+    }
+  ],
+  "actual_new_source_downloads": 0,
+  "new_model_calls": 0
+}

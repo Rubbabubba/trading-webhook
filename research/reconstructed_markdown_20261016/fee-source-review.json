@@ -1,0 +1,13 @@
+{
+  "source_url": "https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+  "source_title": "Fee Schedule for July2026 -7.7.26 Update",
+  "read_at": "2026-10-16",
+  "effective_date": "2026-07-07",
+  "general_taker_formula": "M*0.07*C*P*(1-P) dollars before rounding",
+  "default_multiplier": 1,
+  "maker_formula": "M*0.0175*C*P*(1-P)",
+  "settlement_fee": 0,
+  "rounding_limitation": "Prose says combined fee and position cost rounds to a centicent, while general table displays a2cent fee for one contract at50c. Do not silently choose a cheaper rounding interpretation without authentic fee verification.",
+  "application": "Current registration retains5cent reserve plus1cent slippage unchanged. A later separately registered fee model may use verified series-specific terms; this discovery cannot overwrite previous failures or qualify live execution.",
+  "series_specific_historical_terms_verified": false
+}

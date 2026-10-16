@@ -33,7 +33,8 @@ def verify(book,row):
         if not equal_levels(actual_bids,bids) or not equal_levels(actual_asks,asks):raise ValueError('derived_top3_disagreement')
 
 class Audit:
-    def __init__(self):
+    def __init__(self,verifier=None):
+        self.verifier=verifier or verify
         self.channels={};self.books={};self.counts=Counter();self.samples=[];self.latest=None;self.channel_times={};self.levels=0
     def fault(self,reason,row):
         self.counts[reason]+=1
@@ -80,7 +81,7 @@ class Audit:
                 self.counts['raw_deltas']+=1
             else:raise ValueError('unknown_record_type')
             if self.levels>3000000:raise ValueError('ladder_capacity')
-            verify(book,row);self.counts['fully_reconstructed_rows']+=1
+            self.verifier(book,row);self.counts['fully_reconstructed_rows']+=1
         except (ValueError,KeyError,TypeError) as e:
             self.fault(str(e),row)
             # An integrity failure invalidates this ticker; only another full

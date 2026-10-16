@@ -1,0 +1,19 @@
+{
+  "schema": "independent_accounting_receipt_v1",
+  "complete_conditional_entries": 6,
+  "gross_cents": -65,
+  "net_cents_by_extra_stress": {
+    "0": -101,
+    "2": -113,
+    "5": -131
+  },
+  "official_windows_rechecked": true,
+  "event_dedup_rechecked": true,
+  "prior_events_excluded": true,
+  "delayed_entry_and_price_guards_rechecked": true,
+  "numeric_and_label_settlement_rechecked": true,
+  "registration_sha256": "c68a56bc8622f8dfd006a2bebeed9f205d1ed17c03cbf0e35549080571f5e5a8",
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "profitability_proven": false
+}
