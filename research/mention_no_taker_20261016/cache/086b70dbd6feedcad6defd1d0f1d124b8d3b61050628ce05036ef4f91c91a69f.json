@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXGOVERNORMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:28:01.973269+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 796461,
+  "sha256": "3bf60a98648774d160384cca3b24e6117aa5ca1427bbc559a4f1816b5492f72f"
+}

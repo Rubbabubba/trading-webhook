@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26AUG10-CHEA/candlesticks?start_ts=1786316340&end_ts=1786316400&period_interval=1",
+  "captured_at": "2026-10-16T03:28:20.233433+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 370,
+  "sha256": "0807afd69754fa1385ff354e4377ae86b0a4898e30aad189ed34470156014bbf"
+}

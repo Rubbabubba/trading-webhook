@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXDJTWOMENS&limit=1000",
+  "captured_at": "2026-10-16T03:27:45.569883+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 43305,
+  "sha256": "02810ae7c34e62e5ed366862d153c93019033e75ab2e541218f6f5220721b4e8"
+}

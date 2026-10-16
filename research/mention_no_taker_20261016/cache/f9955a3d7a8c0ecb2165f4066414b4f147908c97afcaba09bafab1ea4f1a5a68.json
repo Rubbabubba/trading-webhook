@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXAOCMENTION-26JUL19B-ABDU/candlesticks?start_ts=1784423940&end_ts=1784424000&period_interval=1",
+  "captured_at": "2026-10-16T03:28:27.388878+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 368,
+  "sha256": "0a2144ee19e8aab99610495d9c1dafbfab51a349348e593ef15752342add9080"
+}

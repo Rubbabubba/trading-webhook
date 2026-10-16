@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXZUCKMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:27:55.752923+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 51379,
+  "sha256": "be6e5e92f6a99cf10b9e5f582c425639aad4bb4ef3c1a5c0261a9912952e41b5"
+}

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL23-SAUD/candlesticks?start_ts=1784747340&end_ts=1784747400&period_interval=1",
+  "captured_at": "2026-10-16T03:28:13.779140+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 58,
+  "sha256": "041fea6a27e583aac8546549062e66ccf43cb1e09df84b0749a0199837fc59b3"
+}

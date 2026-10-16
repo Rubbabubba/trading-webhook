@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXGUTFELDMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:28:04.253566+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 51448,
+  "sha256": "bb7527eb511301d5e23fc5c55b5da635d473a34d45aa4aa7b698f11ac77ea936"
+}

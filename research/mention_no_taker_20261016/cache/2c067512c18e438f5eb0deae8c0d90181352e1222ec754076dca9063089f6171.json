@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXAOCMENTION-26JUL18-HEAL/candlesticks?start_ts=1784332140&end_ts=1784332200&period_interval=1",
+  "captured_at": "2026-10-16T03:28:13.130828+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 56,
+  "sha256": "898ba834c7f2562fc56b37ddeb98d933ea3b5ca851e2b00e28ddcc61f97060b5"
+}

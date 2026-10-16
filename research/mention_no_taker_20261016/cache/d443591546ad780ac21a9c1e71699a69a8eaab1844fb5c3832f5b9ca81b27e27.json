@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26AUG05-UFO/candlesticks?start_ts=1785884220&end_ts=1785884280&period_interval=1",
+  "captured_at": "2026-10-16T03:28:26.736656+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 392,
+  "sha256": "947562e4a56b85af7a2bdc7502f8c8364a65ad8e7e1cf4e2d1649b6704b4c5f7"
+}

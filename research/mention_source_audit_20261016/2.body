@@ -1,0 +1,174 @@
+# Mention Market NO Maker Strategy
+
+## What This Is
+
+A limit-order strategy that sells NO contracts on Kalshi "mention" markets (e.g., "Will Trump say X?"). We post maker orders at T-24h before market close, optionally top up at T-18h, and let them resolve.
+
+All parameters below were derived from backtesting 4,562 mention market entries (post staleness filter) across 172M+ historical trades, with conservative assumptions: 50% maker fill share, ±2h entry staleness filter, T1/T2 tranche modeling, and daily-aggregated Sharpe.
+
+## Market Selection
+
+### Which markets to trade
+
+```
+Filter: mention markets only (src/kalshi/filters.py STRONG + WEAK patterns)
+Side: NO maker (we post limit orders to sell NO contracts)
+```
+
+### Entry eligibility
+
+A market is eligible for entry when ALL of these are true:
+
+1. It is a mention market (detected by `src/kalshi/filters.py`)
+2. Market close time is between 22h and 26h from now (T-24h ± 2h staleness window)
+3. The current NO price (1 - yes_ask) falls into an active price bucket (see sizing table below)
+4. The order book has a visible bid/ask spread (market is tradeable)
+
+### Price buckets to SKIP (do not enter)
+
+| NO Price Range | Reason |
+|----------------|--------|
+| 0-14c | Negative or negligible edge (<1.4%). Not worth the risk. |
+| 90-100c | Edge <1.7%, only 69-58 historical markets, low fill rates (60-88%). Noise. |
+
+## Sizing
+
+### Simple strategy (recommended to start)
+
+Post the same size on every eligible market. No bucket lookups needed.
+
+```
+T1_SIZE = 750 contracts (posted at T-24h)
+T2_SIZE = 750 contracts (posted at T-18h, conditional on T1 fill)
+```
+
+**Backtest results:** $48,429 total PnL, Sharpe 6.55, $0.089/contract, 7.0% edge, 54.5% win rate.
+
+### Bucket-variable strategy (better capital efficiency)
+
+Use the NO price at entry time to look up sizing. Better $/contract but more operational complexity.
+
+```python
+SIZING_TABLE = {
+    # (min_no_price, max_no_price): (t1_contracts, t2_contracts)
+    (0.00, 0.14): (0, 0),        # SKIP - no edge
+    (0.15, 0.24): (250, 0),      # Small T1 only - thin edge, adverse selection risk
+    (0.25, 0.49): (500, 500),    # Core range - best risk-reward
+    (0.50, 0.64): (500, 500),    # Core range - strongest edge (up to 17%)
+    (0.65, 0.84): (500, 500),    # Standard - reliable edge 7-9%
+    (0.85, 0.89): (500, 0),      # T1 only - edge thins, skip topup
+    (0.90, 1.00): (0, 0),        # SKIP - edge <1.7%, too few markets
+}
+```
+
+**Backtest results:** $40,469 total PnL, Sharpe 6.70, $0.101/contract, 8.7% edge, 63.9% win rate.
+
+## Entry and Top-Up Logic
+
+### T1: Initial Entry (T-24h)
+
+```
+WHEN: market close is ~24h away (within ±2h window)
+ACTION: post a NO maker limit order at the current NO bid price
+SIZE: T1_SIZE from sizing table above
+PRICE: current NO bid (= 1 - yes_ask on the order book)
+```
+
+### T2: Top-Up (T-18h)
+
+```
+WHEN: 6 hours after T1 placement
+CONDITION: T1 order is >= 50% filled
+ACTION: post a second NO maker limit order at the current NO bid price
+SIZE: T2_SIZE from sizing table above
+PRICE: current NO bid at T-18h (may differ from T1 price)
+```
+
+If T1 is less than 50% filled at the T2 decision point, do NOT post T2. The low fill signals either a dead market or adverse price movement.
+
+### After entry
+
+Do nothing. Let all orders sit until market resolution. No cancellation, no adjustment.
+
+## Fee Calculation
+
+Kalshi maker fee formula (applied per tranche):
+
+```python
+fee = math.ceil(0.0175 * contracts_filled * price * (1 - price))
+# price = the NO price you entered at (0-1 scale)
+# contracts_filled = actual number of contracts filled, NOT posted size
+```
+
+## PnL Calculation
+
+Per tranche (T1 and T2 calculated separately, then summed):
+
+```python
+# If market resolves NO (we win):
+pnl = filled * (1.0 - entry_no_price) - fee
+
+# If market resolves YES (we lose):
+pnl = filled * (0.0 - entry_no_price) - fee
+# = -(filled * entry_no_price) - fee
+```
+
+Where:
+- `filled` = number of contracts actually filled in this tranche
+- `entry_no_price` = the NO price at the time this tranche was posted
+- `fee` = maker fee for this tranche
+
+## Per-Bucket Backtest Metrics
+
+These are the raw edge/Sharpe numbers from the fidelity-corrected backtest (50% maker share, staleness-filtered, T1/T2 modeled):
+
+| NO Price | Edge | Win Rate | Sharpe | Fill Rate | Adverse Delta | n_markets | Signal |
+|----------|------|----------|--------|-----------|---------------|-----------|--------|
+| 5-10c | -0.2% | 8.0% | 1.26 | 85.6% | -5.6% | 381 | SKIP |
+| 15-20c | 5.1% | 23.1% | 1.49 | 81.3% | +6.1% | 256 | STRONG |
+| 20-25c | 1.4% | 24.2% | 1.00 | 83.4% | — | 223 | MODERATE |
+| 25-30c | 8.0% | 35.8% | 2.65 | 84.6% | — | 228 | STRONG |
+| 30-35c | 9.9% | 43.0% | 3.60 | 86.3% | — | 291 | STRONG |
+| 35-40c | 9.4% | 47.4% | 2.26 | 86.7% | +14.4% | 241 | STRONG |
+| 40-45c | 12.7% | 55.6% | 3.70 | 80.9% | -15.1% | 278 | STRONG |
+| 45-50c | 10.8% | 58.6% | 2.78 | 84.5% | +0.9% | 226 | STRONG |
+| 50-55c | 15.4% | 68.2% | 4.51 | 80.9% | -18.2% | 241 | STRONG |
+| 55-60c | 5.2% | 63.0% | 3.14 | 85.0% | -19.9% | 226 | STRONG |
+| 60-65c | 17.0% | 79.7% | 5.53 | 86.3% | +9.2% | 240 | STRONG |
+| 65-70c | 6.8% | 74.8% | 1.45 | 88.5% | -1.5% | 260 | STRONG |
+| 70-75c | 7.1% | 80.1% | 3.09 | 89.9% | -3.5% | 268 | STRONG |
+| 75-80c | 8.9% | 87.0% | 4.39 | 94.1% | +2.5% | 254 | STRONG |
+| 80-85c | 7.9% | 90.5% | 4.26 | 92.1% | +1.1% | 240 | STRONG |
+| 85-90c | 7.1% | 95.0% | 6.84 | 94.5% | 0.0% | 127 | STRONG |
+| 90-95c | 0.8% | 93.4% | 2.36 | 88.4% | -3.1% | 69 | WEAK |
+| 95-100c | 1.7% | 100% | 14.6 | 60.3% | 0.0% | 58 | MODERATE |
+
+**Adverse delta** = win_rate(partial fills) - win_rate(full fills). Positive means full fills get wrecked more (adverse selection). Negative means full fills actually win more (good).
+
+## Known Biases and Limitations
+
+These are baked into the backtest and cannot be removed:
+
+1. **Maker share (50%)**: We assume we capture half of all YES taker flow at our price. Real share depends on how many other makers are active. Could be 30% (crowded) or 80% (sole maker).
+
+2. **No market impact**: Our presence on the book changes price dynamics. Direction is unclear — we might attract flow (positive) or signal information (negative).
+
+3. **Staleness filter dropped 58% of entries**: Most mention markets don't have a trade within ±2h of T-24h. The backtest only covers markets with active trading near our entry time. Markets without recent trades may behave differently.
+
+4. **Fill modeling is approximate**: We count YES taker flow at our price ± 1c as fills. Real fills depend on order book depth, queue position, and timing.
+
+5. **No cancellation modeling**: We never cancel orders. In practice, you might want to cancel if the price moves significantly against you before fill.
+
+## Strategy Comparison Summary
+
+From `output/trades/mentions/kc_sizing/strategy_comparison.csv`:
+
+| Strategy | PnL | Sharpe | $/ct | Category |
+|----------|-----|--------|------|----------|
+| Flat 750/750 | $48,429 | 6.55 | $0.089 | Live (simple) |
+| Flat 250/250 | $32,449 | 7.36 | $0.078 | Live (conservative) |
+| Pre-vol 10% | $54,606 | 5.37 | $0.093 | Live (vol-scaled) |
+| Bucket-variable | $40,469 | 6.70 | $0.101 | Live (optimized) |
+| Oracle mkt 5% | $49,042 | 4.70 | $0.090 | NOT implementable |
+
+Oracle strategies use final market volume (unknowable at entry). They barely beat live strategies, confirming that volume information has marginal value.

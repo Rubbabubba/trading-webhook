@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL15-ISRA/candlesticks?start_ts=1784065560&end_ts=1784065620&period_interval=1",
+  "captured_at": "2026-10-16T03:28:33.811269+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 58,
+  "sha256": "7a127a01873f2af649f8d5fb9070598f54c8ba2ac391199ba8a181ca318ac774"
+}

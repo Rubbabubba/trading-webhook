@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXGOVERNORMENTION-26JUL03-2028/candlesticks?start_ts=1783001040&end_ts=1783001100&period_interval=1",
+  "captured_at": "2026-10-16T03:28:36.400496+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 61,
+  "sha256": "c9bf4f033f437ded380269ea36d1f521c554a114fac8c464ecbf0f97ff327be0"
+}

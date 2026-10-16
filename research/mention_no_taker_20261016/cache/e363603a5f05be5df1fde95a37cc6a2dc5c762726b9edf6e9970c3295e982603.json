@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXNEWSOMMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:27:50.275290+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 825900,
+  "sha256": "37cf104f2b57ee65d9d0c6bc03b96ac5810932168f5f338f2dff377187a9a9cc"
+}

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXHILTONMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:28:09.244585+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 155081,
+  "sha256": "2ce225c5afcb0ca84f14df368b5d3ed71afa3ce7eb0755846e5f13d6214f3e5b"
+}

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPSAYCOMPANY-26AUG01-NEW/candlesticks?start_ts=1783261980&end_ts=1783262040&period_interval=1",
+  "captured_at": "2026-10-16T03:28:14.428897+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 60,
+  "sha256": "d9e9bc4363bb4e4366452b2aac0cec37b783a8b33d31894bc492d27c85b9d3ed"
+}

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXTRUMPSAYCOMPANY&limit=1000",
+  "captured_at": "2026-10-16T03:27:57.182098+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 85503,
+  "sha256": "268234abfaf8bf7a71e9a6235ee64e7ef13eeb2654f701081db83c38854ebb9a"
+}

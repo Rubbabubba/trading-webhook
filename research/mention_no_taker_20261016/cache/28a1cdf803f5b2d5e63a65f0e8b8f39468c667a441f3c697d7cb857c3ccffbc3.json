@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXCROCKETTMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:27:48.786216+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 65451,
+  "sha256": "3fdce9c4c47d4a825c8482d05da6e73e8927f977b24f0f14910fab8d8664fba8"
+}

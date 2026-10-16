@@ -1,0 +1,550 @@
+"""Market selection analysis: do VPIN, G-M alpha, or spread help select better markets?
+
+Tests whether pre-filtering markets by informedness signals (VPIN, G-M alpha) or
+liquidity signals (bid-ask spread) improves backtested PnL and Sharpe.
+
+Phases:
+1. Build per-market feature table (vpin_at_entry, gm_alpha, snap_spread)
+2. Single-signal filter sweeps (keep markets below threshold)
+3. Combined 2-signal sweep (top VPIN x top alpha thresholds)
+4. Signal correlation analysis
+5. Summary: unfiltered vs best single vs best combined
+
+Outputs:
+- market_selection_signals.csv    Per-market: vpin, alpha, spread, result
+- market_selection_sweep.csv      Per-threshold: signal, n_entered, PnL, Sharpe
+- market_selection_combined.csv   Per-combo: vpin_thresh, alpha_thresh, PnL, Sharpe
+- market_selection.png            4-panel diagnostic plot
+
+Usage: uv run python -m analysis.mention.market_selection
+"""
+
+import gc
+import time
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from analysis.lib.db import (
+    BOT_SKIP_SERIES, BOT_SKIP_WORDS, MAKER_SPREAD_ADJ,
+    OUT_BASE, connect, run_query,
+)
+from analysis.lib.fills import simulate_fills, weekly_sharpe
+from analysis.lib.queries import load_entries, load_post_entry_trades, load_trades
+from analysis.lib.vpin_calc import compute_vpin_at_entry
+from analysis.lib.plotting import save_figure, setup_style
+from analysis.mention.glosten_milgrom import estimate_all_alphas
+from analysis.mention.queue_depth import detect_sweeps, compute_queue_depth
+
+OUT_DIR = OUT_BASE / "mention"
+
+# Single-signal thresholds
+VPIN_THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+ALPHA_THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+SPREAD_THRESHOLDS = [2, 3, 4, 5, 10, 999]
+
+TARGET_SIZE = 50
+TOP_N_COMBOS = 3  # top N thresholds per signal for combined sweep
+
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+def load_snapshot_spreads(con):
+    """Load bid-ask spread from T-24h price snapshots (in cents)."""
+    return run_query(con, f"""
+    SELECT ps.ticker,
+           CAST(ROUND(ps.yes_ask * 100) AS INTEGER)
+           - CAST(ROUND(ps.yes_bid * 100) AS INTEGER) AS spread_cents
+    FROM price_snapshots ps
+    JOIN markets m ON ps.ticker = m.ticker
+    JOIN events e ON m.event_ticker = e.event_ticker
+    WHERE ps.interval_name = '24h'
+      AND m.result IN ('yes', 'no')
+      AND e.mutually_exclusive = false AND e.category = 'Mentions'
+      AND m.close_time >= '2025-10-01'
+      {BOT_SKIP_SERIES}
+      {BOT_SKIP_WORDS}
+      AND ps.yes_bid IS NOT NULL AND ps.yes_ask IS NOT NULL
+      AND ps.yes_bid > 0.01 AND ps.yes_ask < 0.99
+    """, "Snapshot spreads (24h)")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Single-signal filter sweep
+# ---------------------------------------------------------------------------
+
+def run_single_signal_sweep(signal_name, thresholds, entries, feature_map,
+                            post_trades, book_share_map):
+    """Sweep thresholds for a single signal. Returns DataFrame of results."""
+    rows = []
+    total = len(thresholds)
+
+    for i, thresh in enumerate(thresholds):
+        print(f"\r  {signal_name} sweep... {i+1}/{total} "
+              f"(thresh={thresh})", end="", flush=True)
+
+        # Filter entries: keep markets with signal <= threshold
+        # Markets without the signal are excluded (conservative)
+        keep = [t for t in entries["ticker"]
+                if t in feature_map and feature_map[t] <= thresh]
+
+        filtered_entries = entries[entries["ticker"].isin(keep)]
+
+        if filtered_entries.empty:
+            rows.append({
+                "signal": signal_name, "threshold": thresh,
+                "n_entered": 0, "n_filled": 0,
+                "total_pnl": 0, "total_filled": 0,
+                "pnl_per_ct": 0, "sharpe": np.nan,
+            })
+            continue
+
+        result = simulate_fills(
+            filtered_entries, post_trades, TARGET_SIZE,
+            book_share_map, adverse_mode="expected",
+        )
+
+        filled = result[result["filled"] > 0]
+        total_pnl = result["pnl"].sum()
+        total_filled = filled["filled"].sum() if len(filled) > 0 else 0
+
+        sharpe = (weekly_sharpe(filled["pnl"], filled["close_time"])
+                  if len(filled) >= 5 else np.nan)
+
+        rows.append({
+            "signal": signal_name,
+            "threshold": thresh,
+            "n_entered": len(filtered_entries),
+            "n_filled": len(filled),
+            "total_pnl": total_pnl,
+            "total_filled": total_filled,
+            "pnl_per_ct": total_pnl / total_filled if total_filled > 0 else 0,
+            "sharpe": sharpe,
+        })
+
+    print()
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Combined 2-signal sweep
+# ---------------------------------------------------------------------------
+
+def run_combined_sweep(entries, vpin_map, alpha_map, post_trades,
+                       book_share_map, vpin_sweep_df, alpha_sweep_df):
+    """Test top-3 VPIN x top-3 alpha threshold combos."""
+    # Pick top 3 by total_pnl for each signal
+    top_vpin = (vpin_sweep_df[vpin_sweep_df["total_pnl"] > 0]
+                .nlargest(TOP_N_COMBOS, "total_pnl")["threshold"].tolist())
+    top_alpha = (alpha_sweep_df[alpha_sweep_df["total_pnl"] > 0]
+                 .nlargest(TOP_N_COMBOS, "total_pnl")["threshold"].tolist())
+
+    if not top_vpin:
+        top_vpin = VPIN_THRESHOLDS[-TOP_N_COMBOS:]
+    if not top_alpha:
+        top_alpha = ALPHA_THRESHOLDS[-TOP_N_COMBOS:]
+
+    combos = [(v, a) for v in top_vpin for a in top_alpha]
+    rows = []
+    total = len(combos)
+
+    for i, (vt, at) in enumerate(combos):
+        print(f"\r  Combined sweep... {i+1}/{total} "
+              f"(vpin<={vt}, alpha<={at})", end="", flush=True)
+
+        keep = [t for t in entries["ticker"]
+                if (t in vpin_map and vpin_map[t] <= vt
+                    and t in alpha_map and alpha_map[t] <= at)]
+
+        filtered_entries = entries[entries["ticker"].isin(keep)]
+
+        if filtered_entries.empty:
+            rows.append({
+                "vpin_threshold": vt, "alpha_threshold": at,
+                "n_entered": 0, "n_filled": 0,
+                "total_pnl": 0, "total_filled": 0,
+                "pnl_per_ct": 0, "sharpe": np.nan,
+            })
+            continue
+
+        result = simulate_fills(
+            filtered_entries, post_trades, TARGET_SIZE,
+            book_share_map, adverse_mode="expected",
+        )
+
+        filled = result[result["filled"] > 0]
+        total_pnl = result["pnl"].sum()
+        total_filled = filled["filled"].sum() if len(filled) > 0 else 0
+
+        sharpe = (weekly_sharpe(filled["pnl"], filled["close_time"])
+                  if len(filled) >= 5 else np.nan)
+
+        rows.append({
+            "vpin_threshold": vt,
+            "alpha_threshold": at,
+            "n_entered": len(filtered_entries),
+            "n_filled": len(filled),
+            "total_pnl": total_pnl,
+            "total_filled": total_filled,
+            "pnl_per_ct": total_pnl / total_filled if total_filled > 0 else 0,
+            "sharpe": sharpe,
+        })
+
+    print()
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+def plot_all(sweep_df, combined_df, signals_df, entries, post_trades,
+             book_share_map, baseline_result=None):
+    """Create 4-panel market selection diagnostic plot."""
+    setup_style()
+    fig, axes = plt.subplots(2, 2, figsize=(18, 14))
+
+    # Panel (0,0): PnL by threshold (3 signal lines)
+    ax = axes[0, 0]
+    signal_colors = {"vpin": "#1565C0", "alpha": "#F44336", "spread": "#4CAF50"}
+    for signal_name, color in signal_colors.items():
+        sub = sweep_df[sweep_df["signal"] == signal_name].sort_values("threshold")
+        if not sub.empty:
+            ax.plot(sub["threshold"], sub["total_pnl"],
+                    "o-", label=signal_name, color=color,
+                    markersize=6, linewidth=2)
+    ax.set_title("Total PnL by Signal Threshold\n"
+                 "(keep markets with signal <= threshold)", fontsize=11)
+    ax.set_xlabel("Threshold (keep <=)")
+    ax.set_ylabel("Total PnL ($)")
+    ax.legend(fontsize=9)
+    ax.axhline(y=0, color="black", linewidth=0.5)
+
+    # Panel (0,1): Sharpe by threshold
+    ax = axes[0, 1]
+    for signal_name, color in signal_colors.items():
+        sub = sweep_df[sweep_df["signal"] == signal_name].sort_values("threshold")
+        valid = sub[sub["sharpe"].notna()]
+        if not valid.empty:
+            ax.plot(valid["threshold"], valid["sharpe"],
+                    "o-", label=signal_name, color=color,
+                    markersize=6, linewidth=2)
+    ax.set_title("Sharpe Ratio by Signal Threshold", fontsize=11)
+    ax.set_xlabel("Threshold (keep <=)")
+    ax.set_ylabel("Sharpe Ratio")
+    ax.legend(fontsize=9)
+
+    # Panel (1,0): VPIN vs alpha scatter (colored by outcome)
+    ax = axes[1, 0]
+    if not signals_df.empty:
+        has_both = signals_df.dropna(subset=["vpin_at_entry", "gm_alpha"])
+        if not has_both.empty:
+            wins = has_both[has_both["result"] == "no"]
+            losses = has_both[has_both["result"] == "yes"]
+            ax.scatter(wins["vpin_at_entry"], wins["gm_alpha"],
+                       c="#4CAF50", alpha=0.4, s=20, label="NO wins")
+            ax.scatter(losses["vpin_at_entry"], losses["gm_alpha"],
+                       c="#F44336", alpha=0.4, s=20, label="YES wins")
+            ax.legend(fontsize=9)
+    ax.set_title("VPIN vs G-M Alpha\n(colored by market outcome)", fontsize=11)
+    ax.set_xlabel("VPIN at Entry")
+    ax.set_ylabel("G-M Alpha")
+
+    # Panel (1,1): Cumulative PnL over time (filtered vs unfiltered)
+    ax = axes[1, 1]
+
+    # Unfiltered baseline (reuse if passed from main)
+    if baseline_result is None:
+        baseline = simulate_fills(
+            entries, post_trades, TARGET_SIZE, book_share_map,
+            adverse_mode="expected",
+        )
+    else:
+        baseline = baseline_result
+    if not baseline.empty:
+        baseline_sorted = baseline.sort_values("close_time")
+        cum_pnl = baseline_sorted["pnl"].cumsum()
+        ax.plot(pd.to_datetime(baseline_sorted["close_time"]), cum_pnl,
+                color="#9E9E9E", linewidth=2, label="Unfiltered")
+
+    # Best single-signal filter
+    best_single = sweep_df.loc[sweep_df["total_pnl"].idxmax()]
+    if best_single["total_pnl"] > 0:
+        sig = best_single["signal"]
+        thresh = best_single["threshold"]
+
+        # Determine which map to use
+        if sig == "vpin":
+            fmap = signals_df.set_index("ticker")["vpin_at_entry"].dropna().to_dict()
+        elif sig == "alpha":
+            fmap = signals_df.set_index("ticker")["gm_alpha"].dropna().to_dict()
+        else:
+            fmap = signals_df.set_index("ticker")["snap_spread"].dropna().to_dict()
+
+        keep = [t for t in entries["ticker"] if t in fmap and fmap[t] <= thresh]
+        filt_entries = entries[entries["ticker"].isin(keep)]
+        if not filt_entries.empty:
+            filt_result = simulate_fills(
+                filt_entries, post_trades, TARGET_SIZE, book_share_map,
+                adverse_mode="expected",
+            )
+            if not filt_result.empty:
+                filt_sorted = filt_result.sort_values("close_time")
+                cum_filt = filt_sorted["pnl"].cumsum()
+                ax.plot(pd.to_datetime(filt_sorted["close_time"]), cum_filt,
+                        color="#1565C0", linewidth=2,
+                        label=f"Best: {sig}<={thresh}")
+
+    ax.set_title("Cumulative PnL Over Time\n(filtered vs unfiltered)", fontsize=11)
+    ax.set_xlabel("Market Close Date")
+    ax.set_ylabel("Cumulative PnL ($)")
+    ax.legend(fontsize=9)
+    ax.tick_params(axis="x", rotation=30)
+
+    save_figure(fig, OUT_DIR / "market_selection.png")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    t0 = time.time()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Data loading
+    # ------------------------------------------------------------------
+    print("Phase 0: Loading data...")
+    load_t0 = time.time()
+    con = connect()
+    entries = load_entries(con)
+    post_trades = load_post_entry_trades(con)
+    trades = load_trades(con)
+    spread_df = load_snapshot_spreads(con)
+    con.close()
+
+    if entries.empty or post_trades.empty or trades.empty:
+        print("  No data found. Exiting.")
+        return
+
+    print(f"  {len(entries):,} entries, {len(post_trades):,} post-entry trades, "
+          f"{len(trades):,} trades in {time.time()-load_t0:.1f}s")
+
+    # Compute signals BEFORE deleting trades
+    print("\n  Computing VPIN at entry...")
+    vpin_t0 = time.time()
+    vpin_map = compute_vpin_at_entry(trades)
+    print(f"  {len(vpin_map):,} markets with VPIN in {time.time()-vpin_t0:.1f}s")
+
+    print("  Computing G-M alpha...")
+    alpha_t0 = time.time()
+    alpha_df = estimate_all_alphas(trades)
+    alpha_map = alpha_df.set_index("ticker")["alpha"].to_dict()
+    print(f"  {len(alpha_map):,} markets with alpha in {time.time()-alpha_t0:.1f}s")
+
+    del trades
+    gc.collect()
+
+    # Spread map
+    spread_map = spread_df.set_index("ticker")["spread_cents"].to_dict()
+    del spread_df
+    gc.collect()
+
+    # Queue depth
+    print("\n  Computing queue depth...")
+    qd_t0 = time.time()
+    sweeps = detect_sweeps(post_trades)
+    qd = compute_queue_depth(sweeps)
+    depth_map = qd.set_index("ticker")["estimated_queue_depth"].to_dict()
+    del sweeps, qd
+    gc.collect()
+    book_share_map = {t: TARGET_SIZE / (TARGET_SIZE + d) for t, d in depth_map.items()}
+    print(f"  {len(depth_map):,} markets with queue depth in {time.time()-qd_t0:.1f}s")
+
+    # ------------------------------------------------------------------
+    # Phase 1: Build per-market feature table
+    # ------------------------------------------------------------------
+    print("\nPhase 1: Building feature table...")
+    signals_df = entries[["ticker", "result", "entry_no_price"]].copy()
+    signals_df["vpin_at_entry"] = signals_df["ticker"].map(vpin_map)
+    signals_df["gm_alpha"] = signals_df["ticker"].map(alpha_map)
+    signals_df["snap_spread"] = signals_df["ticker"].map(spread_map)
+    signals_df["no_win"] = (signals_df["result"] == "no").astype(int)
+
+    n_total = len(signals_df)
+    n_vpin = signals_df["vpin_at_entry"].notna().sum()
+    n_alpha = signals_df["gm_alpha"].notna().sum()
+    n_spread = signals_df["snap_spread"].notna().sum()
+    n_all = signals_df.dropna(subset=["vpin_at_entry", "gm_alpha", "snap_spread"]).shape[0]
+
+    print(f"  Coverage: {n_total:,} total entries")
+    print(f"    VPIN:   {n_vpin:,} ({100*n_vpin/n_total:.0f}%)")
+    print(f"    Alpha:  {n_alpha:,} ({100*n_alpha/n_total:.0f}%)")
+    print(f"    Spread: {n_spread:,} ({100*n_spread/n_total:.0f}%)")
+    print(f"    All 3:  {n_all:,} ({100*n_all/n_total:.0f}%)")
+
+    # ------------------------------------------------------------------
+    # Phase 2: Single-signal filter sweeps
+    # ------------------------------------------------------------------
+    print("\nPhase 2: Single-signal filter sweeps...")
+    sweep_t0 = time.time()
+
+    vpin_sweep = run_single_signal_sweep(
+        "vpin", VPIN_THRESHOLDS, entries, vpin_map,
+        post_trades, book_share_map)
+
+    alpha_sweep = run_single_signal_sweep(
+        "alpha", ALPHA_THRESHOLDS, entries, alpha_map,
+        post_trades, book_share_map)
+
+    spread_sweep = run_single_signal_sweep(
+        "spread", SPREAD_THRESHOLDS, entries, spread_map,
+        post_trades, book_share_map)
+
+    sweep_df = pd.concat([vpin_sweep, alpha_sweep, spread_sweep], ignore_index=True)
+    print(f"  {len(sweep_df)} sweep results in {time.time()-sweep_t0:.1f}s")
+
+    # Print results
+    print("\n" + "=" * 100)
+    print("  SINGLE-SIGNAL FILTER SWEEP RESULTS")
+    print("=" * 100)
+    for signal_name in ["vpin", "alpha", "spread"]:
+        sub = sweep_df[sweep_df["signal"] == signal_name].sort_values("threshold")
+        print(f"\n  --- {signal_name.upper()} (keep <= threshold) ---")
+        print(f"  {'Thresh':>8} {'Entered':>8} {'Filled':>7} "
+              f"{'PnL':>10} {'$/ct':>9} {'Sharpe':>8}")
+        print(f"  {'-' * 58}")
+        for _, r in sub.iterrows():
+            sharpe_str = f"{r['sharpe']:.2f}" if not np.isnan(r['sharpe']) else "N/A"
+            print(f"  {r['threshold']:>8} {int(r['n_entered']):>8} "
+                  f"{int(r['n_filled']):>7} "
+                  f"${r['total_pnl']:>+9.0f} ${r['pnl_per_ct']:>+.4f} "
+                  f"{sharpe_str:>8}")
+
+    # ------------------------------------------------------------------
+    # Phase 3: Combined 2-signal sweep
+    # ------------------------------------------------------------------
+    print("\nPhase 3: Combined VPIN x Alpha sweep...")
+    combo_t0 = time.time()
+    combined_df = run_combined_sweep(
+        entries, vpin_map, alpha_map, post_trades,
+        book_share_map, vpin_sweep, alpha_sweep)
+    print(f"  {len(combined_df)} combo results in {time.time()-combo_t0:.1f}s")
+
+    if not combined_df.empty:
+        print("\n" + "=" * 100)
+        print("  COMBINED VPIN x ALPHA SWEEP")
+        print("=" * 100)
+        print(f"  {'VPIN<=':>8} {'Alpha<=':>8} {'Entered':>8} {'Filled':>7} "
+              f"{'PnL':>10} {'$/ct':>9} {'Sharpe':>8}")
+        print(f"  {'-' * 68}")
+        for _, r in combined_df.sort_values("total_pnl", ascending=False).iterrows():
+            sharpe_str = f"{r['sharpe']:.2f}" if not np.isnan(r['sharpe']) else "N/A"
+            print(f"  {r['vpin_threshold']:>8} {r['alpha_threshold']:>8} "
+                  f"{int(r['n_entered']):>8} {int(r['n_filled']):>7} "
+                  f"${r['total_pnl']:>+9.0f} ${r['pnl_per_ct']:>+.4f} "
+                  f"{sharpe_str:>8}")
+
+    # ------------------------------------------------------------------
+    # Phase 4: Signal correlation analysis
+    # ------------------------------------------------------------------
+    print("\nPhase 4: Signal correlation analysis...")
+    corr_cols = ["vpin_at_entry", "gm_alpha", "snap_spread", "no_win"]
+    corr_data = signals_df[corr_cols].dropna()
+
+    if len(corr_data) >= 10:
+        print(f"\n  Correlation matrix ({len(corr_data):,} markets with all signals):")
+        corr = corr_data.corr()
+        labels = ["VPIN", "Alpha", "Spread", "NO win"]
+        print(f"  {'':>10}", end="")
+        for l in labels:
+            print(f" {l:>8}", end="")
+        print()
+        for i, row_label in enumerate(labels):
+            print(f"  {row_label:>10}", end="")
+            for j in range(len(labels)):
+                print(f" {corr.iloc[i, j]:>+7.3f}", end="")
+            print()
+    else:
+        print(f"  Only {len(corr_data)} markets with all signals — skipping correlation")
+
+    # ------------------------------------------------------------------
+    # Phase 5: Summary
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 100)
+    print("  SUMMARY: UNFILTERED vs BEST SINGLE-SIGNAL vs BEST COMBINED")
+    print("=" * 100)
+
+    # Unfiltered baseline
+    baseline_result = simulate_fills(
+        entries, post_trades, TARGET_SIZE, book_share_map,
+        adverse_mode="expected",
+    )
+    baseline_filled = baseline_result[baseline_result["filled"] > 0]
+    baseline_pnl = baseline_result["pnl"].sum()
+    baseline_ct = baseline_filled["filled"].sum() if len(baseline_filled) > 0 else 0
+    baseline_sharpe = (weekly_sharpe(baseline_filled["pnl"], baseline_filled["close_time"])
+                       if len(baseline_filled) >= 5 else np.nan)
+
+    sharpe_str = f"{baseline_sharpe:.2f}" if not np.isnan(baseline_sharpe) else "N/A"
+    pnl_ct_str = f"$/ct ${baseline_pnl/baseline_ct:+.4f}, " if baseline_ct > 0 else ""
+    print(f"\n  Unfiltered: {len(entries):,} markets, "
+          f"PnL ${baseline_pnl:+,.0f}, "
+          f"{pnl_ct_str}"
+          f"Sharpe {sharpe_str}")
+
+    # Best single signal
+    best_single_idx = sweep_df["total_pnl"].idxmax()
+    bs = sweep_df.loc[best_single_idx]
+    bs_sharpe = f"{bs['sharpe']:.2f}" if not np.isnan(bs['sharpe']) else "N/A"
+    print(f"  Best single: {bs['signal']}<={bs['threshold']}, "
+          f"{int(bs['n_entered']):,} markets, "
+          f"PnL ${bs['total_pnl']:+,.0f}, "
+          f"$/ct ${bs['pnl_per_ct']:+.4f}, "
+          f"Sharpe {bs_sharpe}")
+
+    # Best combined
+    if not combined_df.empty:
+        best_combo_idx = combined_df["total_pnl"].idxmax()
+        bc = combined_df.loc[best_combo_idx]
+        bc_sharpe = f"{bc['sharpe']:.2f}" if not np.isnan(bc['sharpe']) else "N/A"
+        print(f"  Best combo:  vpin<={bc['vpin_threshold']}, "
+              f"alpha<={bc['alpha_threshold']}, "
+              f"{int(bc['n_entered']):,} markets, "
+              f"PnL ${bc['total_pnl']:+,.0f}, "
+              f"$/ct ${bc['pnl_per_ct']:+.4f}, "
+              f"Sharpe {bc_sharpe}")
+
+    # ------------------------------------------------------------------
+    # Save CSVs
+    # ------------------------------------------------------------------
+    print("\nSaving outputs...")
+    signals_df.to_csv(OUT_DIR / "market_selection_signals.csv", index=False)
+    print(f"  -> market_selection_signals.csv ({len(signals_df)} rows)")
+
+    sweep_df.to_csv(OUT_DIR / "market_selection_sweep.csv", index=False)
+    print(f"  -> market_selection_sweep.csv ({len(sweep_df)} rows)")
+
+    if not combined_df.empty:
+        combined_df.to_csv(OUT_DIR / "market_selection_combined.csv", index=False)
+        print(f"  -> market_selection_combined.csv ({len(combined_df)} rows)")
+
+    # ------------------------------------------------------------------
+    # Plot
+    # ------------------------------------------------------------------
+    print("\nGenerating plot...")
+    plot_all(sweep_df, combined_df, signals_df, entries, post_trades,
+             book_share_map, baseline_result=baseline_result)
+    print("  -> market_selection.png")
+
+    print(f"\n  Total runtime: {time.time()-t0:.0f}s")
+
+
+if __name__ == "__main__":
+    main()

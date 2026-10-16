@@ -1,0 +1,456 @@
+{
+  "schema": "mention_no_taker_conditional_cost_screen_v1",
+  "registration_sha256": "4b11a83e931224addfd4f1e5f03fde96c6ca7058305a53edabb12dcf34a51347",
+  "selected": 40,
+  "complete": 5,
+  "distinct_dates": 5,
+  "distinct_events": 5,
+  "distinct_series": 2,
+  "status_counts": {
+    "not_open_at_decision": 18,
+    "missing_or_ambiguous_exact_completed_minute": 13,
+    "conditional_candidate": 5,
+    "price_rejected": 4
+  },
+  "conditional_analytical_totals_cents": {
+    "gross_cents": 20,
+    "net_benchmark_cents": 10,
+    "net_extra2_cents": 0,
+    "net_extra5_cents": -15
+  },
+  "date_cluster_extra2_mean_lower_95pct_cents": -33.4,
+  "statistical_gates": {
+    "min100complete": false,
+    "min100events": false,
+    "min30dates": false,
+    "min5series": false,
+    "discovery_complete": false,
+    "positive_extra2": false,
+    "positive_extra5": false,
+    "positive_date_cluster_lcb": false
+  },
+  "statistical_screen_pass": false,
+  "execution_qualified": false,
+  "profitability_proven": false,
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "limitations": [
+    "Candle quote depth, receipt age and activation latency unverified",
+    "Historical series fees and metadata vintage unverified",
+    "Current series registry can omit dead series",
+    "Source-informed hypothesis, no claim independent of authors historical sample",
+    "Conditional outcomes are not broker fills or realized PnL"
+  ],
+  "records": [
+    {
+      "decision_utc": "2026-08-05T22:00:00+00:00",
+      "decision_ts": 1785967200.0,
+      "candle_end": 1785967200,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26AUG06-DRIL",
+      "event_ticker": "KXTRUMPMENTION-26AUG06",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-05T16:51:01+00:00",
+      "decision_ts": 1783270261.0,
+      "candle_end": 1783270260,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL06-GOLD",
+      "event_ticker": "KXTRUMPMENTION-26JUL06",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-17T23:50:48+00:00",
+      "decision_ts": 1784332248.0,
+      "candle_end": 1784332200,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXAOCMENTION-26JUL18-HEAL",
+      "event_ticker": "KXAOCMENTION-26JUL18",
+      "series": "KXAOCMENTION"
+    },
+    {
+      "decision_utc": "2026-07-22T19:10:56+00:00",
+      "decision_ts": 1784747456.0,
+      "candle_end": 1784747400,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL23-SAUD",
+      "event_ticker": "KXTRUMPMENTION-26JUL23",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-05T14:34:11+00:00",
+      "decision_ts": 1783262051.0,
+      "candle_end": 1783262040,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXTRUMPSAYCOMPANY-26AUG01-NEW",
+      "event_ticker": "KXTRUMPSAYCOMPANY-26AUG01",
+      "series": "KXTRUMPSAYCOMPANY"
+    },
+    {
+      "decision_utc": "2026-07-27T23:00:00+00:00",
+      "decision_ts": 1785193200.0,
+      "candle_end": 1785193200,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL28D-TRAN",
+      "event_ticker": "KXTRUMPMENTION-26JUL28D",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-06-30T21:10:37+00:00",
+      "decision_ts": 1782853837.0,
+      "candle_end": 1782853800,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL01-ISRA",
+      "event_ticker": "KXTRUMPMENTION-26JUL01",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-29T18:01:04+00:00",
+      "decision_ts": 1785348064.0,
+      "candle_end": 1785348060,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL30-CALI",
+      "event_ticker": "KXTRUMPMENTION-26JUL30",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-06T14:40:57+00:00",
+      "decision_ts": 1783348857.0,
+      "candle_end": 1783348800,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL07-NATO",
+      "event_ticker": "KXTRUMPMENTION-26JUL07",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-08-08T15:10:42+00:00",
+      "decision_ts": 1786201842.0,
+      "candle_end": 1786201800,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXMTPMENTION-26AUG09-NQE",
+      "event_ticker": "KXMTPMENTION-26AUG09",
+      "series": "KXMTPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-11T15:15:36+00:00",
+      "decision_ts": 1783782936.0,
+      "candle_end": 1783782900,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXMTPMENTION-26JUL12-NQE",
+      "event_ticker": "KXMTPMENTION-26JUL12",
+      "series": "KXMTPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-27T14:36:42+00:00",
+      "decision_ts": 1785163002.0,
+      "candle_end": 1785162960,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL28-DRON",
+      "event_ticker": "KXTRUMPMENTION-26JUL28",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-26T21:11:00+00:00",
+      "decision_ts": 1785100260.0,
+      "candle_end": 1785100260,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL27-LAND",
+      "event_ticker": "KXTRUMPMENTION-26JUL27",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-08-09T23:00:00+00:00",
+      "decision_ts": 1786316400.0,
+      "candle_end": 1786316400,
+      "status": "conditional_candidate",
+      "no_ask_cents": 79,
+      "fee_cents": 2,
+      "yes_bid": "0.2100",
+      "yes_ask": "0.2200",
+      "actual_fill_proven": false,
+      "ticker": "KXTRUMPMENTION-26AUG10-CHEA",
+      "event_ticker": "KXTRUMPMENTION-26AUG10",
+      "series": "KXTRUMPMENTION",
+      "official_result": "no",
+      "gross_cents": 21,
+      "net_benchmark_cents": 19,
+      "net_extra2_cents": 17,
+      "net_extra5_cents": 14
+    },
+    {
+      "decision_utc": "2026-08-06T18:00:00+00:00",
+      "decision_ts": 1786039200.0,
+      "candle_end": 1786039200,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXTRUMPMENTION-26AUG06B-HOTT",
+      "event_ticker": "KXTRUMPMENTION-26AUG06B",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-08-02T19:10:50+00:00",
+      "decision_ts": 1785697850.0,
+      "candle_end": 1785697800,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26AUG03-ISRA",
+      "event_ticker": "KXTRUMPMENTION-26AUG03",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-02T14:00:00+00:00",
+      "decision_ts": 1783000800.0,
+      "candle_end": 1783000800,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXTRUMPMENTION-26JUN13-NQE",
+      "event_ticker": "KXTRUMPMENTION-26JUN13",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-12T22:00:00+00:00",
+      "decision_ts": 1783893600.0,
+      "candle_end": 1783893600,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL14B-STOC",
+      "event_ticker": "KXTRUMPMENTION-26JUL14B",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-07T17:10:40+00:00",
+      "decision_ts": 1783444240.0,
+      "candle_end": 1783444200,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL08-AI",
+      "event_ticker": "KXTRUMPMENTION-26JUL08",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-18T18:00:00+00:00",
+      "decision_ts": 1784397600.0,
+      "candle_end": 1784397600,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXAOCMENTION-26JUL19-ZOHR",
+      "event_ticker": "KXAOCMENTION-26JUL19",
+      "series": "KXAOCMENTION"
+    },
+    {
+      "decision_utc": "2026-07-12T16:44:54+00:00",
+      "decision_ts": 1783874694.0,
+      "candle_end": 1783874640,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL13-BALL",
+      "event_ticker": "KXTRUMPMENTION-26JUL13",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-25T15:15:46+00:00",
+      "decision_ts": 1784992546.0,
+      "candle_end": 1784992500,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXMTPMENTION-26JUL26-TARI",
+      "event_ticker": "KXMTPMENTION-26JUL26",
+      "series": "KXMTPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-30T17:00:53+00:00",
+      "decision_ts": 1785430853.0,
+      "candle_end": 1785430800,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL31-CRYP",
+      "event_ticker": "KXTRUMPMENTION-26JUL31",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-08-04T22:58:42+00:00",
+      "decision_ts": 1785884322.0,
+      "candle_end": 1785884280,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXTRUMPMENTION-26AUG05-UFO",
+      "event_ticker": "KXTRUMPMENTION-26AUG05",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-19T01:20:46+00:00",
+      "decision_ts": 1784424046.0,
+      "candle_end": 1784424000,
+      "status": "price_rejected",
+      "ticker": "KXAOCMENTION-26JUL19B-ABDU",
+      "event_ticker": "KXAOCMENTION-26JUL19B",
+      "series": "KXAOCMENTION"
+    },
+    {
+      "decision_utc": "2026-07-01T22:59:01+00:00",
+      "decision_ts": 1782946741.0,
+      "candle_end": 1782946740,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXTRUMPMENTION-26JUL02-AI",
+      "event_ticker": "KXTRUMPMENTION-26JUL02",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-16T01:35:44+00:00",
+      "decision_ts": 1784165744.0,
+      "candle_end": 1784165700,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXTRUMPMENTION-26JUL16-NQE",
+      "event_ticker": "KXTRUMPMENTION-26JUL16",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-28T15:51:32+00:00",
+      "decision_ts": 1785253892.0,
+      "candle_end": 1785253860,
+      "status": "price_rejected",
+      "ticker": "KXEARNINGSMENTIONWING-26JUL29-CHIC",
+      "event_ticker": "KXEARNINGSMENTIONWING-26JUL29",
+      "series": "KXEARNINGSMENTIONWING"
+    },
+    {
+      "decision_utc": "2026-07-04T19:09:58+00:00",
+      "decision_ts": 1783192198.0,
+      "candle_end": 1783192140,
+      "status": "conditional_candidate",
+      "no_ask_cents": 70,
+      "fee_cents": 2,
+      "yes_bid": "0.3000",
+      "yes_ask": "0.3100",
+      "actual_fill_proven": false,
+      "ticker": "KXTRUMPMENTION-26JUL04-BARA",
+      "event_ticker": "KXTRUMPMENTION-26JUL04",
+      "series": "KXTRUMPMENTION",
+      "official_result": "no",
+      "gross_cents": 30,
+      "net_benchmark_cents": 28,
+      "net_extra2_cents": 26,
+      "net_extra5_cents": 23
+    },
+    {
+      "decision_utc": "2026-08-02T21:55:00+00:00",
+      "decision_ts": 1785707700.0,
+      "candle_end": 1785707700,
+      "status": "price_rejected",
+      "ticker": "KXEARNINGSMENTIONPLTR-26AUG03-MAVE",
+      "event_ticker": "KXEARNINGSMENTIONPLTR-26AUG03",
+      "series": "KXEARNINGSMENTIONPLTR"
+    },
+    {
+      "decision_utc": "2026-07-13T16:53:36+00:00",
+      "decision_ts": 1783961616.0,
+      "candle_end": 1783961580,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26JUL14-COMM",
+      "event_ticker": "KXTRUMPMENTION-26JUL14",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-08-01T15:10:45+00:00",
+      "decision_ts": 1785597045.0,
+      "candle_end": 1785597000,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXMTPMENTION-26AUG02-REDI",
+      "event_ticker": "KXMTPMENTION-26AUG02",
+      "series": "KXMTPMENTION"
+    },
+    {
+      "decision_utc": "2026-08-06T20:25:43+00:00",
+      "decision_ts": 1786047943.0,
+      "candle_end": 1786047900,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26AUG07-SUPP",
+      "event_ticker": "KXTRUMPMENTION-26AUG07",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-24T04:40:49+00:00",
+      "decision_ts": 1784868049.0,
+      "candle_end": 1784868000,
+      "status": "price_rejected",
+      "ticker": "KXTRUMPMENTION-26JUL24-CENT",
+      "event_ticker": "KXTRUMPMENTION-26JUL24",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-14T21:47:40+00:00",
+      "decision_ts": 1784065660.0,
+      "candle_end": 1784065620,
+      "status": "missing_or_ambiguous_exact_completed_minute",
+      "ticker": "KXTRUMPMENTION-26JUL15-ISRA",
+      "event_ticker": "KXTRUMPMENTION-26JUL15",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-08-04T15:50:00+00:00",
+      "decision_ts": 1785858600.0,
+      "candle_end": 1785858600,
+      "status": "not_open_at_decision",
+      "ticker": "KXTRUMPMENTION-26AUG04-BARA",
+      "event_ticker": "KXTRUMPMENTION-26AUG04",
+      "series": "KXTRUMPMENTION"
+    },
+    {
+      "decision_utc": "2026-07-29T02:03:30+00:00",
+      "decision_ts": 1785290610.0,
+      "candle_end": 1785290580,
+      "status": "conditional_candidate",
+      "no_ask_cents": 47,
+      "fee_cents": 2,
+      "yes_bid": "0.5300",
+      "yes_ask": "0.5400",
+      "actual_fill_proven": false,
+      "ticker": "KXTRUMPMENTION-26JUL29-TARI",
+      "event_ticker": "KXTRUMPMENTION-26JUL29",
+      "series": "KXTRUMPMENTION",
+      "official_result": "no",
+      "gross_cents": 53,
+      "net_benchmark_cents": 51,
+      "net_extra2_cents": 49,
+      "net_extra5_cents": 46
+    },
+    {
+      "decision_utc": "2026-07-28T22:55:46+00:00",
+      "decision_ts": 1785279346.0,
+      "candle_end": 1785279300,
+      "status": "conditional_candidate",
+      "no_ask_cents": 41,
+      "fee_cents": 2,
+      "yes_bid": "0.5900",
+      "yes_ask": "0.6000",
+      "actual_fill_proven": false,
+      "ticker": "KXEARNINGSMENTIONHOOD-26JUL17-UK",
+      "event_ticker": "KXEARNINGSMENTIONHOOD-26JUL17",
+      "series": "KXEARNINGSMENTIONHOOD",
+      "official_result": "yes",
+      "gross_cents": -41,
+      "net_benchmark_cents": -43,
+      "net_extra2_cents": -45,
+      "net_extra5_cents": -48
+    },
+    {
+      "decision_utc": "2026-07-02T14:05:09+00:00",
+      "decision_ts": 1783001109.0,
+      "candle_end": 1783001100,
+      "status": "not_open_at_decision",
+      "ticker": "KXGOVERNORMENTION-26JUL03-2028",
+      "event_ticker": "KXGOVERNORMENTION-26JUL03",
+      "series": "KXGOVERNORMENTION"
+    },
+    {
+      "decision_utc": "2026-07-21T21:20:53+00:00",
+      "decision_ts": 1784668853.0,
+      "candle_end": 1784668800,
+      "status": "conditional_candidate",
+      "no_ask_cents": 43,
+      "fee_cents": 2,
+      "yes_bid": "0.5700",
+      "yes_ask": "0.6000",
+      "actual_fill_proven": false,
+      "ticker": "KXTRUMPMENTION-26JUL22-IRAN",
+      "event_ticker": "KXTRUMPMENTION-26JUL22",
+      "series": "KXTRUMPMENTION",
+      "official_result": "yes",
+      "gross_cents": -43,
+      "net_benchmark_cents": -45,
+      "net_extra2_cents": -47,
+      "net_extra5_cents": -50
+    }
+  ]
+}

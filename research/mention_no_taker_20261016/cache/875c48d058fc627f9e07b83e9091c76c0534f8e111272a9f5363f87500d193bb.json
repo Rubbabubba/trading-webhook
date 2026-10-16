@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONETOR&limit=1000",
+  "captured_at": "2026-10-16T03:28:10.277672+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 55790,
+  "sha256": "ffdec5624a4cf9ae2fc9938ce44646c4e681756ac0bf6ac7ad01e0a5f0d0aadd"
+}

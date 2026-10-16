@@ -1,0 +1,67 @@
+"""Shared database utilities and mention market SQL filters."""
+
+import time
+from pathlib import Path
+
+import duckdb
+import pandas as pd
+
+DB_PATH = Path(__file__).resolve().parents[2] / "data" / "kalshi.duckdb"
+OUT_BASE = Path(__file__).resolve().parents[2] / "output" / "analysis"
+
+# --- Mention market bot filters ---
+FILL_TOL = 1          # ±1c fill tolerance
+MAKER_SPREAD_ADJ = -1  # 1c inside best NO bid (optimal from spread_l2_analysis with one-sided fills)
+BUCKET_WIDTH = 5       # cents
+ENTRY_HOURS = 24       # T-24h sweet spot
+FLAT_SIZE = 500        # flat sizing cap
+BOOK_SHARE = 0.50      # fallback only; queue_depth computes per-market values
+MIN_MARKET_VOL = 500   # skip markets with volume < 500 (insufficient liquidity)
+
+# --- Fill cutoff: bot cancels orders before event starts (LESSONS.md #23) ---
+# Sports events start ~5h before close; everything else ~18h before close.
+SPORTS_SERIES = {"KXNBAMENTION", "KXNCAABMENTION", "KXNFLMENTION", "KXFIGHTMENTION"}
+SPORTS_FILL_CUTOFF_HOURS = 6    # stop fills 6h before close for sports
+DEFAULT_FILL_CUTOFF_HOURS = 18  # stop fills 18h before close for non-sports
+
+BOT_DATE_FILTER = "AND t.created_time >= '2025-10-01'"
+
+BOT_SERIES_EXPR = """COALESCE(
+    NULLIF(REGEXP_EXTRACT(m.ticker, '^(KXTRUMPSAYMONTH)', 1), ''),
+    NULLIF(REGEXP_EXTRACT(m.ticker, '^(KX[A-Z0-9]+MENTION)', 1), ''),
+    NULLIF(REGEXP_EXTRACT(m.ticker, '^(KXTRUMPSAY)', 1), ''))"""
+
+BOT_SKIP_SERIES = f"""
+    AND {BOT_SERIES_EXPR} NOT IN
+        ('KXHOCHULMENTION', 'KXFREYMENTION', 'KXTRUMPSAYMONTH', 'KXTRUMPSAY')
+"""
+
+BOT_SKIP_WORDS = """
+    AND REGEXP_EXTRACT(m.ticker, '-([A-Z]+)$', 1) NOT IN ('TURF', 'WIND')
+"""
+
+MENTION_WHERE = f"""
+    m.result IN ('yes', 'no')
+    AND e.mutually_exclusive = false
+    AND e.category = 'Mentions'
+    {BOT_DATE_FILTER}
+    {BOT_SKIP_SERIES}
+    {BOT_SKIP_WORDS}
+"""
+
+
+def connect(read_only: bool = True, memory_limit: str = "32GB") -> duckdb.DuckDBPyConnection:
+    """Open DuckDB connection to the Kalshi database."""
+    con = duckdb.connect(str(DB_PATH), read_only=read_only)
+    con.execute(f"SET memory_limit = '{memory_limit}'")
+    return con
+
+
+def run_query(con: duckdb.DuckDBPyConnection, query: str, name: str) -> pd.DataFrame:
+    """Run a query with timing."""
+    print(f"  Running {name}...", end=" ", flush=True)
+    t0 = time.time()
+    df = con.execute(query).fetchdf()
+    elapsed = time.time() - t0
+    print(f"{len(df):,} rows in {elapsed:.1f}s")
+    return df

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL31-CRYP/candlesticks?start_ts=1785430740&end_ts=1785430800&period_interval=1",
+  "captured_at": "2026-10-16T03:28:26.096518+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 58,
+  "sha256": "6f60692a6176540ec88b89226c2a6c0b3a030bb4db045d06bce0e062abcbe6dc"
+}

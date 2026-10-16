@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL14-COMM/candlesticks?start_ts=1783961520&end_ts=1783961580&period_interval=1",
+  "captured_at": "2026-10-16T03:28:31.241820+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 58,
+  "sha256": "f2324406ef3f444bdcfe407fdb41d97ea321d37a6690c90e22cf6d15c48d6b48"
+}

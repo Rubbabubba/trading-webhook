@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL06-GOLD/candlesticks?start_ts=1783270200&end_ts=1783270260&period_interval=1",
+  "captured_at": "2026-10-16T03:28:12.500297+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 58,
+  "sha256": "088cfa9342e40bb2b3b10be1ebc5ec06618e5fd7a3ded3b04f49be0b849b3d0c"
+}

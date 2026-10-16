@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXMTPMENTION-26AUG09-NQE/candlesticks?start_ts=1786201740&end_ts=1786201800&period_interval=1",
+  "captured_at": "2026-10-16T03:28:17.639438+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 55,
+  "sha256": "aaeaa773b2be62d03c6db3eb6c1c9e6455844aed1a9ef9f3867a75156c5651b2"
+}

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL27-LAND/candlesticks?start_ts=1785100200&end_ts=1785100260&period_interval=1",
+  "captured_at": "2026-10-16T03:28:19.576790+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 58,
+  "sha256": "6c74308287a7d70f3752e91f232f3ba5486ba09f3c1bb0397a227337fec94f94"
+}

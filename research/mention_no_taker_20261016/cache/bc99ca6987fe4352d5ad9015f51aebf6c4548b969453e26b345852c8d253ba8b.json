@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXMTPMENTION-26AUG02-REDI/candlesticks?start_ts=1785596940&end_ts=1785597000&period_interval=1",
+  "captured_at": "2026-10-16T03:28:31.895978+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 56,
+  "sha256": "eab9a349cb36968f23db8f6e17b786d6227cf2ae4df5af1399c00d288ab12338"
+}

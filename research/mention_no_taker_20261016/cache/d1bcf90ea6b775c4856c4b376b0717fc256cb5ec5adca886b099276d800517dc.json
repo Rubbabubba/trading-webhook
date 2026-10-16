@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL30-CALI/candlesticks?start_ts=1785348000&end_ts=1785348060&period_interval=1",
+  "captured_at": "2026-10-16T03:28:16.361844+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 58,
+  "sha256": "f32392728cfe23a57bc5bf3593ae019d0714a61fdf22a7484c1d3d5077d170e7"
+}

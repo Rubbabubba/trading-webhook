@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXMIRANMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:27:52.958474+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 50479,
+  "sha256": "4aef3fc08bb392e8d7678e1054f347f587ad2b5878b4222817b9b7ceb4ba3d73"
+}

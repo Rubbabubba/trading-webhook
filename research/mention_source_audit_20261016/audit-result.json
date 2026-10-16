@@ -1,0 +1,55 @@
+{
+  "schema": "mention_source_static_audit_v1",
+  "source_revision": "9c9b285f81215bfc7a982dcbcf4559e0991d92d4",
+  "public_responses_checked": 12,
+  "official_mention_series": 461,
+  "provider_code_executed": false,
+  "counterexamples": [
+    {
+      "no_bid": 35,
+      "equivalent_yes_ask": 65,
+      "trade_no": 34,
+      "trade_yes": 66,
+      "source_counts_price_match": false,
+      "necessary_price_cross": true,
+      "actual_fill_proven": false
+    },
+    {
+      "no_bid": 35,
+      "equivalent_yes_ask": 65,
+      "trade_no": 35,
+      "trade_yes": 65,
+      "source_counts_price_match": true,
+      "necessary_price_cross": true,
+      "actual_fill_proven": false
+    },
+    {
+      "no_bid": 35,
+      "equivalent_yes_ask": 65,
+      "trade_no": 36,
+      "trade_yes": 64,
+      "source_counts_price_match": true,
+      "necessary_price_cross": false,
+      "actual_fill_proven": false
+    }
+  ],
+  "fee_example": {
+    "contracts": 1,
+    "price_cents": 50,
+    "unrounded_source_fee_cents": 0.4375,
+    "rounded_benchmark_fee_cents": 1,
+    "historical_series_specific_fee_verified": false
+  },
+  "additional_limits": [
+    "Entry query uses final market volume, not volume known at decision",
+    "Nearest trade within a symmetric entry window can occur after decision",
+    "Fallback 50-percent book share is assumed, not our queue or broker evidence",
+    "Source repository intentionally excludes underlying database",
+    "Multiple words from same speech are correlated, not independent events",
+    "Maker fee rounding/series schedule and receipt latency require independent verification"
+  ],
+  "no_new_historical_prices_or_outcomes": true,
+  "pnl": null,
+  "profitability_proven": false,
+  "promotion_qualified": false
+}

@@ -1,0 +1,299 @@
+"""Mention market detection logic."""
+
+import re
+from typing import Any
+
+# =============================================================================
+# Positive patterns - titles that ARE mention markets
+# =============================================================================
+
+# STRONG patterns - these always indicate mention markets, even if exclusion patterns match
+# (e.g., "What will Trump say about attending?" is a mention market about speech content)
+STRONG_MENTION_PATTERNS = [
+    r"(?i)what will .* say",  # "What will Trump say" (allow empty for sports games)
+    r"(?i)what will .*say",  # Handle no space: "What will say" (empty speaker)
+    r"(?i)how many times .+ say",  # "How many times will Trump say"
+    r"(?i)how many times .+ mention",  # "How many times will Trump mention"
+]
+
+# WEAK patterns - these indicate mention markets unless an exclusion pattern also matches
+WEAK_MENTION_PATTERNS = [
+    r"(?i)will .+ say\b",  # "Will Trump say X" (require speaker for this pattern)
+    r"(?i)will .+ mention",  # "Will Trump mention China"
+    r"(?i)will .+ use the word",  # "Will Trump use the word 'tariff'"
+    r"(?i)will .+ utter",  # "Will Trump utter 'China'"
+    r"(?i)will .+ tweet",  # "Will Elon tweet about X"
+    r"(?i)will .+ post",  # "Will Elon post about X"
+    r"(?i)will .+ announce",  # "Will Apple announce a new product"
+]
+
+# Combined for backward compatibility
+MENTION_TITLE_PATTERNS = STRONG_MENTION_PATTERNS + WEAK_MENTION_PATTERNS
+
+# =============================================================================
+# Negative patterns - titles that are NOT mention markets (exclusions)
+# These only apply to WEAK positive patterns, not STRONG ones
+# =============================================================================
+NON_MENTION_TITLE_PATTERNS = [
+    # Lateness markets
+    r"(?i)will .+ be .+ late",  # "Will X be more than 15 minutes late"
+    r"(?i)will .+ be late",  # "Will X be late to"
+    r"(?i)more than \d+ minutes? late",  # "more than 15 minutes late"
+    r"(?i)at least \d+ minutes? late",  # "at least 10 minutes late"
+    # Duration markets
+    r"(?i)how long will .+ speak",  # "How long will X speak for"
+    r"(?i)how long will .+ talk",  # "How long will X talk"
+    r"(?i)speak for .+ minutes",  # "speak for at least 30 minutes"
+    r"(?i)speak for .+ hours?",  # "speak for at least 1 hour"
+    # Public comment markets (different from mention - about IF they comment, not WHAT)
+    r"(?i)will .+ publicly comment",  # "Will Trump publicly comment on Taylor Swift"
+    r"(?i)will .+ comment on",  # "Will X comment on Y" (without "say" or "mention")
+    # Timing/schedule markets
+    r"(?i)will .+ start .+ on time",  # "Will the briefing start on time"
+    r"(?i)will .+ begin .+ on time",
+    r"(?i)will .+ end before",  # "Will X end before Y time"
+    r"(?i)will .+ end by",
+    # Attendance/appearance markets (only when not part of "say about attending")
+    r"(?i)^will .+ attend",  # "Will Trump attend the event" - must start with Will
+    r"(?i)^will .+ appear\b",  # "Will X appear at Y" - must start with Will
+    r"(?i)^will .+ show up",  # Must start with Will
+    # Binary outcome markets that aren't about speech content
+    r"(?i)^will .+ win\b",  # "Will X win the debate"
+    r"(?i)^will .+ lose\b",
+    r"(?i)^will .+ resign",
+    r"(?i)^will .+ be fired",
+    r"(?i)^will .+ be nominated",
+    r"(?i)^will .+ be confirmed",
+]
+
+# Series ticker patterns (e.g., KXTRUMPSAY, KXBIDENSAY)
+MENTION_SERIES_PATTERN = re.compile(r"(?i)^kx\w*say$")
+
+# Compiled patterns for efficiency
+COMPILED_STRONG_PATTERNS = [re.compile(p) for p in STRONG_MENTION_PATTERNS]
+COMPILED_WEAK_PATTERNS = [re.compile(p) for p in WEAK_MENTION_PATTERNS]
+COMPILED_TITLE_PATTERNS = [re.compile(p) for p in MENTION_TITLE_PATTERNS]
+COMPILED_NON_MENTION_PATTERNS = [re.compile(p) for p in NON_MENTION_TITLE_PATTERNS]
+
+
+def _title_matches_non_mention_pattern(title: str) -> bool:
+    """Check if title matches any non-mention exclusion pattern.
+
+    Args:
+        title: Market title string.
+
+    Returns:
+        True if title matches a non-mention pattern (should be excluded).
+    """
+    for pattern in COMPILED_NON_MENTION_PATTERNS:
+        if pattern.search(title):
+            return True
+    return False
+
+
+def _title_matches_strong_mention_pattern(title: str) -> bool:
+    """Check if title matches a STRONG mention pattern.
+
+    Strong patterns always indicate mention markets, even if exclusion
+    patterns also match (e.g., "What will Trump say about attending?").
+
+    Args:
+        title: Market title string.
+
+    Returns:
+        True if title matches a strong mention pattern.
+    """
+    for pattern in COMPILED_STRONG_PATTERNS:
+        if pattern.search(title):
+            return True
+    return False
+
+
+def _title_matches_weak_mention_pattern(title: str) -> bool:
+    """Check if title matches a WEAK mention pattern.
+
+    Weak patterns indicate mention markets only if no exclusion pattern matches.
+
+    Args:
+        title: Market title string.
+
+    Returns:
+        True if title matches a weak mention pattern.
+    """
+    for pattern in COMPILED_WEAK_PATTERNS:
+        if pattern.search(title):
+            return True
+    return False
+
+
+def _title_matches_mention_pattern(title: str) -> bool:
+    """Check if title matches any positive mention pattern (strong or weak).
+
+    Args:
+        title: Market title string.
+
+    Returns:
+        True if title matches a mention pattern.
+    """
+    return _title_matches_strong_mention_pattern(title) or _title_matches_weak_mention_pattern(title)
+
+
+def is_mention_market(market: dict[str, Any]) -> bool:
+    """Check if a market is mention-related (loose matching for series discovery).
+
+    A market is considered mention-related if:
+    1. Its series_ticker matches the mention series pattern (e.g., KXTRUMPSAY)
+    2. Its title matches any of the mention title patterns
+
+    Note: This is the LOOSE version used for discovering mention series.
+    For filtering individual markets, use is_mention_market_strict().
+
+    Args:
+        market: Market data dictionary.
+
+    Returns:
+        True if the market is mention-related, False otherwise.
+    """
+    # Check series ticker pattern
+    series_ticker = market.get("series_ticker", "") or ""
+    if MENTION_SERIES_PATTERN.match(series_ticker):
+        return True
+
+    # Check ticker pattern (some markets use ticker instead of series_ticker)
+    ticker = market.get("ticker", "") or ""
+    # Extract potential series from ticker (e.g., KXTRUMPSAY-26JAN12-CHINA -> KXTRUMPSAY)
+    ticker_parts = ticker.split("-")
+    if ticker_parts and MENTION_SERIES_PATTERN.match(ticker_parts[0]):
+        return True
+
+    # Check title patterns
+    title = market.get("title", "") or ""
+    return _title_matches_mention_pattern(title)
+
+
+def is_mention_market_strict(market: dict[str, Any]) -> bool:
+    """Check if a market is a true mention market (strict title-based filtering).
+
+    This function is stricter than is_mention_market() and should be used
+    to filter out non-mention markets that were scraped from mention series.
+
+    Logic:
+    1. If title matches a STRONG pattern (What will X say, How many times...) → IS mention
+       (Strong patterns override exclusion patterns)
+    2. If title matches an exclusion pattern → NOT mention
+    3. If title matches a WEAK pattern → IS mention
+    4. Otherwise → NOT mention
+
+    Args:
+        market: Market data dictionary.
+
+    Returns:
+        True if the market is a true mention market, False otherwise.
+    """
+    title = market.get("title", "") or ""
+
+    # Strong patterns ALWAYS win - these are unambiguously about speech content
+    # e.g., "What will Trump say about attending?" is asking about speech, not attendance
+    if _title_matches_strong_mention_pattern(title):
+        return True
+
+    # Check exclusion patterns next - if matched and no strong pattern, reject
+    if _title_matches_non_mention_pattern(title):
+        return False
+
+    # Finally check weak patterns
+    return _title_matches_weak_mention_pattern(title)
+
+
+def is_closed_market(market: dict[str, Any]) -> bool:
+    """Check if a market is closed or settled.
+
+    Args:
+        market: Market data dictionary.
+
+    Returns:
+        True if the market is closed or settled, False otherwise.
+    """
+    status = market.get("status", "").lower()
+    return status in ("closed", "settled", "finalized")
+
+
+def filter_mention_markets(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter a list of markets to only include mention-related ones.
+
+    Args:
+        markets: List of market data dictionaries.
+
+    Returns:
+        List of mention-related markets.
+    """
+    return [m for m in markets if is_mention_market(m)]
+
+
+def filter_closed_markets(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter a list of markets to only include closed ones.
+
+    Args:
+        markets: List of market data dictionaries.
+
+    Returns:
+        List of closed/settled markets.
+    """
+    return [m for m in markets if is_closed_market(m)]
+
+
+def filter_closed_mention_markets(
+    markets: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Filter markets to only include closed mention-related markets.
+
+    Args:
+        markets: List of market data dictionaries.
+
+    Returns:
+        List of closed mention-related markets.
+    """
+    return [m for m in markets if is_mention_market(m) and is_closed_market(m)]
+
+
+def extract_word_from_market(market: dict[str, Any]) -> str:
+    """Extract the word/phrase being predicted from a market.
+
+    Checks fields in order of preference:
+    1. yes_sub_title - usually contains the exact word/phrase
+    2. subtitle - may contain quoted text
+    3. title - may contain quoted text
+
+    Args:
+        market: Market data dictionary.
+
+    Returns:
+        Extracted word/phrase, or "unknown" if not found.
+    """
+    # Check yes_sub_title first - this usually contains the exact word/phrase
+    yes_sub = market.get("yes_sub_title", "")
+    if yes_sub and yes_sub.strip():
+        word = yes_sub.strip()
+        # Remove common suffixes like " mentioned"
+        word = re.sub(r"\s+(mentioned|said|spoken)$", "", word, flags=re.I)
+        if word:
+            return word
+
+    # If no yes_sub_title, try subtitle
+    subtitle = market.get("subtitle", "")
+    if subtitle:
+        # Try to extract quoted word
+        quoted = re.findall(r'["\']([^"\']+)["\']', subtitle)
+        if quoted:
+            return quoted[0]
+        # Use subtitle directly if no quotes
+        return subtitle.strip()
+
+    # If still no word, try to extract from title
+    title = market.get("title", "")
+    if title:
+        quoted = re.findall(r'["\']([^"\']+)["\']', title)
+        if quoted:
+            return quoted[0]
+
+    return "unknown"

@@ -1,0 +1,192 @@
+"""Fill simulation for NO market making backtests.
+
+Supports:
+- Dynamic per-market BOOK_SHARE (from queue depth estimation)
+- Adverse fill selection (outcome-dependent fill scaling)
+"""
+
+import math
+
+import numpy as np
+import pandas as pd
+
+from analysis.lib.db import (
+    BUCKET_WIDTH, FILL_TOL, MAKER_SPREAD_ADJ,
+    SPORTS_SERIES, SPORTS_FILL_CUTOFF_HOURS, DEFAULT_FILL_CUTOFF_HOURS,
+)
+
+GLOBAL_ADVERSE_RATIO = 1.34
+
+# From real-world price-bucket analysis (687 trades, Feb 5-21 2026)
+BUCKET_ADVERSE_RATIOS = {
+    (10, 20): 3.17,
+    (20, 30): 1.96,
+    (30, 40): 1.62,
+    (40, 50): 1.49,
+    (50, 60): 1.20,
+    (60, 70): 0.90,
+    (70, 80): 0.23,
+    (80, 90): 0.72,
+}
+
+
+def fill_cutoff_time(close_time, ticker):
+    """Compute the latest time at which fills are allowed for this market.
+
+    Sports markets: close_time - SPORTS_FILL_CUTOFF_HOURS (6h)
+    Everything else: close_time - DEFAULT_FILL_CUTOFF_HOURS (18h)
+    See LESSONS.md #23.
+    """
+    is_sports = any(ticker.startswith(s) for s in SPORTS_SERIES)
+    hours = SPORTS_FILL_CUTOFF_HOURS if is_sports else DEFAULT_FILL_CUTOFF_HOURS
+    return pd.Timestamp(close_time) - pd.Timedelta(hours=hours)
+
+
+def adverse_multiplier(entry_no_price, result, mode="expected"):
+    """Compute fill scale factor based on outcome and price.
+
+    mode: "none" (1.0), "global" (1.34x flat), "price_bucket" (per-bucket),
+          "expected" (no-lookahead: price-bucket ratio weighted by implied prob)
+    Returns: >1.0 for losses (more fill), <1.0 for wins (less fill)
+    """
+    if mode == "none":
+        return 1.0
+
+    if mode == "expected":
+        # No lookahead: use entry price as implied probability to compute
+        # expected adverse multiplier, averaging over both outcomes.
+        bucket_lo = (int(entry_no_price) // 10) * 10
+        r = BUCKET_ADVERSE_RATIOS.get((bucket_lo, bucket_lo + 10),
+                                       GLOBAL_ADVERSE_RATIO)
+        loss_mult = 2 * r / (1 + r)
+        win_mult = 2 / (1 + r)
+        # P(NO wins) ≈ entry_no_price/100 (the implied probability)
+        p_win = max(0.05, min(0.95, entry_no_price / 100.0))
+        return win_mult * p_win + loss_mult * (1 - p_win)
+
+    if mode == "global":
+        r = GLOBAL_ADVERSE_RATIO
+    elif mode == "price_bucket":
+        bucket_lo = (int(entry_no_price) // 10) * 10
+        r = BUCKET_ADVERSE_RATIOS.get((bucket_lo, bucket_lo + 10),
+                                       GLOBAL_ADVERSE_RATIO)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+    loss_mult = 2 * r / (1 + r)
+    win_mult = 2 / (1 + r)
+    return loss_mult if result == "yes" else win_mult  # "yes" = bot loses on NO
+
+
+def simulate_fills(entries, post_trades, target_size,
+                   book_share_map, fallback_book_share=0.50,
+                   adverse_mode="expected", spread_adj=None,
+                   apply_fill_cutoff=True):
+    """Simulate fills with per-market BOOK_SHARE and adverse selection.
+
+    Replaces both vpin_sizing.simulate_fills (fixed BS) and
+    queue_depth.simulate_fills_dynamic (per-market BS, no adverse).
+
+    book_share_map: dict {ticker: float} or float for fixed BOOK_SHARE
+    adverse_mode: "none", "global", "price_bucket", or "expected" (default: "expected")
+    spread_adj: cents to add to entry price for posting price (default: MAKER_SPREAD_ADJ)
+    """
+    if spread_adj is None:
+        spread_adj = MAKER_SPREAD_ADJ
+    # Handle fixed BOOK_SHARE case
+    fixed_bs = None
+    if isinstance(book_share_map, (int, float)):
+        fixed_bs = float(book_share_map)
+        book_share_map = {}
+
+    grouped = post_trades.groupby("ticker")
+    entry_map = entries.set_index("ticker")
+    results = []
+
+    for ticker, entry in entry_map.iterrows():
+        # Resolve per-market target size
+        if isinstance(target_size, dict):
+            ts = target_size.get(ticker, 0)
+            if ts <= 0:
+                continue
+        else:
+            ts = target_size
+
+        ep = entry["entry_no_price"]
+        filled = 0.0
+
+        # Determine book share for this market
+        if fixed_bs is not None:
+            bs = fixed_bs
+        else:
+            bs = book_share_map.get(ticker, fallback_book_share)
+
+        # Apply adverse fill multiplier
+        adv_mult = adverse_multiplier(ep, entry["result"], adverse_mode)
+        effective_bs = min(bs * adv_mult, 1.0)
+
+        # Fill cutoff: stop fills before event starts (LESSONS.md #23)
+        cutoff = None
+        if apply_fill_cutoff and "close_time" in entry.index:
+            cutoff = fill_cutoff_time(entry["close_time"], ticker)
+
+        fill_price = ep + spread_adj
+        if ticker in grouped.groups:
+            for t in grouped.get_group(ticker).itertuples(index=False):
+                if cutoff is not None and t.created_time > cutoff:
+                    break  # trades are chronological; no more fills
+                if t.taker_side == "yes" and 0 <= (t.no_price - fill_price) <= FILL_TOL:
+                    take = math.floor(min(ts - filled,
+                                          t.trade_count * effective_bs))
+                    if take <= 0:
+                        continue
+                    filled += take
+                    if filled >= ts:
+                        filled = ts
+                        break
+
+        p = (ep + spread_adj) / 100.0
+        fee = 0.0175 * p * (1 - p)
+        pnl = (filled * ((1.0 - p) - fee) if entry["result"] == "no"
+               else filled * (-p - fee))
+
+        bucket_lo = (int(ep) // BUCKET_WIDTH) * BUCKET_WIDTH
+        results.append({
+            "ticker": ticker,
+            "event_ticker": entry["event_ticker"],
+            "result": entry["result"],
+            "entry_no_price": int(ep),
+            "bucket": f"{bucket_lo}-{bucket_lo + BUCKET_WIDTH}c",
+            "bucket_lo": bucket_lo,
+            "no_win": 1 if entry["result"] == "no" else 0,
+            "filled": filled,
+            "pnl": pnl,
+            "close_time": entry["close_time"],
+        })
+
+    return pd.DataFrame(results)
+
+
+def weekly_sharpe(pnl_series, close_times):
+    """Annualized weekly Sharpe: (weekly_mean / weekly_std) * sqrt(52)."""
+    if len(pnl_series) < 5:
+        return float("nan")
+
+    df = pd.DataFrame({"pnl": pnl_series.values, "close_time": close_times.values})
+    df["close_time"] = pd.to_datetime(df["close_time"])
+    df["week"] = (
+        df["close_time"].dt.isocalendar().year.astype(str)
+        + "-W"
+        + df["close_time"].dt.isocalendar().week.astype(str).str.zfill(2)
+    )
+
+    weekly_pnl = df.groupby("week")["pnl"].sum()
+
+    if len(weekly_pnl) < 3:
+        return float("nan")
+
+    m = weekly_pnl.mean()
+    s = weekly_pnl.std()
+    if s == 0 or np.isnan(s):
+        return float("nan")
+    return m / s * np.sqrt(52)

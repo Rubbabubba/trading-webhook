@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUN13-NQE/candlesticks?start_ts=1783000740&end_ts=1783000800&period_interval=1",
+  "captured_at": "2026-10-16T03:28:22.214714+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 57,
+  "sha256": "cbd26154d304ed8033def1be6027f0d2a12b29818a1893a8d1ed7ea536b59cb8"
+}

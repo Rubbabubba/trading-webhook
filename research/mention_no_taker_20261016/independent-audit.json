@@ -1,0 +1,16 @@
+{
+  "schema": "mention_independent_raw_audit_v1",
+  "successful_responses_hashed": 71,
+  "preserved_rejected_requests": 30,
+  "selected_contracts_reproduced": 40,
+  "complete_conditional_paths_checked": 5,
+  "totals_cents": {
+    "gross_cents": 20,
+    "net_benchmark_cents": 10,
+    "net_extra2_cents": 0,
+    "net_extra5_cents": -15
+  },
+  "result_sha256": "0305858fcf3e591e1b67adb8fd2ee4b633947524ca603065adbfb0e83cf3c71e",
+  "result": "internal consistency passed; cost-stressed screen failed and execution unverified",
+  "profitability_proven": false
+}

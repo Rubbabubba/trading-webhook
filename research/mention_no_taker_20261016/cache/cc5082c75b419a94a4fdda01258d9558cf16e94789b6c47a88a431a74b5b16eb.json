@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONPLTR&limit=1000",
+  "captured_at": "2026-10-16T03:28:04.990328+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 244261,
+  "sha256": "78cda8dea54b84d2b44f57f273e414cb81618881d97606fd4d8b0e671ce434d7"
+}

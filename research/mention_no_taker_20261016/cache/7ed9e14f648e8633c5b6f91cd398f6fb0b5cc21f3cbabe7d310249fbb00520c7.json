@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXTRUMPMENTION&limit=1000&cursor=CgwIgozy0QYQwLuc7gISG0tYVFJVTVBNRU5USU9OLTI2SlVOMjUtQ0hJTg",
+  "captured_at": "2026-10-16T03:28:00.396621+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 3441606,
+  "sha256": "cedbaa44833c7689a1b632abd96c00a2f191bb073e6bbe5c1e6b39c00ceeb087"
+}

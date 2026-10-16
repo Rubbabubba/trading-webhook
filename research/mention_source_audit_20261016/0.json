@@ -1,0 +1,9 @@
+{
+  "url": "https://api.github.com/repos/DanMcInerney/kalshi-analysis/commits/main",
+  "captured_at": "2026-10-16T03:23:27.956533+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 872547,
+  "sha256": "979084a30c6be2cdbb1c42ef6c5bc79ea3fb05642e7008c33fee296f79cdd8e5"
+}

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONWING&limit=1000",
+  "captured_at": "2026-10-16T03:27:49.504214+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 71748,
+  "sha256": "c2d505034467b9087c6b492d24161d0cb227d3fdd5152d1d843cb378e486e17d"
+}

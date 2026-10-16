@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXMTPMENTION-26JUL26-TARI/candlesticks?start_ts=1784992440&end_ts=1784992500&period_interval=1",
+  "captured_at": "2026-10-16T03:28:25.426994+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 56,
+  "sha256": "161a71a66296e38105620fce384badfdc3363db2925cb13444acdd03b13771a1"
+}

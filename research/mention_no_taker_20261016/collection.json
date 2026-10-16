@@ -1,0 +1,367 @@
+{
+  "new_requests": 71,
+  "candle_receipts": {
+    "KXTRUMPMENTION-26AUG06-DRIL": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26AUG06-DRIL/candlesticks?start_ts=1785967140&end_ts=1785967200&period_interval=1",
+      "captured_at": "2026-10-16T03:28:11.855378+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "9c590467eea26eb200ac54677d5dd993f5ee1eabafbaf3b747f94015700f0aaa"
+    },
+    "KXTRUMPMENTION-26JUL06-GOLD": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL06-GOLD/candlesticks?start_ts=1783270200&end_ts=1783270260&period_interval=1",
+      "captured_at": "2026-10-16T03:28:12.500297+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "088cfa9342e40bb2b3b10be1ebc5ec06618e5fd7a3ded3b04f49be0b849b3d0c"
+    },
+    "KXAOCMENTION-26JUL18-HEAL": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXAOCMENTION-26JUL18-HEAL/candlesticks?start_ts=1784332140&end_ts=1784332200&period_interval=1",
+      "captured_at": "2026-10-16T03:28:13.130828+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 56,
+      "sha256": "898ba834c7f2562fc56b37ddeb98d933ea3b5ca851e2b00e28ddcc61f97060b5"
+    },
+    "KXTRUMPMENTION-26JUL23-SAUD": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL23-SAUD/candlesticks?start_ts=1784747340&end_ts=1784747400&period_interval=1",
+      "captured_at": "2026-10-16T03:28:13.779140+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "041fea6a27e583aac8546549062e66ccf43cb1e09df84b0749a0199837fc59b3"
+    },
+    "KXTRUMPSAYCOMPANY-26AUG01-NEW": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPSAYCOMPANY-26AUG01-NEW/candlesticks?start_ts=1783261980&end_ts=1783262040&period_interval=1",
+      "captured_at": "2026-10-16T03:28:14.428897+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 60,
+      "sha256": "d9e9bc4363bb4e4366452b2aac0cec37b783a8b33d31894bc492d27c85b9d3ed"
+    },
+    "KXTRUMPMENTION-26JUL28D-TRAN": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL28D-TRAN/candlesticks?start_ts=1785193140&end_ts=1785193200&period_interval=1",
+      "captured_at": "2026-10-16T03:28:15.067306+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 59,
+      "sha256": "43c047d44240361498033bd25f04a4337cdf00c00d2b90b440c8edd8dcb5dede"
+    },
+    "KXTRUMPMENTION-26JUL01-ISRA": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL01-ISRA/candlesticks?start_ts=1782853740&end_ts=1782853800&period_interval=1",
+      "captured_at": "2026-10-16T03:28:15.713530+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "6cdb6917070064535e289a2344b446da101b575a23584ea4506ff17e73428475"
+    },
+    "KXTRUMPMENTION-26JUL30-CALI": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL30-CALI/candlesticks?start_ts=1785348000&end_ts=1785348060&period_interval=1",
+      "captured_at": "2026-10-16T03:28:16.361844+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "f32392728cfe23a57bc5bf3593ae019d0714a61fdf22a7484c1d3d5077d170e7"
+    },
+    "KXTRUMPMENTION-26JUL07-NATO": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL07-NATO/candlesticks?start_ts=1783348740&end_ts=1783348800&period_interval=1",
+      "captured_at": "2026-10-16T03:28:17.005146+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "63b63cf22ed32d15dedac0859f0e578f1d2c42a9c4f5e41c048516fb3f741eb2"
+    },
+    "KXMTPMENTION-26AUG09-NQE": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXMTPMENTION-26AUG09-NQE/candlesticks?start_ts=1786201740&end_ts=1786201800&period_interval=1",
+      "captured_at": "2026-10-16T03:28:17.639438+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 55,
+      "sha256": "aaeaa773b2be62d03c6db3eb6c1c9e6455844aed1a9ef9f3867a75156c5651b2"
+    },
+    "KXMTPMENTION-26JUL12-NQE": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXMTPMENTION-26JUL12-NQE/candlesticks?start_ts=1783782840&end_ts=1783782900&period_interval=1",
+      "captured_at": "2026-10-16T03:28:18.290467+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 55,
+      "sha256": "20f24917c3ec1cfe4a771d18bec07785ab1476c17f136bedcbe67bdf020147de"
+    },
+    "KXTRUMPMENTION-26JUL28-DRON": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL28-DRON/candlesticks?start_ts=1785162900&end_ts=1785162960&period_interval=1",
+      "captured_at": "2026-10-16T03:28:18.926236+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "cab0d0bf5d4d437ac3aa5528bac02d54bbafcbed1689850b2ffc71379c431e2f"
+    },
+    "KXTRUMPMENTION-26JUL27-LAND": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL27-LAND/candlesticks?start_ts=1785100200&end_ts=1785100260&period_interval=1",
+      "captured_at": "2026-10-16T03:28:19.576790+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "6c74308287a7d70f3752e91f232f3ba5486ba09f3c1bb0397a227337fec94f94"
+    },
+    "KXTRUMPMENTION-26AUG10-CHEA": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26AUG10-CHEA/candlesticks?start_ts=1786316340&end_ts=1786316400&period_interval=1",
+      "captured_at": "2026-10-16T03:28:20.233433+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 370,
+      "sha256": "0807afd69754fa1385ff354e4377ae86b0a4898e30aad189ed34470156014bbf"
+    },
+    "KXTRUMPMENTION-26AUG06B-HOTT": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26AUG06B-HOTT/candlesticks?start_ts=1786039140&end_ts=1786039200&period_interval=1",
+      "captured_at": "2026-10-16T03:28:20.922773+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 59,
+      "sha256": "9169929161b7ae5a23d0683d8477aa39103163b671b7ad9bf3bac11a79c4294f"
+    },
+    "KXTRUMPMENTION-26AUG03-ISRA": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26AUG03-ISRA/candlesticks?start_ts=1785697740&end_ts=1785697800&period_interval=1",
+      "captured_at": "2026-10-16T03:28:21.571329+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "444f1222e4c2122d5bff165d19a4891d46f31f2ede4b78c85c056177df3dc609"
+    },
+    "KXTRUMPMENTION-26JUN13-NQE": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUN13-NQE/candlesticks?start_ts=1783000740&end_ts=1783000800&period_interval=1",
+      "captured_at": "2026-10-16T03:28:22.214714+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 57,
+      "sha256": "cbd26154d304ed8033def1be6027f0d2a12b29818a1893a8d1ed7ea536b59cb8"
+    },
+    "KXTRUMPMENTION-26JUL14B-STOC": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL14B-STOC/candlesticks?start_ts=1783893540&end_ts=1783893600&period_interval=1",
+      "captured_at": "2026-10-16T03:28:22.856322+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 59,
+      "sha256": "aab9d68296f66b11803110a86a66bb27da5a1f9ed87269139d3deae89a2960b4"
+    },
+    "KXTRUMPMENTION-26JUL08-AI": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL08-AI/candlesticks?start_ts=1783444140&end_ts=1783444200&period_interval=1",
+      "captured_at": "2026-10-16T03:28:23.505843+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 56,
+      "sha256": "d25bf99eb99b8ec6804328c5713350953e1487101a4fb89dcbe823fd68902588"
+    },
+    "KXAOCMENTION-26JUL19-ZOHR": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXAOCMENTION-26JUL19-ZOHR/candlesticks?start_ts=1784397540&end_ts=1784397600&period_interval=1",
+      "captured_at": "2026-10-16T03:28:24.139005+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 56,
+      "sha256": "bdce1155dcc84650cc8d17cd8f7aff926aa4fd65918e0f48555ab9a535aebcf9"
+    },
+    "KXTRUMPMENTION-26JUL13-BALL": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL13-BALL/candlesticks?start_ts=1783874580&end_ts=1783874640&period_interval=1",
+      "captured_at": "2026-10-16T03:28:24.771659+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "9a74be2d586cd658f711ae4b1e6e41cff853f2078d334c7c74ad569fa076a753"
+    },
+    "KXMTPMENTION-26JUL26-TARI": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXMTPMENTION-26JUL26-TARI/candlesticks?start_ts=1784992440&end_ts=1784992500&period_interval=1",
+      "captured_at": "2026-10-16T03:28:25.426994+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 56,
+      "sha256": "161a71a66296e38105620fce384badfdc3363db2925cb13444acdd03b13771a1"
+    },
+    "KXTRUMPMENTION-26JUL31-CRYP": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL31-CRYP/candlesticks?start_ts=1785430740&end_ts=1785430800&period_interval=1",
+      "captured_at": "2026-10-16T03:28:26.096518+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "6f60692a6176540ec88b89226c2a6c0b3a030bb4db045d06bce0e062abcbe6dc"
+    },
+    "KXTRUMPMENTION-26AUG05-UFO": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26AUG05-UFO/candlesticks?start_ts=1785884220&end_ts=1785884280&period_interval=1",
+      "captured_at": "2026-10-16T03:28:26.736656+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 392,
+      "sha256": "947562e4a56b85af7a2bdc7502f8c8364a65ad8e7e1cf4e2d1649b6704b4c5f7"
+    },
+    "KXAOCMENTION-26JUL19B-ABDU": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXAOCMENTION-26JUL19B-ABDU/candlesticks?start_ts=1784423940&end_ts=1784424000&period_interval=1",
+      "captured_at": "2026-10-16T03:28:27.388878+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 368,
+      "sha256": "0a2144ee19e8aab99610495d9c1dafbfab51a349348e593ef15752342add9080"
+    },
+    "KXTRUMPMENTION-26JUL02-AI": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL02-AI/candlesticks?start_ts=1782946680&end_ts=1782946740&period_interval=1",
+      "captured_at": "2026-10-16T03:28:28.035116+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 56,
+      "sha256": "2ed78e9394acdb7a569ec5f9eba258ba19b41b243225510a73bc5e7a70509275"
+    },
+    "KXTRUMPMENTION-26JUL16-NQE": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL16-NQE/candlesticks?start_ts=1784165640&end_ts=1784165700&period_interval=1",
+      "captured_at": "2026-10-16T03:28:28.661469+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 57,
+      "sha256": "73e5a7b3530bf07cde3933653283ec472376b19bfefdc6841a51fc1f219dfd43"
+    },
+    "KXEARNINGSMENTIONWING-26JUL29-CHIC": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXEARNINGSMENTIONWING-26JUL29-CHIC/candlesticks?start_ts=1785253800&end_ts=1785253860&period_interval=1",
+      "captured_at": "2026-10-16T03:28:29.305690+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 688,
+      "sha256": "3e2b112a67582893c3dbbb4fb024078ce8aa413948b1aeac3169a0db4c8a1668"
+    },
+    "KXTRUMPMENTION-26JUL04-BARA": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL04-BARA/candlesticks?start_ts=1783192080&end_ts=1783192140&period_interval=1",
+      "captured_at": "2026-10-16T03:28:29.945942+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 704,
+      "sha256": "0162635ee18b2e0609a2db010915d060309bbb091c6ec2abff4fad5d0f2c138a"
+    },
+    "KXEARNINGSMENTIONPLTR-26AUG03-MAVE": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXEARNINGSMENTIONPLTR-26AUG03-MAVE/candlesticks?start_ts=1785707640&end_ts=1785707700&period_interval=1",
+      "captured_at": "2026-10-16T03:28:30.584868+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 688,
+      "sha256": "99ae2ff5a82359aefe90058ad104acaeb65587469a3dc8cca2af59e93febc527"
+    },
+    "KXTRUMPMENTION-26JUL14-COMM": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL14-COMM/candlesticks?start_ts=1783961520&end_ts=1783961580&period_interval=1",
+      "captured_at": "2026-10-16T03:28:31.241820+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "f2324406ef3f444bdcfe407fdb41d97ea321d37a6690c90e22cf6d15c48d6b48"
+    },
+    "KXMTPMENTION-26AUG02-REDI": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXMTPMENTION-26AUG02-REDI/candlesticks?start_ts=1785596940&end_ts=1785597000&period_interval=1",
+      "captured_at": "2026-10-16T03:28:31.895978+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 56,
+      "sha256": "eab9a349cb36968f23db8f6e17b786d6227cf2ae4df5af1399c00d288ab12338"
+    },
+    "KXTRUMPMENTION-26AUG07-SUPP": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26AUG07-SUPP/candlesticks?start_ts=1786047840&end_ts=1786047900&period_interval=1",
+      "captured_at": "2026-10-16T03:28:32.524855+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "ba3f36602331994db6755bed17b7b04cae3602cdcc713a69acd73409a0b44cdc"
+    },
+    "KXTRUMPMENTION-26JUL24-CENT": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL24-CENT/candlesticks?start_ts=1784867940&end_ts=1784868000&period_interval=1",
+      "captured_at": "2026-10-16T03:28:33.164631+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 679,
+      "sha256": "549a5e5bcd2b01cffd40b9aefc855ca48570803fe9c99738fee338a545d51561"
+    },
+    "KXTRUMPMENTION-26JUL15-ISRA": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL15-ISRA/candlesticks?start_ts=1784065560&end_ts=1784065620&period_interval=1",
+      "captured_at": "2026-10-16T03:28:33.811269+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "7a127a01873f2af649f8d5fb9070598f54c8ba2ac391199ba8a181ca318ac774"
+    },
+    "KXTRUMPMENTION-26AUG04-BARA": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26AUG04-BARA/candlesticks?start_ts=1785858540&end_ts=1785858600&period_interval=1",
+      "captured_at": "2026-10-16T03:28:34.445692+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 58,
+      "sha256": "3d37d40d804511e78f2bd9a9f63a9495ffb222b17adb853b270df1b42cb6c2a2"
+    },
+    "KXTRUMPMENTION-26JUL29-TARI": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL29-TARI/candlesticks?start_ts=1785290520&end_ts=1785290580&period_interval=1",
+      "captured_at": "2026-10-16T03:28:35.093155+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 370,
+      "sha256": "7c7764628c6b6592206b8f7fcfe76c5dafa4e13964174dac00b4874bef1e1c85"
+    },
+    "KXEARNINGSMENTIONHOOD-26JUL17-UK": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXEARNINGSMENTIONHOOD-26JUL17-UK/candlesticks?start_ts=1785279240&end_ts=1785279300&period_interval=1",
+      "captured_at": "2026-10-16T03:28:35.759579+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 688,
+      "sha256": "4e8c0719e0963d87212445547e793e7169acc0cbecbc6b4b5c7b143271d7e601"
+    },
+    "KXGOVERNORMENTION-26JUL03-2028": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXGOVERNORMENTION-26JUL03-2028/candlesticks?start_ts=1783001040&end_ts=1783001100&period_interval=1",
+      "captured_at": "2026-10-16T03:28:36.400496+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 61,
+      "sha256": "c9bf4f033f437ded380269ea36d1f521c554a114fac8c464ecbf0f97ff327be0"
+    },
+    "KXTRUMPMENTION-26JUL22-IRAN": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL22-IRAN/candlesticks?start_ts=1784668740&end_ts=1784668800&period_interval=1",
+      "captured_at": "2026-10-16T03:28:37.041455+00:00",
+      "method": "GET",
+      "authenticated": false,
+      "status": 200,
+      "bytes": 704,
+      "sha256": "afbeb0092a4177ca9d89788597a6d9c0587135b7f4ab48e72b7b05b480943c13"
+    }
+  },
+  "selected": 40,
+  "discovery_complete": false
+}

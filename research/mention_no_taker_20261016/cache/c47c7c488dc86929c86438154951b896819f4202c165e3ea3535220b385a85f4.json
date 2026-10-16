@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL28-DRON/candlesticks?start_ts=1785162900&end_ts=1785162960&period_interval=1",
+  "captured_at": "2026-10-16T03:28:18.926236+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 58,
+  "sha256": "cab0d0bf5d4d437ac3aa5528bac02d54bbafcbed1689850b2ffc71379c431e2f"
+}

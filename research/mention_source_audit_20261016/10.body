@@ -1,0 +1,132 @@
+"""Shared SQL queries for mention market research scripts."""
+
+from analysis.lib.db import (
+    BOT_DATE_FILTER, BOT_SKIP_SERIES, BOT_SKIP_WORDS,
+    ENTRY_HOURS, MIN_MARKET_VOL, run_query,
+)
+
+
+def load_trades(con):
+    """All mention market trades. Used by vpin, glosten_milgrom, queue_depth."""
+    return run_query(con, f"""
+    SELECT t.ticker, t.count, t.no_price, t.taker_side, t.created_time,
+           m.result, m.close_time, m.volume AS market_vol
+    FROM trades t
+    JOIN markets m ON t.ticker = m.ticker
+    JOIN events e ON m.event_ticker = e.event_ticker
+    WHERE m.result IN ('yes', 'no')
+      AND e.mutually_exclusive = false AND e.category = 'Mentions'
+      {BOT_DATE_FILTER}
+      {BOT_SKIP_SERIES}
+      {BOT_SKIP_WORDS}
+      AND m.volume >= {MIN_MARKET_VOL}
+      AND t.no_price BETWEEN 2 AND 98
+    ORDER BY t.ticker, t.created_time
+    """, "Mention market trades")
+
+
+def load_entries(con, entry_window_hours=6):
+    """T-24h entry prices. Used by vpin, glosten_milgrom, queue_depth.
+
+    Only considers trades within ±entry_window_hours of T-ENTRY_HOURS
+    (default: trades between T-18h and T-30h). Prevents selecting stale
+    snapshots far from the target entry time.
+    """
+    return run_query(con, f"""
+    WITH entry_price AS (
+        SELECT t.ticker, m.event_ticker, m.result, m.volume AS market_vol,
+               t.no_price AS entry_no_price, t.created_time AS entry_time,
+               m.close_time,
+               DATEDIFF('minute', t.created_time, m.close_time) / 60.0 AS hours_before_close,
+               ROW_NUMBER() OVER (
+                   PARTITION BY t.ticker
+                   ORDER BY ABS(DATEDIFF('minute', t.created_time, m.close_time)
+                                / 60.0 - {ENTRY_HOURS})
+               ) AS rn
+        FROM trades t
+        JOIN markets m ON t.ticker = m.ticker
+        JOIN events e ON m.event_ticker = e.event_ticker
+        WHERE m.result IN ('yes', 'no')
+          AND e.mutually_exclusive = false AND e.category = 'Mentions'
+          AND DATEDIFF('minute', t.created_time, m.close_time) / 60.0
+              BETWEEN {ENTRY_HOURS - entry_window_hours} AND {ENTRY_HOURS + entry_window_hours}
+          {BOT_DATE_FILTER}
+          {BOT_SKIP_SERIES}
+          {BOT_SKIP_WORDS}
+          AND m.volume >= {MIN_MARKET_VOL}
+    )
+    SELECT ticker, event_ticker, result, market_vol, entry_no_price,
+           entry_time, close_time
+    FROM entry_price WHERE rn = 1
+    """, f"T-{ENTRY_HOURS}h entries (±{entry_window_hours}h window)")
+
+
+def load_entries_at_hour(con, target_hours, entry_window_hours=3):
+    """Load entry prices at target_hours before close (+-entry_window_hours).
+
+    Uses +-3h window (tighter than load_entries' +-6h) to prevent overlap
+    between adjacent windows (24h, 18h, 12h are 6h apart).
+    """
+    return run_query(con, f"""
+    WITH entry_price AS (
+        SELECT t.ticker, m.event_ticker, m.result, m.volume AS market_vol,
+               t.no_price AS entry_no_price, t.created_time AS entry_time,
+               m.close_time,
+               DATEDIFF('minute', t.created_time, m.close_time) / 60.0 AS hours_before_close,
+               ROW_NUMBER() OVER (
+                   PARTITION BY t.ticker
+                   ORDER BY ABS(DATEDIFF('minute', t.created_time, m.close_time)
+                                / 60.0 - {target_hours})
+               ) AS rn
+        FROM trades t
+        JOIN markets m ON t.ticker = m.ticker
+        JOIN events e ON m.event_ticker = e.event_ticker
+        WHERE m.result IN ('yes', 'no')
+          AND e.mutually_exclusive = false AND e.category = 'Mentions'
+          AND DATEDIFF('minute', t.created_time, m.close_time) / 60.0
+              BETWEEN {target_hours - entry_window_hours} AND {target_hours + entry_window_hours}
+          {BOT_DATE_FILTER}
+          {BOT_SKIP_SERIES}
+          {BOT_SKIP_WORDS}
+          AND m.volume >= {MIN_MARKET_VOL}
+    )
+    SELECT ticker, event_ticker, result, market_vol, entry_no_price,
+           entry_time, close_time
+    FROM entry_price WHERE rn = 1
+    """, f"T-{target_hours}h entries (+-{entry_window_hours}h window)")
+
+
+def load_post_entry_trades(con, entry_window_hours=6):
+    """Post-entry trades for fill simulation. Used by queue_depth.
+
+    Uses same ±entry_window_hours window as load_entries.
+    """
+    return run_query(con, f"""
+    WITH entry_price AS (
+        SELECT t.ticker, t.no_price AS entry_no_price,
+               t.created_time AS entry_time, m.close_time,
+               ROW_NUMBER() OVER (
+                   PARTITION BY t.ticker
+                   ORDER BY ABS(DATEDIFF('minute', t.created_time, m.close_time)
+                                / 60.0 - {ENTRY_HOURS})
+               ) AS rn
+        FROM trades t
+        JOIN markets m ON t.ticker = m.ticker
+        JOIN events e ON m.event_ticker = e.event_ticker
+        WHERE m.result IN ('yes', 'no')
+          AND e.mutually_exclusive = false
+          AND e.category = 'Mentions'
+          AND DATEDIFF('minute', t.created_time, m.close_time) / 60.0
+              BETWEEN {ENTRY_HOURS - entry_window_hours} AND {ENTRY_HOURS + entry_window_hours}
+          {BOT_DATE_FILTER}
+          {BOT_SKIP_SERIES}
+          {BOT_SKIP_WORDS}
+          AND m.volume >= {MIN_MARKET_VOL}
+    )
+    SELECT ep.ticker, ep.entry_no_price,
+           t2.no_price, t2.count AS trade_count, t2.taker_side, t2.created_time
+    FROM entry_price ep
+    JOIN trades t2 ON ep.ticker = t2.ticker AND t2.created_time > ep.entry_time
+    WHERE ep.rn = 1 AND t2.no_price BETWEEN 2 AND 98
+    ORDER BY ep.ticker, t2.created_time
+    """, f"T-{ENTRY_HOURS}h post-entry trades (±{entry_window_hours}h window)")

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXBARRMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:27:53.664151+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 196874,
+  "sha256": "62eaec284eac782101dca96e30f8e93635a0970f2bb39e842a31bb4e1aafafd3"
+}

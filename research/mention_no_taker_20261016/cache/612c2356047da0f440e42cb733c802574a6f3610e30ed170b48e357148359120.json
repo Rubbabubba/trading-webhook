@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXCOOPERMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:27:47.983135+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 141798,
+  "sha256": "4efa815faf2b78973369e9858a783e8f32ccacbff472047e409d385ccb0e70ef"
+}

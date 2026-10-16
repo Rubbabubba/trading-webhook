@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONMRVL&limit=1000",
+  "captured_at": "2026-10-16T03:27:47.266719+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 77357,
+  "sha256": "c31a9596a8c1bbf7b2aa14e625cc03c17db61a7b33c5863ea3775903fd0c0002"
+}

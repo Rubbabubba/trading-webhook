@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXDROZMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:27:51.441908+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 84388,
+  "sha256": "36bfacbc82c4a4f02857c5ef11fefa7b842f58f58310f33872f1a7b44acb3d0c"
+}

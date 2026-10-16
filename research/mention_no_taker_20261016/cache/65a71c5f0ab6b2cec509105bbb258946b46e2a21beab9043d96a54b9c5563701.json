@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXWBCMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:27:46.351893+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 606327,
+  "sha256": "b990acbbe5bb7dac8e32e13267dc2bcd39b9d8053ba4a722ee6ff33050107763"
+}

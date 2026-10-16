@@ -1,0 +1,948 @@
+{
+  "registration_sha256": "4b11a83e931224addfd4f1e5f03fde96c6ca7058305a53edabb12dcf34a51347",
+  "discovery": [
+    {
+      "series": "KXDWTSMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXDWTSMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:44.854191+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 23085,
+          "sha256": "6462765a42824b7162f0a969d39565cdf3813691061a911c084a5107e93c2611"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXDJTWOMENS",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXDJTWOMENS&limit=1000",
+          "captured_at": "2026-10-16T03:27:45.569883+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 43305,
+          "sha256": "02810ae7c34e62e5ed366862d153c93019033e75ab2e541218f6f5220721b4e8"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXWBCMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXWBCMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:46.351893+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 606327,
+          "sha256": "b990acbbe5bb7dac8e32e13267dc2bcd39b9d8053ba4a722ee6ff33050107763"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXEARNINGSMENTIONMRVL",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONMRVL&limit=1000",
+          "captured_at": "2026-10-16T03:27:47.266719+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 77357,
+          "sha256": "c31a9596a8c1bbf7b2aa14e625cc03c17db61a7b33c5863ea3775903fd0c0002"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXCOOPERMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXCOOPERMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:47.983135+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 141798,
+          "sha256": "4efa815faf2b78973369e9858a783e8f32ccacbff472047e409d385ccb0e70ef"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXCROCKETTMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXCROCKETTMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:48.786216+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 65451,
+          "sha256": "3fdce9c4c47d4a825c8482d05da6e73e8927f977b24f0f14910fab8d8664fba8"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXEARNINGSMENTIONWING",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONWING&limit=1000",
+          "captured_at": "2026-10-16T03:27:49.504214+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 71748,
+          "sha256": "c2d505034467b9087c6b492d24161d0cb227d3fdd5152d1d843cb378e486e17d"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXNEWSOMMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXNEWSOMMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:50.275290+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 825900,
+          "sha256": "37cf104f2b57ee65d9d0c6bc03b96ac5810932168f5f338f2dff377187a9a9cc"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXDROZMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXDROZMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:51.441908+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 84388,
+          "sha256": "36bfacbc82c4a4f02857c5ef11fefa7b842f58f58310f33872f1a7b44acb3d0c"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXEARNINGSMENTIONHOOD",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONHOOD&limit=1000",
+          "captured_at": "2026-10-16T03:27:52.188188+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 119688,
+          "sha256": "479c3955dce26f7893703eca34e244204a48e17adccd556ba983edbd8db7d689"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXMIRANMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXMIRANMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:52.958474+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 50479,
+          "sha256": "4aef3fc08bb392e8d7678e1054f347f587ad2b5878b4222817b9b7ceb4ba3d73"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXBARRMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXBARRMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:53.664151+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 196874,
+          "sha256": "62eaec284eac782101dca96e30f8e93635a0970f2bb39e842a31bb4e1aafafd3"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXMTPMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXMTPMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:54.492610+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 770220,
+          "sha256": "743d48d76b7cd7474d127e23aae1567bee037b349282415c947b52c9404fd8be"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXZUCKMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXZUCKMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:55.752923+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 51379,
+          "sha256": "be6e5e92f6a99cf10b9e5f582c425639aad4bb4ef3c1a5c0261a9912952e41b5"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXEARNINGSMENTIONM",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONM&limit=1000",
+          "captured_at": "2026-10-16T03:27:56.479696+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 26072,
+          "sha256": "b43b374986b80a0ba3b96934eefab25371f3c8f30c0d1252da4bb7d8d40e9a07"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXTRUMPSAYCOMPANY",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXTRUMPSAYCOMPANY&limit=1000",
+          "captured_at": "2026-10-16T03:27:57.182098+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 85503,
+          "sha256": "268234abfaf8bf7a71e9a6235ee64e7ef13eeb2654f701081db83c38854ebb9a"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXEARNINGSMENTIONNKE",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONNKE&limit=1000",
+          "captured_at": "2026-10-16T03:27:57.888317+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 143377,
+          "sha256": "c431b555431a0e9ec72983b977d62c275a5b68bf3dd3147db8346c3004c4159b"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXTRUMPMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXTRUMPMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:27:58.629568+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 3416914,
+          "sha256": "c5803c7fd19de4b3b13352b29dd5a4d24fb574eb847851b9b1c8de6dc49e741b"
+        },
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXTRUMPMENTION&limit=1000&cursor=CgwIgozy0QYQwLuc7gISG0tYVFJVTVBNRU5USU9OLTI2SlVOMjUtQ0hJTg",
+          "captured_at": "2026-10-16T03:28:00.396621+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 3441606,
+          "sha256": "cedbaa44833c7689a1b632abd96c00a2f191bb073e6bbe5c1e6b39c00ceeb087"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXGOVERNORMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXGOVERNORMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:28:01.973269+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 796461,
+          "sha256": "3bf60a98648774d160384cca3b24e6117aa5ca1427bbc559a4f1816b5492f72f"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXKXDJTHANNITY",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXKXDJTHANNITY&limit=1000",
+          "captured_at": "2026-10-16T03:28:02.973404+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 27,
+          "sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXMSFTMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXMSFTMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:28:03.620158+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 27,
+          "sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXGUTFELDMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXGUTFELDMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:28:04.253566+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 51448,
+          "sha256": "bb7527eb511301d5e23fc5c55b5da635d473a34d45aa4aa7b698f11ac77ea936"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXEARNINGSMENTIONPLTR",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONPLTR&limit=1000",
+          "captured_at": "2026-10-16T03:28:04.990328+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 244261,
+          "sha256": "78cda8dea54b84d2b44f57f273e414cb81618881d97606fd4d8b0e671ce434d7"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXABNBMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXABNBMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:28:05.809660+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 27,
+          "sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXSHAQMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXSHAQMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:28:06.466870+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 25605,
+          "sha256": "4b20b1fb7813e5d14302e3264f31954d94b4a2688ca93ac5e5cfb57dca3dd35d"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXAOCMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXAOCMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:28:07.150227+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 356484,
+          "sha256": "8bf6a2d583e43317e55d51c0219d65dec6627eb960702b03df5ffd66c3f11721"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXHARTMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXHARTMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:28:08.478566+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 69509,
+          "sha256": "dd783032fc90f785a3d4fe3c9064803e900f067a0bb944d86ce716056dc3ea82"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXHILTONMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXHILTONMENTION&limit=1000",
+          "captured_at": "2026-10-16T03:28:09.244585+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 155081,
+          "sha256": "2ce225c5afcb0ca84f14df368b5d3ed71afa3ce7eb0755846e5f13d6214f3e5b"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXEARNINGSMENTIONETOR",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONETOR&limit=1000",
+          "captured_at": "2026-10-16T03:28:10.277672+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 55790,
+          "sha256": "ffdec5624a4cf9ae2fc9938ce44646c4e681756ac0bf6ac7ad01e0a5f0d0aadd"
+        }
+      ],
+      "incomplete": false
+    },
+    {
+      "series": "KXEARNINGSMENTIONHD",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONHD&limit=1000",
+          "captured_at": "2026-10-16T03:28:11.059231+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 200,
+          "bytes": 74610,
+          "sha256": "92caf04e8994659bebe65b84bd5c793df8d93a321373e8366a5a6952e812f778"
+        }
+      ],
+      "incomplete": false
+    }
+  ],
+  "raw_market_rows": 3863,
+  "selected": [
+    {
+      "ticker": "KXTRUMPMENTION-26AUG06-DRIL",
+      "event_ticker": "KXTRUMPMENTION-26AUG06",
+      "open_time": "2026-08-06T14:15:00Z",
+      "close_time": "2026-08-06T23:05:07Z",
+      "expected_expiration_time": "2026-08-21T14:00:00Z",
+      "expiration_time": "2026-08-21T14:00:00Z",
+      "occurrence_datetime": "2026-08-06T22:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If Donald Trump says Drill Baby Drill as part of Tele-Rally with Megan Degenfelder, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Tele-Rally with Megan Degenfelder will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Tele-Rally with Megan Degenfelder will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original call will not count.\nThe entirety of content within the original call will be used for resolution.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL06-GOLD",
+      "event_ticker": "KXTRUMPMENTION-26JUL06",
+      "open_time": "2026-07-06T12:05:00Z",
+      "close_time": "2026-07-06T16:51:01Z",
+      "expected_expiration_time": "2026-07-21T14:00:00Z",
+      "expiration_time": "2026-07-21T14:00:00Z",
+      "occurrence_datetime": "2026-07-06T16:52:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Golden Age as part of THE PRESIDENT participates in the Launch of Trump Accounts\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the THE PRESIDENT participates in the Launch of Trump Accounts will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the THE PRESIDENT participates in the Launch of Trump Accounts will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXAOCMENTION-26JUL18-HEAL",
+      "event_ticker": "KXAOCMENTION-26JUL18",
+      "open_time": "2026-07-13T19:00:00Z",
+      "close_time": "2026-07-18T23:50:48Z",
+      "expected_expiration_time": "2026-08-02T14:00:00Z",
+      "expiration_time": "2026-08-02T14:00:00Z",
+      "occurrence_datetime": "2026-07-18T23:51:47Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Alexandria Ocasio-Cortez says Healthcare / Health Care as part of The People v. The Powerful (Detroit, MI)\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the The People v. The Powerful (Detroit, MI) will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the The People v. The Powerful (Detroit, MI) will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Alexandria Ocasio-Cortez speaking in an official capacity. If Alexandria Ocasio-Cortez is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL23-SAUD",
+      "event_ticker": "KXTRUMPMENTION-26JUL23",
+      "open_time": "2026-07-23T02:20:00Z",
+      "close_time": "2026-07-23T19:10:56Z",
+      "expected_expiration_time": "2026-08-07T14:00:00Z",
+      "expiration_time": "2026-08-07T14:00:00Z",
+      "occurrence_datetime": "2026-07-23T19:11:55Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Saudi as part of Announcement on the Ratepayer Protection Pledge\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Announcement on the Ratepayer Protection Pledge will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Announcement on the Ratepayer Protection Pledge will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPSAYCOMPANY-26AUG01-NEW",
+      "event_ticker": "KXTRUMPSAYCOMPANY-26AUG01",
+      "open_time": "2026-07-01T04:00:00Z",
+      "close_time": "2026-07-06T14:34:11Z",
+      "expected_expiration_time": "2026-08-01T14:00:00Z",
+      "expiration_time": "2026-08-01T14:00:00Z",
+      "occurrence_datetime": "2026-08-01T14:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If New York Times / NYT, or a plural or possessive form of New York Times / NYT, is stated by Donald Trump before Aug 1, 2026 at 12:00am ET, then the market resolves to Yes.",
+      "rules_secondary": "The word or phrase must be stated by President Donald Trump in public statements, direct quotes published by Source Agencies, or written public statements on his personal social media accounts (Twitter/Truth Social). Official acts like Executive Orders or bills signed do not count. The exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nFor phrases with slashes like \"Doge/Dogecoin,\" either word satisfies the criterion. If the word must be said a minimum number of times, all instances must occur after market issuance.\nPlease see full rules for more details."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL28D-TRAN",
+      "event_ticker": "KXTRUMPMENTION-26JUL28D",
+      "open_time": "2026-07-28T15:13:00Z",
+      "close_time": "2026-07-28T23:27:32Z",
+      "expected_expiration_time": "2026-08-12T14:00:00Z",
+      "expiration_time": "2026-08-12T14:00:00Z",
+      "occurrence_datetime": "2026-07-28T23:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Transgender as part of Tele-Rally with Andy Ogles\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Tele-Rally with Andy Ogles will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Tele-Rally with Andy Ogles will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original call will not count.\nThe entirety of content within the original call will be used for resolution.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL01-ISRA",
+      "event_ticker": "KXTRUMPMENTION-26JUL01",
+      "open_time": "2026-07-01T14:25:00Z",
+      "close_time": "2026-07-01T21:10:37Z",
+      "expected_expiration_time": "2026-07-16T14:00:00Z",
+      "expiration_time": "2026-07-16T14:00:00Z",
+      "occurrence_datetime": "2026-07-01T21:11:37Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Israel / Israeli as part of THE PRESIDENT delivers Remarks Burning Hills Amphitheatre\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the THE PRESIDENT delivers Remarks Burning Hills Amphitheatre will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the THE PRESIDENT delivers Remarks Burning Hills Amphitheatre will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL30-CALI",
+      "event_ticker": "KXTRUMPMENTION-26JUL30",
+      "open_time": "2026-07-30T02:37:00Z",
+      "close_time": "2026-07-30T18:01:04Z",
+      "expected_expiration_time": "2026-08-14T14:00:00Z",
+      "expiration_time": "2026-08-14T14:00:00Z",
+      "occurrence_datetime": "2026-07-30T18:02:03Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says California as part of Announcement on Freedom Haulers\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Announcement on Freedom Haulers will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Announcement on Freedom Haulers will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL07-NATO",
+      "event_ticker": "KXTRUMPMENTION-26JUL07",
+      "open_time": "2026-07-06T18:50:00Z",
+      "close_time": "2026-07-07T14:40:57Z",
+      "expected_expiration_time": "2026-07-22T14:00:00Z",
+      "expiration_time": "2026-07-22T14:00:00Z",
+      "occurrence_datetime": "2026-07-07T14:41:56Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says NATO as part of Bilateral Meeting with the President of the Republic of Turkey\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Bilateral Meeting with the President of the Republic of Turkey will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Bilateral Meeting with the President of the Republic of Turkey will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXMTPMENTION-26AUG09-NQE",
+      "event_ticker": "KXMTPMENTION-26AUG09",
+      "open_time": "2026-08-07T21:00:00Z",
+      "close_time": "2026-08-09T15:10:42Z",
+      "expected_expiration_time": "2026-08-24T14:00:00Z",
+      "expiration_time": "2026-08-24T14:00:00Z",
+      "occurrence_datetime": "2026-08-09T15:11:41Z",
+      "market_type": "binary",
+      "rules_primary": "If \na qualifying event does not occur\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Meet the Press will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Meet the Press will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nPromotional content aired during the event will count, but advertisements will not. \nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Abdul El-Sayed speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Abdul El-Sayed must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXMTPMENTION-26JUL12-NQE",
+      "event_ticker": "KXMTPMENTION-26JUL12",
+      "open_time": "2026-07-10T16:39:00Z",
+      "close_time": "2026-07-12T15:15:36Z",
+      "expected_expiration_time": "2026-07-27T14:00:00Z",
+      "expiration_time": "2026-07-27T14:00:00Z",
+      "occurrence_datetime": "2026-07-12T15:16:35Z",
+      "market_type": "binary",
+      "rules_primary": "If a qualifying event does not occur, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Meet the Press will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Meet the Press will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nPromotional content aired during the event will count, but advertisements will not. \nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Ro Khanna speaking in an official capacity. If Ro Khanna is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL28-DRON",
+      "event_ticker": "KXTRUMPMENTION-26JUL28",
+      "open_time": "2026-07-28T00:20:00Z",
+      "close_time": "2026-07-28T14:36:42Z",
+      "expected_expiration_time": "2026-08-12T14:00:00Z",
+      "expiration_time": "2026-08-12T14:00:00Z",
+      "occurrence_datetime": "2026-08-12T14:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Drone as part of Fox News: Fox & Friends\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Fox News: Fox & Friends will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Fox News: Fox & Friends will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nPromotional content aired during the event will count, but advertisements will not. \nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL27-LAND",
+      "event_ticker": "KXTRUMPMENTION-26JUL27",
+      "open_time": "2026-07-27T14:00:00Z",
+      "close_time": "2026-07-27T21:11:00Z",
+      "expected_expiration_time": "2026-08-11T14:00:00Z",
+      "expiration_time": "2026-08-11T14:00:00Z",
+      "occurrence_datetime": "2026-07-27T21:11:59Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Landslide as part of Remarks at General Motors in Milford, Michigan\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Remarks at General Motors in Milford, Michigan will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Remarks at General Motors in Milford, Michigan will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26AUG10-CHEA",
+      "event_ticker": "KXTRUMPMENTION-26AUG10",
+      "open_time": "2026-08-07T21:00:00Z",
+      "close_time": "2026-08-10T23:02:22Z",
+      "expected_expiration_time": "2026-08-25T14:00:00Z",
+      "expiration_time": "2026-08-25T14:00:00Z",
+      "occurrence_datetime": "2026-08-10T23:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Cheat / Cheater / Cheating as part of Tele-Rally with Darline Graham\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Tele-Rally with Darline Graham will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Tele-Rally with Darline Graham will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original call will not count.\nThe entirety of content within the original call will be used for resolution.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26AUG06B-HOTT",
+      "event_ticker": "KXTRUMPMENTION-26AUG06B",
+      "open_time": "2026-08-06T14:20:00Z",
+      "close_time": "2026-08-07T18:28:10Z",
+      "expected_expiration_time": "2026-08-21T14:00:00Z",
+      "expiration_time": "2026-08-21T14:00:00Z",
+      "occurrence_datetime": "2026-08-07T18:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Hottest as part of Fly Out Day - Punchbowl News interview\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Fly Out Day - Punchbowl News interview will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Fly Out Day - Punchbowl News interview will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the entirety of content within the original broadcast or release will be used for resolution.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26AUG03-ISRA",
+      "event_ticker": "KXTRUMPMENTION-26AUG03",
+      "open_time": "2026-08-03T02:12:00Z",
+      "close_time": "2026-08-03T19:10:50Z",
+      "expected_expiration_time": "2026-08-18T14:00:00Z",
+      "expiration_time": "2026-08-18T14:00:00Z",
+      "occurrence_datetime": "2026-08-03T19:11:50Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Israel / Israeli as part of THE PRESIDENT signs an Executive Order\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the THE PRESIDENT signs an Executive Order will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the THE PRESIDENT signs an Executive Order will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUN13-NQE",
+      "event_ticker": "KXTRUMPMENTION-26JUN13",
+      "open_time": "2026-06-12T19:00:00Z",
+      "close_time": "2026-07-03T17:07:34Z",
+      "expected_expiration_time": "2026-07-31T14:00:00Z",
+      "expiration_time": "2026-08-14T14:00:00Z",
+      "occurrence_datetime": "2026-07-03T14:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \na qualifying event does not occur\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the THE PRESIDENT participates in a Pre-Tape Podcast with The Second Lady will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the THE PRESIDENT participates in a Pre-Tape Podcast with The Second Lady will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the entirety of content within the original broadcast or release will be used for resolution.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL14B-STOC",
+      "event_ticker": "KXTRUMPMENTION-26JUL14B",
+      "open_time": "2026-07-13T14:49:00Z",
+      "close_time": "2026-07-13T22:31:55Z",
+      "expected_expiration_time": "2026-07-28T14:00:00Z",
+      "expiration_time": "2026-07-28T14:00:00Z",
+      "occurrence_datetime": "2026-07-13T22:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Stock Market as part of The Hugh Hewitt Show (Radio)\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the The Hugh Hewitt Show (Radio) will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the The Hugh Hewitt Show (Radio) will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nThe entirety of content within the original call will be used for resolution.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL08-AI",
+      "event_ticker": "KXTRUMPMENTION-26JUL08",
+      "open_time": "2026-07-07T17:18:00Z",
+      "close_time": "2026-07-08T17:10:40Z",
+      "expected_expiration_time": "2026-07-23T14:00:00Z",
+      "expiration_time": "2026-07-23T14:00:00Z",
+      "occurrence_datetime": "2026-07-08T17:11:39Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says AI / Artificial Intelligence as part of Press Conference in Turkey\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Press Conference in Turkey will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Press Conference in Turkey will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXAOCMENTION-26JUL19-ZOHR",
+      "event_ticker": "KXAOCMENTION-26JUL19",
+      "open_time": "2026-07-13T20:00:00Z",
+      "close_time": "2026-07-19T18:40:27Z",
+      "expected_expiration_time": "2026-08-03T14:00:00Z",
+      "expiration_time": "2026-08-03T14:00:00Z",
+      "occurrence_datetime": "2026-07-19T18:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Alexandria Ocasio-Cortez says Zohran / Mamdani as part of The People v. The Powerful (Lansing, MI)\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the The People v. The Powerful (Lansing, MI) will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the The People v. The Powerful (Lansing, MI) will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Alexandria Ocasio-Cortez speaking in an official capacity. If Alexandria Ocasio-Cortez is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL13-BALL",
+      "event_ticker": "KXTRUMPMENTION-26JUL13",
+      "open_time": "2026-07-13T02:36:00Z",
+      "close_time": "2026-07-13T16:44:54Z",
+      "expected_expiration_time": "2026-07-28T14:00:00Z",
+      "expiration_time": "2026-07-28T14:00:00Z",
+      "occurrence_datetime": "2026-07-28T14:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Ballroom / Pool as part of Fox News: Fox & Friends\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Fox News: Fox & Friends will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Fox News: Fox & Friends will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nPromotional content aired during the event will count, but advertisements will not. \nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXMTPMENTION-26JUL26-TARI",
+      "event_ticker": "KXMTPMENTION-26JUL26",
+      "open_time": "2026-07-24T18:36:00Z",
+      "close_time": "2026-07-26T15:15:46Z",
+      "expected_expiration_time": "2026-08-10T14:00:00Z",
+      "expiration_time": "2026-08-10T14:00:00Z",
+      "occurrence_datetime": "2026-07-26T15:16:45Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Mike Waltz says Tariff as part of Meet the Press\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Meet the Press will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Meet the Press will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nPromotional content aired during the event will count, but advertisements will not. \nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Mike Waltz speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Mike Waltz must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL31-CRYP",
+      "event_ticker": "KXTRUMPMENTION-26JUL31",
+      "open_time": "2026-07-31T14:15:00Z",
+      "close_time": "2026-07-31T17:00:53Z",
+      "expected_expiration_time": "2026-08-15T14:00:00Z",
+      "expiration_time": "2026-08-15T14:00:00Z",
+      "occurrence_datetime": "2026-07-31T17:01:52Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Crypto / Bitcoin as part of Cabinet Meeting\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Cabinet Meeting will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Cabinet Meeting will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26AUG05-UFO",
+      "event_ticker": "KXTRUMPMENTION-26AUG05",
+      "open_time": "2026-08-03T22:14:00Z",
+      "close_time": "2026-08-05T22:58:42Z",
+      "expected_expiration_time": "2026-08-20T14:00:00Z",
+      "expiration_time": "2026-08-20T14:00:00Z",
+      "occurrence_datetime": "2026-08-05T22:59:42Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says UFO / UAP as part of Remarks in Las Vegas, Nevada\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Remarks in Las Vegas, Nevada will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Remarks in Las Vegas, Nevada will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXAOCMENTION-26JUL19B-ABDU",
+      "event_ticker": "KXAOCMENTION-26JUL19B",
+      "open_time": "2026-07-13T20:00:00Z",
+      "close_time": "2026-07-20T01:20:46Z",
+      "expected_expiration_time": "2026-08-03T14:00:00Z",
+      "expiration_time": "2026-08-03T14:00:00Z",
+      "occurrence_datetime": "2026-07-20T01:21:45Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Alexandria Ocasio-Cortez says Abdul / El-Sayed as part of The People v. The Powerful (Grand Rapids, MI)\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the The People v. The Powerful (Grand Rapids, MI) will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the The People v. The Powerful (Grand Rapids, MI) will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Alexandria Ocasio-Cortez speaking in an official capacity. If Alexandria Ocasio-Cortez is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL02-AI",
+      "event_ticker": "KXTRUMPMENTION-26JUL02",
+      "open_time": "2026-07-01T21:02:00Z",
+      "close_time": "2026-07-02T22:59:01Z",
+      "expected_expiration_time": "2026-07-17T14:00:00Z",
+      "expiration_time": "2026-07-17T14:00:00Z",
+      "occurrence_datetime": "2026-07-17T14:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says AI / Artificial Intelligence as part of CNBC - Fast Money\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the CNBC - Fast Money will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the CNBC - Fast Money will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nPromotional content aired during the event will count, but advertisements will not. \nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL16-NQE",
+      "event_ticker": "KXTRUMPMENTION-26JUL16",
+      "open_time": "2026-07-13T20:12:00Z",
+      "close_time": "2026-07-17T01:35:44Z",
+      "expected_expiration_time": "2026-07-31T14:00:00Z",
+      "expiration_time": "2026-07-31T14:00:00Z",
+      "occurrence_datetime": "2026-07-17T01:36:43Z",
+      "market_type": "binary",
+      "rules_primary": "If \na qualifying event does not occur\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Speech to the Nation will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Speech to the Nation will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXEARNINGSMENTIONWING-26JUL29-CHIC",
+      "event_ticker": "KXEARNINGSMENTIONWING-26JUL29",
+      "open_time": "2026-07-20T21:07:00Z",
+      "close_time": "2026-07-29T15:51:32Z",
+      "expected_expiration_time": "2026-12-31T15:00:00Z",
+      "expiration_time": "2026-12-31T15:00:00Z",
+      "occurrence_datetime": "2026-07-29T16:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If Chicken is said by any Wingstop Inc. representative (including the operator of the call) during the next Wingstop Inc. earnings call (including the Q+A), then the market resolves to Yes.",
+      "rules_secondary": "Video of the Wingstop Inc. earnings call will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, transcripts of the Wingstop Inc. earnings call will be used according to the news publications listed in the contract. The exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. Please see full rules for more details."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL04-BARA",
+      "event_ticker": "KXTRUMPMENTION-26JUL04",
+      "open_time": "2026-07-02T17:56:00Z",
+      "close_time": "2026-07-05T19:09:58Z",
+      "expected_expiration_time": "2026-07-19T14:00:00Z",
+      "expiration_time": "2026-07-19T14:00:00Z",
+      "occurrence_datetime": "2026-07-19T14:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Barack Hussein Obama as part of July 4th TRIBUTE TO AMERICA rally\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the July 4th TRIBUTE TO AMERICA rally will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the July 4th TRIBUTE TO AMERICA rally will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXEARNINGSMENTIONPLTR-26AUG03-MAVE",
+      "event_ticker": "KXEARNINGSMENTIONPLTR-26AUG03",
+      "open_time": "2026-07-21T19:00:00Z",
+      "close_time": "2026-08-03T21:58:43Z",
+      "expected_expiration_time": "2027-01-30T15:00:00Z",
+      "expiration_time": "2027-01-30T15:00:00Z",
+      "occurrence_datetime": "2026-08-03T21:55:00Z",
+      "market_type": "binary",
+      "rules_primary": "If Maven is said by any Palantir Technologies Inc. representative (including the operator of the call) during the next Palantir Technologies Inc. earnings call (including the Q+A), then the market resolves to Yes.",
+      "rules_secondary": "Video of the Palantir Technologies Inc. earnings call will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, transcripts of the Palantir Technologies Inc. earnings call will be used according to the news publications listed in the contract. The exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. Please see full rules for more details."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL14-COMM",
+      "event_ticker": "KXTRUMPMENTION-26JUL14",
+      "open_time": "2026-07-14T03:45:00Z",
+      "close_time": "2026-07-14T16:53:36Z",
+      "expected_expiration_time": "2026-07-29T14:00:00Z",
+      "expiration_time": "2026-07-29T14:00:00Z",
+      "occurrence_datetime": "2026-07-14T16:54:35Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Communist / Communism as part of Bilateral Meeting with the Prime Minister of the Republic of Iraq\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Bilateral Meeting with the Prime Minister of the Republic of Iraq will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Bilateral Meeting with the Prime Minister of the Republic of Iraq will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nPromotional content aired during the event will count, but advertisements will not. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXMTPMENTION-26AUG02-REDI",
+      "event_ticker": "KXMTPMENTION-26AUG02",
+      "open_time": "2026-07-31T16:32:00Z",
+      "close_time": "2026-08-02T15:10:45Z",
+      "expected_expiration_time": "2026-08-17T14:00:00Z",
+      "expiration_time": "2026-08-17T14:00:00Z",
+      "occurrence_datetime": "2026-08-02T15:11:44Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Wes Moore says Redistrict / Redistricting / Redistricted as part of Meet the Press\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Meet the Press will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Meet the Press will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nPromotional content aired during the event will count, but advertisements will not. \nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Wes Moore speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Wes Moore must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26AUG07-SUPP",
+      "event_ticker": "KXTRUMPMENTION-26AUG07",
+      "open_time": "2026-08-07T14:00:33Z",
+      "close_time": "2026-08-07T20:25:43Z",
+      "expected_expiration_time": "2026-08-22T14:00:00Z",
+      "expiration_time": "2026-08-22T14:00:00Z",
+      "occurrence_datetime": "2026-08-22T14:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Supply Chain as part of Roundtable on American Mining\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Roundtable on American Mining will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Roundtable on American Mining will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL24-CENT",
+      "event_ticker": "KXTRUMPMENTION-26JUL24",
+      "open_time": "2026-07-24T02:35:00Z",
+      "close_time": "2026-07-25T04:40:49Z",
+      "expected_expiration_time": "2026-07-25T14:00:00Z",
+      "expiration_time": "2026-08-08T14:00:00Z",
+      "occurrence_datetime": "2026-07-25T04:41:48Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Central Casting as part of White House Correspondents' Dinner originally scheduled for July 24th, 2026\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the White House Correspondents' Dinner originally scheduled for July 24th, 2026 will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the White House Correspondents' Dinner originally scheduled for July 24th, 2026 will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL15-ISRA",
+      "event_ticker": "KXTRUMPMENTION-26JUL15",
+      "open_time": "2026-07-07T01:45:00Z",
+      "close_time": "2026-07-15T21:47:40Z",
+      "expected_expiration_time": "2026-07-30T14:00:00Z",
+      "expiration_time": "2026-07-30T14:00:00Z",
+      "occurrence_datetime": "2026-07-30T14:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Israel / Israeli as part of Pennsylvania Defense and Innovation Summit\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Pennsylvania Defense and Innovation Summit will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Pennsylvania Defense and Innovation Summit will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26AUG04-BARA",
+      "event_ticker": "KXTRUMPMENTION-26AUG04",
+      "open_time": "2026-08-04T20:45:00Z",
+      "close_time": "2026-08-05T16:02:16Z",
+      "expected_expiration_time": "2026-08-19T14:00:00Z",
+      "expiration_time": "2026-08-19T14:00:00Z",
+      "occurrence_datetime": "2026-08-05T15:50:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Barack Hussein Obama as part of Fox News at Night\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of Fox News at Night will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Fox News at Night will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nPromotional content aired during the event will count, but advertisements will not. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL29-TARI",
+      "event_ticker": "KXTRUMPMENTION-26JUL29",
+      "open_time": "2026-07-28T17:08:00Z",
+      "close_time": "2026-07-30T02:03:30Z",
+      "expected_expiration_time": "2026-08-13T14:00:00Z",
+      "expiration_time": "2026-08-13T14:00:00Z",
+      "occurrence_datetime": "2026-08-13T14:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Donald Trump says Tariff as part of Tele-Rally with Ty Masterson\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Tele-Rally with Ty Masterson will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Tele-Rally with Ty Masterson will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original call will not count.\nThe entirety of content within the original call will be used for resolution.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. Presence alone during a livestream is not sufficient for the market to qualify \u2014 Donald Trump must be speaking in an official capacity for the Contract to resolve Yes (e.g., inaudible private conversations on camera, or unofficial statements picked up on a hot mic, do not qualify).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXEARNINGSMENTIONHOOD-26JUL17-UK",
+      "event_ticker": "KXEARNINGSMENTIONHOOD-26JUL17",
+      "open_time": "2026-07-16T22:00:00Z",
+      "close_time": "2026-07-29T22:55:46Z",
+      "expected_expiration_time": "2026-12-31T15:00:00Z",
+      "expiration_time": "2026-12-31T15:00:00Z",
+      "occurrence_datetime": "2026-07-29T22:56:45Z",
+      "market_type": "binary",
+      "rules_primary": "If UK / United Kingdom is said by any Robinhood Markets, Inc. representative (including the operator of the call) during the next Robinhood Markets, Inc. earnings call (including the Q+A), then the market resolves to Yes.",
+      "rules_secondary": "Video of the Robinhood Markets, Inc. earnings call will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, transcripts of the Robinhood Markets, Inc. earnings call will be used according to the news publications listed in the contract. The exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. Please see full rules for more details."
+    },
+    {
+      "ticker": "KXGOVERNORMENTION-26JUL03-2028",
+      "event_ticker": "KXGOVERNORMENTION-26JUL03",
+      "open_time": "2026-07-02T15:29:00Z",
+      "close_time": "2026-07-03T14:05:09Z",
+      "expected_expiration_time": "2026-07-18T14:00:00Z",
+      "expiration_time": "2026-07-18T14:00:00Z",
+      "occurrence_datetime": "2026-07-18T14:00:00Z",
+      "market_type": "binary",
+      "rules_primary": "If \n Wes Moore says 2028 / Campaign as part of CBS Mornings\n, then the market resolves to Yes.",
+      "rules_secondary": "Video of the CBS Mornings will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the CBS Mornings will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nAdditional content not included in the original broadcast or stream will not count. \nPromotional content aired during the event will count, but advertisements will not. \nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Wes Moore speaking in an official capacity. If Wes Moore is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    },
+    {
+      "ticker": "KXTRUMPMENTION-26JUL22-IRAN",
+      "event_ticker": "KXTRUMPMENTION-26JUL22",
+      "open_time": "2026-07-20T15:30:00Z",
+      "close_time": "2026-07-22T21:20:53Z",
+      "expected_expiration_time": "2026-08-06T14:00:00Z",
+      "expiration_time": "2026-08-06T14:00:00Z",
+      "occurrence_datetime": "2026-07-22T21:21:52Z",
+      "market_type": "binary",
+      "rules_primary": "If Donald Trump says Iran (3+ times) as part of Remarks in Marietta, Georgia, then the market resolves to Yes.",
+      "rules_secondary": "Video of the Remarks in Marietta, Georgia will be primarily used to resolve the market; if a consensus by Kalshi employees cannot be reached using video, internal & external (official) transcripts of the Remarks in Marietta, Georgia will be used.\n\nPayout Criterion: \nThe exact phrase/word, or a plural or possessive form of the phrase/word, must be used. Grammatical/tense inflections are otherwise not included. \nPlural nouns occurring within proper nouns and noun phrases (e.g. names, titles, etc) are included.\nFor the purpose of this market, the live broadcast or stream will be used to resolve this event. \nThe event must be opened to the press for a live televised or streamed event to qualify.\nExcept as otherwise specified, previously aired content, archival footage, and recordings captured at times, places, or events wholly separate from the featured address will not count.\nPlease see full rules for more details.\n\nEvent does not qualify:\nIf an event is definitively cancelled or the event fails to qualify under the Payout Criterion, or any other circumstance prevents normal resolution, then the market for \"Event does not qualify\" resolves to Yes and all other markets will resolve to No.  \nThe event will resolve based on Donald Trump speaking in an official capacity. If Donald Trump is or is not present during a livestream, and does not speak in an official capacity the market will not qualify (e.g., inaudible private conversations on camera, unofficial statements picked up on a hot mic).\n\nPostponement:\nIf the event is postponed, and such a postponement is announced by the end of the following calendar day to be rescheduled to a time within 14 calendar days, the markets shall remain open."
+    }
+  ],
+  "selected_before_candles": true
+}

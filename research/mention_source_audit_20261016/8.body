@@ -1,0 +1,1267 @@
+"""Sweep-based queue depth estimation for realistic per-market BOOK_SHARE.
+
+Detects "sweeps" (clusters of YES-taker trades at the entry NO price) in
+post-entry trade data, estimates per-market queue depth from sweep volumes,
+and re-runs the VPIN x sizing sweep with dynamic per-market BOOK_SHARE
+instead of the global constant.
+
+Phases:
+1. Data loading (entries, post-entry trades, all trades, price snapshots, metadata)
+2. VPIN computation at entry time per market
+3. Sweep detection -> queue depth -> implied BOOK_SHARE
+4. Adverse selection analysis by VPIN quintile
+5. Fill comparison (fixed vs dynamic vs adverse)
+6. Strategy sweep (dynamic BOOK_SHARE + adverse fills)
+7. Optimal strategy selection + Pareto frontier
+8. Validation (sweep gap sensitivity)
+9. Save outputs + plot + console tables
+
+Usage: uv run python -m analysis.mention.queue_depth
+"""
+
+import gc
+import time
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr
+
+from analysis.lib.db import (
+    BUCKET_WIDTH, ENTRY_HOURS, FILL_TOL, MAKER_SPREAD_ADJ,
+    OUT_BASE, connect,
+)
+from analysis.lib.fills import (
+    GLOBAL_ADVERSE_RATIO, simulate_fills, weekly_sharpe,
+)
+from analysis.lib.queries import load_entries, load_post_entry_trades, load_trades
+from analysis.lib.vpin_calc import compute_vpin_at_entry, compute_post_entry_vpin
+from analysis.lib.plotting import save_figure, setup_style
+
+OUT_DIR = OUT_BASE / "mention"
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Sweep detection
+SWEEP_GAP_SEC = 300             # 5 min gap -> new sweep
+MIN_SWEEPS = 3                  # min exhaustive sweeps to use exhaustive-only
+
+# Implied BOOK_SHARE target sizes
+BOOK_SHARE_SIZES = [50, 100, 200, 300, 500, 750, 1000]
+
+# Sweep gap sensitivity
+SWEEP_GAP_SENSITIVITY = [60, 120, 300, 600]
+
+# Strategy sweep parameters (from vpin_sizing.py)
+VPIN_THRESHOLDS = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00]
+TARGET_SIZES = [50, 100, 150, 200, 250, 300, 400, 500, 750, 1000]
+FIXED_BOOK_SHARES = [0.25, 0.50, 0.75]
+REFERENCE_TARGET_SIZE = 500
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Data loading (local queries unique to queue_depth)
+# ---------------------------------------------------------------------------
+
+def load_price_snapshots(con) -> pd.DataFrame:
+    """Load T-24h price snapshots for spread validation.
+
+    Note: BOT_DATE_FILTER references t.created_time which doesn't apply here.
+    We use m.close_time >= '2025-10-01' instead.
+    """
+    from analysis.lib.db import BOT_SKIP_SERIES, BOT_SKIP_WORDS, run_query
+    return run_query(con, f"""
+    SELECT ps.ticker,
+           ps.yes_bid,
+           ps.yes_ask,
+           (ps.yes_ask - ps.yes_bid) AS spread_24h,
+           ps.volume AS snapshot_vol
+    FROM price_snapshots ps
+    JOIN markets m ON ps.ticker = m.ticker
+    JOIN events e ON m.event_ticker = e.event_ticker
+    WHERE m.result IN ('yes', 'no')
+      AND e.mutually_exclusive = false AND e.category = 'Mentions'
+      AND m.close_time >= '2025-10-01'
+      {BOT_SKIP_SERIES}
+      {BOT_SKIP_WORDS}
+      AND ps.interval_name = '24h'
+      AND ps.yes_bid IS NOT NULL AND ps.yes_ask IS NOT NULL
+      AND ps.yes_bid > 0.01 AND ps.yes_ask < 0.99
+    """, "T-24h price snapshots")
+
+
+def load_market_metadata(con) -> pd.DataFrame:
+    """Load market metadata (volume, liquidity) for validation.
+
+    Note: BOT_DATE_FILTER references t.created_time which doesn't apply here.
+    We use m.close_time >= '2025-10-01' instead.
+    """
+    from analysis.lib.db import BOT_SKIP_SERIES, BOT_SKIP_WORDS, run_query
+    return run_query(con, f"""
+    SELECT m.ticker, m.volume AS market_vol, m.liquidity
+    FROM markets m
+    JOIN events e ON m.event_ticker = e.event_ticker
+    WHERE m.result IN ('yes', 'no')
+      AND e.mutually_exclusive = false AND e.category = 'Mentions'
+      AND m.close_time >= '2025-10-01'
+      {BOT_SKIP_SERIES}
+      {BOT_SKIP_WORDS}
+    """, "Market metadata")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Sweep detection
+# ---------------------------------------------------------------------------
+
+def _build_sweep_record(ticker, sweep_id, counts, times,
+                        start_idx, end_idx, entry_price):
+    """Build a single sweep record from trade array slice."""
+    sweep_counts = counts[start_idx:end_idx + 1]
+    sweep_times = times[start_idx:end_idx + 1]
+    return {
+        "ticker": ticker,
+        "sweep_id": sweep_id,
+        "sweep_volume": int(sweep_counts.sum()),
+        "n_trades_in_sweep": end_idx - start_idx + 1,
+        "start_time": sweep_times[0],
+        "end_time": sweep_times[-1],
+        "duration_sec": (pd.Timestamp(sweep_times[-1]) -
+                         pd.Timestamp(sweep_times[0])).total_seconds(),
+        "entry_no_price": entry_price,
+    }
+
+
+def detect_sweeps(post_trades, sweep_gap_sec=SWEEP_GAP_SEC):
+    """Group YES-taker trades at entry price into sweep clusters.
+
+    Receives the FULL post_trades DataFrame (all taker sides, all prices).
+    Internally filters to YES-taker trades at entry price for sweep grouping,
+    but uses all trades for exhaustive classification.
+
+    Returns DataFrame: ticker, sweep_id, sweep_volume, n_trades_in_sweep,
+    start_time, end_time, duration_sec, is_exhaustive, entry_no_price
+    """
+    all_sweeps = []
+
+    for ticker, grp in post_trades.groupby("ticker"):
+        entry_price = grp["entry_no_price"].iloc[0]
+
+        # Filter to YES-taker trades at or above entry NO price (one-sided)
+        diff = grp["no_price"] - entry_price
+        yes_at_entry = grp[
+            (grp["taker_side"] == "yes") &
+            (diff >= 0) & (diff <= FILL_TOL)
+        ].sort_values("created_time")
+
+        if yes_at_entry.empty:
+            continue
+
+        counts = yes_at_entry["trade_count"].values.astype(np.float64)
+        times = yes_at_entry["created_time"].values
+
+        # Group into sweeps by time gap
+        sweep_records = []
+        start_idx = 0
+        sweep_id = 0
+
+        for i in range(1, len(times)):
+            gap = (pd.Timestamp(times[i]) -
+                   pd.Timestamp(times[i - 1])).total_seconds()
+            if gap > sweep_gap_sec:
+                # Close the current sweep
+                rec = _build_sweep_record(ticker, sweep_id, counts, times,
+                                          start_idx, i - 1, entry_price)
+                sweep_records.append(rec)
+                sweep_id += 1
+                start_idx = i
+
+        # Close the final sweep
+        rec = _build_sweep_record(ticker, sweep_id, counts, times,
+                                  start_idx, len(times) - 1, entry_price)
+        sweep_records.append(rec)
+
+        # Classify each sweep as exhaustive or partial
+        # Use ALL post-entry trades (not just YES-taker at entry price)
+        all_trades_sorted = grp.sort_values("created_time")
+        all_times = all_trades_sorted["created_time"].values
+        all_prices = all_trades_sorted["no_price"].values
+
+        for rec in sweep_records:
+            sweep_end = rec["end_time"]
+            # Find trades AFTER this sweep ends
+            after_mask = all_times > sweep_end
+            if not after_mask.any():
+                # No trades after sweep — assume exhaustive (market went quiet)
+                rec["is_exhaustive"] = True
+                continue
+
+            # Look at the next few trades after the sweep
+            after_prices = all_prices[after_mask]
+            # Check up to 5 subsequent trades for price movement
+            check_prices = after_prices[:min(5, len(after_prices))]
+
+            # If any of the next trades are at a DIFFERENT no_price
+            # (|price - entry| > FILL_TOL), the sweep consumed all resting
+            # liquidity at the entry price
+            price_moved = any(
+                abs(float(p) - entry_price) > FILL_TOL for p in check_prices
+            )
+            rec["is_exhaustive"] = price_moved
+
+        all_sweeps.extend(sweep_records)
+
+    if not all_sweeps:
+        return pd.DataFrame(columns=[
+            "ticker", "sweep_id", "sweep_volume", "n_trades_in_sweep",
+            "start_time", "end_time", "duration_sec", "is_exhaustive",
+            "entry_no_price",
+        ])
+
+    return pd.DataFrame(all_sweeps)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Per-market queue depth
+# ---------------------------------------------------------------------------
+
+def compute_queue_depth(sweeps):
+    """Aggregate sweeps into per-market queue depth estimates.
+
+    Returns DataFrame: ticker, n_sweeps, n_exhaustive, median_sweep_vol,
+    mean_sweep_vol, max_sweep_vol, estimated_queue_depth,
+    total_addressable_flow, entry_no_price
+    """
+    if sweeps.empty:
+        return pd.DataFrame(columns=[
+            "ticker", "n_sweeps", "n_exhaustive", "median_sweep_vol",
+            "mean_sweep_vol", "max_sweep_vol", "estimated_queue_depth",
+            "total_addressable_flow", "entry_no_price",
+        ])
+
+    rows = []
+    for ticker, grp in sweeps.groupby("ticker"):
+        n_sweeps = len(grp)
+        n_exhaustive = int(grp["is_exhaustive"].sum())
+        vols = grp["sweep_volume"].values
+
+        # Queue depth estimation
+        if n_exhaustive >= MIN_SWEEPS:
+            exhaustive_vols = grp[grp["is_exhaustive"]]["sweep_volume"].values
+            estimated_depth = float(np.median(exhaustive_vols))
+        else:
+            estimated_depth = float(np.median(vols))
+
+        rows.append({
+            "ticker": ticker,
+            "n_sweeps": n_sweeps,
+            "n_exhaustive": n_exhaustive,
+            "median_sweep_vol": float(np.median(vols)),
+            "mean_sweep_vol": float(np.mean(vols)),
+            "max_sweep_vol": float(np.max(vols)),
+            "estimated_queue_depth": estimated_depth,
+            "total_addressable_flow": float(np.sum(vols)),
+            "entry_no_price": int(grp["entry_no_price"].iloc[0]),
+        })
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Implied BOOK_SHARE
+# ---------------------------------------------------------------------------
+
+def compute_implied_book_share(queue_depth_df, target_sizes=BOOK_SHARE_SIZES):
+    """Compute implied_book_share per market and target_size.
+
+    implied_book_share = target_size / (target_size + estimated_queue_depth)
+
+    Returns (per_market_df, summary_df).
+    - per_market_df: one row per (ticker, target_size)
+    - summary_df: one row per target_size with median/mean/p25/p75
+    """
+    if queue_depth_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    per_market_rows = []
+    summary_rows = []
+
+    for size in target_sizes:
+        bs = size / (size + queue_depth_df["estimated_queue_depth"].values)
+        for i, ticker in enumerate(queue_depth_df["ticker"].values):
+            per_market_rows.append({
+                "ticker": ticker,
+                "target_size": size,
+                "estimated_queue_depth": queue_depth_df["estimated_queue_depth"].iloc[i],
+                "implied_book_share": bs[i],
+            })
+
+        summary_rows.append({
+            "target_size": size,
+            "median_book_share": float(np.median(bs)),
+            "mean_book_share": float(np.mean(bs)),
+            "p25_book_share": float(np.percentile(bs, 25)),
+            "p75_book_share": float(np.percentile(bs, 75)),
+        })
+
+    per_market_df = pd.DataFrame(per_market_rows)
+    summary_df = pd.DataFrame(summary_rows)
+    return per_market_df, summary_df
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Adverse selection analysis (ported from vpin_sizing.py)
+# ---------------------------------------------------------------------------
+
+def adverse_selection_analysis(entries, post_trades, vpin_map,
+                               post_entry_vpin_map):
+    """Compare edge on ALL markets vs FILLED markets by VPIN quintile."""
+    entries_v = entries.copy()
+    entries_v["vpin_at_entry"] = entries_v["ticker"].map(vpin_map)
+    entries_v["post_entry_vpin"] = entries_v["ticker"].map(post_entry_vpin_map)
+    entries_v = entries_v.dropna(subset=["vpin_at_entry"])
+
+    if entries_v.empty:
+        return pd.DataFrame()
+
+    entries_v["vpin_quintile"] = pd.qcut(
+        entries_v["vpin_at_entry"], 5, labels=False, duplicates="drop"
+    )
+
+    ref_size = 500
+    sim = simulate_fills(entries_v, post_trades, target_size=ref_size,
+                         book_share_map=0.50, adverse_mode="none")
+
+    sim_map = sim.set_index("ticker")[["filled", "pnl"]].to_dict("index")
+    entries_v["filled"] = entries_v["ticker"].map(lambda t: sim_map.get(t, {}).get("filled", 0))
+    entries_v["pnl"] = entries_v["ticker"].map(lambda t: sim_map.get(t, {}).get("pnl", 0))
+
+    entries_v["no_win"] = (entries_v["result"] == "no").astype(int)
+    entries_v["implied_prob"] = (entries_v["entry_no_price"] + MAKER_SPREAD_ADJ) / 100.0
+
+    rows = []
+    for q, grp in entries_v.groupby("vpin_quintile"):
+        n_total = len(grp)
+        filled_grp = grp[grp["filled"] > 0]
+        n_filled = len(filled_grp)
+        fill_rate = n_filled / n_total if n_total > 0 else 0.0
+
+        all_edge = grp["no_win"].mean() - grp["implied_prob"].mean()
+
+        if n_filled > 0:
+            filled_edge = filled_grp["no_win"].mean() - filled_grp["implied_prob"].mean()
+        else:
+            filled_edge = float("nan")
+
+        if not np.isnan(filled_edge):
+            adverse_gap = all_edge - filled_edge
+        else:
+            adverse_gap = float("nan")
+
+        avg_vpin = grp["vpin_at_entry"].mean()
+        vpin_lo = grp["vpin_at_entry"].min()
+        vpin_hi = grp["vpin_at_entry"].max()
+
+        pe_valid = grp["post_entry_vpin"].dropna()
+        avg_post_vpin = pe_valid.mean() if len(pe_valid) > 0 else float("nan")
+
+        if n_filled > 0:
+            avg_pnl = filled_grp["pnl"].mean()
+        else:
+            avg_pnl = float("nan")
+
+        rows.append({
+            "quintile": int(q) + 1,
+            "vpin_range": f"{vpin_lo:.3f}-{vpin_hi:.3f}",
+            "avg_vpin": avg_vpin,
+            "n_total": n_total,
+            "n_filled": n_filled,
+            "fill_rate": fill_rate,
+            "all_market_edge": all_edge,
+            "filled_market_edge": filled_edge,
+            "adverse_selection_gap": adverse_gap,
+            "post_entry_vpin": avg_post_vpin,
+            "avg_pnl_filled": avg_pnl,
+        })
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Fill comparison (fixed vs dynamic vs adverse)
+# ---------------------------------------------------------------------------
+
+def run_comparison(entries, post_trades, target_size, queue_depth_df):
+    """Run fixed-0.25/0.50/0.75 vs dynamic vs dynamic+adverse BOOK_SHARE."""
+    results = []
+
+    # Build dynamic book_share_map for reference target_size
+    depth_map = queue_depth_df.set_index("ticker")["estimated_queue_depth"].to_dict()
+    dynamic_bs = {
+        ticker: target_size / (target_size + depth)
+        for ticker, depth in depth_map.items()
+    }
+
+    # Fixed BOOK_SHARE runs
+    for bs in FIXED_BOOK_SHARES:
+        sim = simulate_fills(entries, post_trades, target_size,
+                             book_share_map=bs, adverse_mode="none")
+        filled = sim[sim["filled"] > 0]
+        n_filled = len(filled)
+        total_pnl = sim["pnl"].sum()
+        total_contracts = filled["filled"].sum() if n_filled > 0 else 0
+
+        sharpe = float("nan")
+        if n_filled >= 5:
+            sharpe = weekly_sharpe(filled["pnl"], filled["close_time"])
+
+        results.append({
+            "method": f"fixed_{bs:.2f}",
+            "n_filled": n_filled,
+            "total_pnl": total_pnl,
+            "total_contracts": total_contracts,
+            "sharpe": sharpe,
+        })
+
+    # Dynamic BOOK_SHARE (uniform fills)
+    sim = simulate_fills(entries, post_trades, target_size,
+                         book_share_map=dynamic_bs, adverse_mode="none")
+    filled = sim[sim["filled"] > 0]
+    n_filled = len(filled)
+    total_pnl = sim["pnl"].sum()
+    total_contracts = filled["filled"].sum() if n_filled > 0 else 0
+    sharpe = float("nan")
+    if n_filled >= 5:
+        sharpe = weekly_sharpe(filled["pnl"], filled["close_time"])
+    results.append({
+        "method": "dynamic_uniform",
+        "n_filled": n_filled,
+        "total_pnl": total_pnl,
+        "total_contracts": total_contracts,
+        "sharpe": sharpe,
+    })
+
+    # Dynamic BOOK_SHARE + adverse fills
+    sim = simulate_fills(entries, post_trades, target_size,
+                         book_share_map=dynamic_bs, adverse_mode="expected")
+    filled = sim[sim["filled"] > 0]
+    n_filled = len(filled)
+    total_pnl = sim["pnl"].sum()
+    total_contracts = filled["filled"].sum() if n_filled > 0 else 0
+    sharpe = float("nan")
+    if n_filled >= 5:
+        sharpe = weekly_sharpe(filled["pnl"], filled["close_time"])
+    results.append({
+        "method": "dynamic_adverse",
+        "n_filled": n_filled,
+        "total_pnl": total_pnl,
+        "total_contracts": total_contracts,
+        "sharpe": sharpe,
+    })
+
+    return pd.DataFrame(results)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Strategy sweep (dynamic BOOK_SHARE + adverse fills)
+# ---------------------------------------------------------------------------
+
+def sweep_strategies_dynamic(entries, post_trades, vpin_map, queue_depth_df,
+                             thresholds, sizes, adverse_mode="expected"):
+    """Like vpin_sizing.sweep_strategies but uses per-market BOOK_SHARE.
+
+    For each (threshold, size): bs[market] = size / (size + queue_depth[market])
+    """
+    entries_with_vpin = entries.copy()
+    entries_with_vpin["vpin_at_entry"] = entries_with_vpin["ticker"].map(vpin_map)
+
+    depth_map = queue_depth_df.set_index("ticker")["estimated_queue_depth"].to_dict()
+
+    results = []
+    total = len(thresholds) * len(sizes)
+    done = 0
+
+    for thresh in thresholds:
+        # Filter markets by VPIN threshold
+        if thresh >= 1.0:
+            filtered_entries = entries_with_vpin.copy()
+        else:
+            filtered_entries = entries_with_vpin[
+                (entries_with_vpin["vpin_at_entry"].notna()) &
+                (entries_with_vpin["vpin_at_entry"] <= thresh)
+            ].copy()
+
+        n_entered = len(filtered_entries)
+
+        for size in sizes:
+            done += 1
+            if done % 10 == 0 or done == total:
+                print(f"\r  Sweeping strategies (dynamic)... {done}/{total}",
+                      end="", flush=True)
+
+            if n_entered == 0:
+                results.append({
+                    "threshold": thresh, "target_size": size,
+                    "n_entered": 0, "n_filled": 0, "fill_rate": 0.0,
+                    "total_pnl": 0.0, "pnl_per_ct": 0.0,
+                    "sharpe": float("nan"), "losing_weeks": 0,
+                })
+                continue
+
+            # Build per-market BOOK_SHARE for this target size
+            book_share_map = {
+                ticker: size / (size + depth)
+                for ticker, depth in depth_map.items()
+            }
+
+            sim = simulate_fills(filtered_entries, post_trades,
+                                 target_size=size,
+                                 book_share_map=book_share_map,
+                                 adverse_mode=adverse_mode)
+            filled = sim[sim["filled"] > 0]
+            n_filled = len(filled)
+            fill_rate = n_filled / n_entered if n_entered > 0 else 0.0
+            total_pnl = sim["pnl"].sum()
+            total_contracts = filled["filled"].sum() if n_filled > 0 else 0
+            pnl_per_ct = (total_pnl / total_contracts
+                          if total_contracts > 0 else 0.0)
+
+            # Weekly Sharpe on filled markets
+            if n_filled >= 5:
+                sharpe = weekly_sharpe(filled["pnl"], filled["close_time"])
+            else:
+                sharpe = float("nan")
+
+            # Count losing weeks
+            if n_filled >= 5:
+                df_w = pd.DataFrame({
+                    "pnl": filled["pnl"].values,
+                    "close_time": pd.to_datetime(filled["close_time"].values),
+                })
+                df_w["week"] = (
+                    df_w["close_time"].dt.isocalendar().year.astype(str)
+                    + "-W"
+                    + df_w["close_time"].dt.isocalendar().week.astype(str)
+                    .str.zfill(2)
+                )
+                weekly = df_w.groupby("week")["pnl"].sum()
+                losing_weeks = int((weekly < 0).sum())
+            else:
+                losing_weeks = 0
+
+            results.append({
+                "threshold": thresh, "target_size": size,
+                "n_entered": n_entered, "n_filled": n_filled,
+                "fill_rate": fill_rate, "total_pnl": total_pnl,
+                "pnl_per_ct": pnl_per_ct, "sharpe": sharpe,
+                "losing_weeks": losing_weeks,
+            })
+
+    print()  # newline after progress
+    return pd.DataFrame(results)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: Optimal strategy selection (ported from vpin_sizing.py)
+# ---------------------------------------------------------------------------
+
+def find_optimal_strategies(sweep_df):
+    """Find best strategies by PnL, Sharpe, and Pareto frontier."""
+    valid = sweep_df[sweep_df["n_filled"] > 0].copy()
+    if valid.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    best_pnl_idx = valid["total_pnl"].idxmax()
+    best_pnl = valid.loc[[best_pnl_idx]].copy()
+    best_pnl["selection"] = "best_pnl"
+
+    sharpe_valid = valid[(valid["sharpe"].notna()) & (valid["total_pnl"] > 0)]
+    if not sharpe_valid.empty:
+        best_sharpe_idx = sharpe_valid["sharpe"].idxmax()
+        best_sharpe = sharpe_valid.loc[[best_sharpe_idx]].copy()
+        best_sharpe["selection"] = "best_sharpe"
+    else:
+        best_sharpe = pd.DataFrame()
+
+    pareto_mask = np.ones(len(valid), dtype=bool)
+    pnls = valid["total_pnl"].values
+    sharpes = valid["sharpe"].values
+
+    for i in range(len(valid)):
+        if not pareto_mask[i]:
+            continue
+        if np.isnan(sharpes[i]):
+            pareto_mask[i] = False
+            continue
+        for j in range(len(valid)):
+            if i == j:
+                continue
+            if np.isnan(sharpes[j]):
+                continue
+            if pnls[j] >= pnls[i] and sharpes[j] >= sharpes[i]:
+                if pnls[j] > pnls[i] or sharpes[j] > sharpes[i]:
+                    pareto_mask[i] = False
+                    break
+
+    pareto_df = valid[pareto_mask].copy()
+    pareto_df["selection"] = "pareto"
+    pareto_df = pareto_df.sort_values("total_pnl", ascending=False)
+
+    optimal_parts = [best_pnl]
+    if not best_sharpe.empty:
+        optimal_parts.append(best_sharpe)
+    optimal_df = pd.concat(optimal_parts, ignore_index=True)
+
+    return optimal_df, pareto_df
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Validation
+# ---------------------------------------------------------------------------
+
+def sweep_gap_sensitivity(post_trades, gaps=SWEEP_GAP_SENSITIVITY):
+    """Re-run detect_sweeps with different gap thresholds. Returns stats DF."""
+    rows = []
+    for gap in gaps:
+        sweeps = detect_sweeps(post_trades, sweep_gap_sec=gap)
+        qd = compute_queue_depth(sweeps)
+        n_markets = len(qd)
+        if n_markets > 0:
+            rows.append({
+                "sweep_gap_sec": gap,
+                "n_markets": n_markets,
+                "n_total_sweeps": len(sweeps),
+                "median_queue_depth": float(qd["estimated_queue_depth"].median()),
+                "mean_queue_depth": float(qd["estimated_queue_depth"].mean()),
+                "p25_queue_depth": float(
+                    np.percentile(qd["estimated_queue_depth"], 25)),
+                "p75_queue_depth": float(
+                    np.percentile(qd["estimated_queue_depth"], 75)),
+            })
+        else:
+            rows.append({
+                "sweep_gap_sec": gap,
+                "n_markets": 0,
+                "n_total_sweeps": 0,
+                "median_queue_depth": float("nan"),
+                "mean_queue_depth": float("nan"),
+                "p25_queue_depth": float("nan"),
+                "p75_queue_depth": float("nan"),
+            })
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Plotting (9-panel, 3x3)
+# ---------------------------------------------------------------------------
+
+def plot_all(queue_depth_df, implied_bs_per_market, comparison_df,
+             sweep_df, snapshots_df, metadata_df, entries, post_trades,
+             vpin_map=None, adverse_df=None, pareto_df=None):
+    """Create 9-panel queue depth diagnostic plot."""
+    setup_style()
+    fig, axes = plt.subplots(3, 3, figsize=(22, 20))
+
+    # -------------------------------------------------------------------
+    # Panel (0,0): Queue depth distribution -- histogram with median line
+    # -------------------------------------------------------------------
+    ax = axes[0, 0]
+    depths = queue_depth_df["estimated_queue_depth"].dropna().values
+    if len(depths) > 0:
+        ax.hist(depths, bins=30, color="#2196F3", edgecolor="black",
+                linewidth=0.5, alpha=0.8)
+        med = np.median(depths)
+        ax.axvline(med, color="#F44336", linestyle="--", linewidth=2,
+                    label=f"Median = {med:.0f}")
+        ax.legend(fontsize=9)
+    ax.set_title("Queue Depth Distribution\n(estimated contracts ahead in queue)")
+    ax.set_xlabel("Estimated Queue Depth (contracts)")
+    ax.set_ylabel("Number of Markets")
+
+    # -------------------------------------------------------------------
+    # Panel (0,1): Implied BOOK_SHARE distribution for reference target size
+    # -------------------------------------------------------------------
+    ax = axes[0, 1]
+    if not implied_bs_per_market.empty:
+        bs_ref = implied_bs_per_market[
+            implied_bs_per_market["target_size"] == REFERENCE_TARGET_SIZE
+        ]["implied_book_share"].dropna().values
+        if len(bs_ref) > 0:
+            ax.hist(bs_ref, bins=30, color="#4CAF50", edgecolor="black",
+                    linewidth=0.5, alpha=0.8)
+            med_bs = np.median(bs_ref)
+            ax.axvline(med_bs, color="#F44336", linestyle="--", linewidth=2,
+                        label=f"Median = {med_bs:.2f}")
+            ax.axvline(0.50, color="#9E9E9E", linestyle=":", linewidth=1.5,
+                        label="Current default (0.50)")
+            ax.legend(fontsize=9)
+    ax.set_title(f"Implied BOOK_SHARE Distribution\n(target_size = {REFERENCE_TARGET_SIZE})")
+    ax.set_xlabel("Implied BOOK_SHARE")
+    ax.set_ylabel("Number of Markets")
+
+    # -------------------------------------------------------------------
+    # Panel (0,2): Queue depth vs market volume -- scatter with Spearman rho
+    # -------------------------------------------------------------------
+    ax = axes[0, 2]
+    merged_vol = queue_depth_df.merge(metadata_df, on="ticker", how="inner")
+    if len(merged_vol) > 5:
+        x_vol = merged_vol["market_vol"].values
+        y_depth = merged_vol["estimated_queue_depth"].values
+        valid = (~np.isnan(x_vol)) & (~np.isnan(y_depth)) & (x_vol > 0)
+        if valid.sum() > 5:
+            rho, pval = spearmanr(x_vol[valid], y_depth[valid])
+            ax.scatter(x_vol[valid], y_depth[valid], s=20, alpha=0.5,
+                       color="#2196F3", edgecolors="gray", linewidth=0.3)
+            ax.set_xscale("log")
+            ax.annotate(f"Spearman rho = {rho:.3f}\np = {pval:.3g}",
+                        xy=(0.05, 0.95), xycoords="axes fraction",
+                        fontsize=10, va="top",
+                        bbox=dict(boxstyle="round", fc="white", alpha=0.8))
+    ax.set_title("Queue Depth vs Market Volume")
+    ax.set_xlabel("Market Volume (log scale)")
+    ax.set_ylabel("Estimated Queue Depth")
+
+    # -------------------------------------------------------------------
+    # Panel (1,0): PnL heatmap from sweep_df
+    # -------------------------------------------------------------------
+    ax = axes[1, 0]
+    if not sweep_df.empty:
+        pivot_pnl = sweep_df.pivot(
+            index="threshold", columns="target_size", values="total_pnl"
+        )
+        im = ax.imshow(pivot_pnl.values, cmap="RdYlGn", aspect="auto")
+        fig.colorbar(im, ax=ax, label="Total PnL ($)")
+        ax.set_xticks(np.arange(len(pivot_pnl.columns)))
+        ax.set_yticks(np.arange(len(pivot_pnl.index)))
+        ax.set_xticklabels(pivot_pnl.columns, fontsize=8)
+        ax.set_yticklabels([f"{v:.2f}" for v in pivot_pnl.index], fontsize=8)
+        # Annotate cells
+        pnl_std = np.nanstd(pivot_pnl.values)
+        for i in range(len(pivot_pnl.index)):
+            for j in range(len(pivot_pnl.columns)):
+                val = pivot_pnl.iloc[i, j]
+                if pd.notna(val):
+                    ax.text(j, i, f"${val:.0f}", ha="center", va="center", fontsize=6,
+                            color="white" if abs(val) > pnl_std else "black")
+    ax.set_xlabel("Target Size")
+    ax.set_ylabel("VPIN Threshold")
+    ax.set_title("Total PnL by Strategy\n(VPIN threshold x target size)")
+
+    # -------------------------------------------------------------------
+    # Panel (1,1): Sharpe heatmap from sweep_df
+    # -------------------------------------------------------------------
+    ax = axes[1, 1]
+    if not sweep_df.empty:
+        pivot_sharpe = sweep_df.pivot(
+            index="threshold", columns="target_size", values="sharpe"
+        )
+        vmax_s = np.nanmax(np.abs(pivot_sharpe.values))
+        im2 = ax.imshow(pivot_sharpe.values, cmap="RdYlGn", aspect="auto",
+                        vmin=-vmax_s, vmax=vmax_s)
+        fig.colorbar(im2, ax=ax, label="Weekly Sharpe (ann.)")
+        ax.set_xticks(np.arange(len(pivot_sharpe.columns)))
+        ax.set_yticks(np.arange(len(pivot_sharpe.index)))
+        ax.set_xticklabels(pivot_sharpe.columns, fontsize=8)
+        ax.set_yticklabels([f"{v:.2f}" for v in pivot_sharpe.index], fontsize=8)
+        for i in range(len(pivot_sharpe.index)):
+            for j in range(len(pivot_sharpe.columns)):
+                val = pivot_sharpe.iloc[i, j]
+                if pd.notna(val):
+                    ax.text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=6,
+                            color="white" if abs(val) > 1.5 else "black")
+    ax.set_xlabel("Target Size")
+    ax.set_ylabel("VPIN Threshold")
+    ax.set_title("Weekly Sharpe by Strategy\n(annualized)")
+
+    # -------------------------------------------------------------------
+    # Panel (1,2): Adverse selection by VPIN quintile (paired bars)
+    # -------------------------------------------------------------------
+    ax = axes[1, 2]
+    if adverse_df is not None and not adverse_df.empty:
+        x = np.arange(len(adverse_df))
+        w = 0.35
+        ax.bar(x - w / 2, adverse_df["all_market_edge"], w,
+               color="#2196F3", alpha=0.8, label="All markets",
+               edgecolor="black", linewidth=0.3)
+        ax.bar(x + w / 2, adverse_df["filled_market_edge"], w,
+               color="#F44336", alpha=0.8, label="Filled markets",
+               edgecolor="black", linewidth=0.3)
+
+        labels = [f"Q{int(q)}\n({vr})" for q, vr in
+                  zip(adverse_df["quintile"], adverse_df["vpin_range"])]
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=7)
+        ax.legend(fontsize=8)
+        ax.axhline(y=0, color="black", linewidth=0.8)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:+.0%}"))
+    ax.set_title("Adverse Selection by VPIN Quintile\n(all-market vs filled-market edge)")
+    ax.set_xlabel("VPIN Quintile")
+    ax.set_ylabel("Edge")
+
+    # -------------------------------------------------------------------
+    # Panel (2,0): PnL comparison bars (fixed vs dynamic)
+    # -------------------------------------------------------------------
+    ax = axes[2, 0]
+    if not comparison_df.empty:
+        methods = comparison_df["method"].values
+        pnls = comparison_df["total_pnl"].values
+        colors = ["#9E9E9E", "#BDBDBD", "#E0E0E0", "#4CAF50", "#F44336"]
+        # Ensure we have the right number of colors
+        bar_colors = colors[:len(methods)]
+        bars = ax.bar(methods, pnls, color=bar_colors, edgecolor="black",
+                       linewidth=0.5)
+        for bar, val in zip(bars, pnls):
+            ax.annotate(f"${val:.0f}", (bar.get_x() + bar.get_width() / 2,
+                        bar.get_height()),
+                        textcoords="offset points", xytext=(0, 5),
+                        ha="center", fontsize=9)
+        ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_title(f"PnL Comparison: Fixed vs Dynamic BOOK_SHARE\n(target_size = {REFERENCE_TARGET_SIZE})")
+    ax.set_xlabel("Method")
+    ax.set_ylabel("Total PnL ($)")
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right", fontsize=8)
+
+    # -------------------------------------------------------------------
+    # Panel (2,1): Cumulative PnL: uniform vs adverse
+    # -------------------------------------------------------------------
+    ax = axes[2, 1]
+    if not sweep_df.empty:
+        # Find best strategy from dynamic sweep
+        valid_sweep = sweep_df[
+            (sweep_df["n_filled"] > 0) & (sweep_df["sharpe"].notna())
+        ]
+        if not valid_sweep.empty:
+            best_row = valid_sweep.loc[valid_sweep["total_pnl"].idxmax()]
+            best_thresh = best_row["threshold"]
+            best_size = int(best_row["target_size"])
+
+            # Build entries filtered by VPIN
+            entries_v = entries.copy()
+            entries_v["vpin_at_entry"] = entries_v["ticker"].map(
+                vpin_map if vpin_map is not None else {}
+            )
+
+            if best_thresh >= 1.0:
+                sel = entries_v.copy()
+            else:
+                sel = entries_v[
+                    (entries_v["vpin_at_entry"].notna()) &
+                    (entries_v["vpin_at_entry"] <= best_thresh)
+                ].copy()
+
+            if not sel.empty:
+                depth_map = queue_depth_df.set_index("ticker")[
+                    "estimated_queue_depth"
+                ].to_dict()
+
+                # Dynamic uniform
+                bs_dynamic = {
+                    t: best_size / (best_size + d) for t, d in depth_map.items()
+                }
+                sim_uniform = simulate_fills(sel, post_trades, best_size,
+                                             book_share_map=bs_dynamic,
+                                             adverse_mode="none")
+                filled_uniform = sim_uniform[sim_uniform["filled"] > 0].sort_values(
+                    "close_time"
+                )
+
+                # Dynamic adverse
+                sim_adverse = simulate_fills(sel, post_trades, best_size,
+                                             book_share_map=bs_dynamic,
+                                             adverse_mode="expected")
+                filled_adverse = sim_adverse[sim_adverse["filled"] > 0].sort_values(
+                    "close_time"
+                )
+
+                if not filled_uniform.empty:
+                    cum_uni = filled_uniform["pnl"].cumsum().values
+                    ax.plot(range(len(cum_uni)), cum_uni, color="#4CAF50",
+                            linewidth=2,
+                            label=f"Uniform (t={best_thresh:.2f}, s={best_size})")
+                    ax.annotate(f"${cum_uni[-1]:.0f}",
+                                (len(cum_uni) - 1, cum_uni[-1]),
+                                textcoords="offset points", xytext=(5, 0),
+                                fontsize=8, color="#4CAF50")
+
+                if not filled_adverse.empty:
+                    cum_adv = filled_adverse["pnl"].cumsum().values
+                    ax.plot(range(len(cum_adv)), cum_adv, color="#F44336",
+                            linewidth=2,
+                            label=f"Adverse (t={best_thresh:.2f}, s={best_size})")
+                    ax.annotate(f"${cum_adv[-1]:.0f}",
+                                (len(cum_adv) - 1, cum_adv[-1]),
+                                textcoords="offset points", xytext=(5, 0),
+                                fontsize=8, color="#F44336")
+
+        ax.axhline(0, color="black", linewidth=0.8)
+        ax.legend(fontsize=8, loc="best")
+    ax.set_title("Cumulative PnL: Uniform vs Adverse Fills\n(best dynamic strategy)")
+    ax.set_xlabel("Market # (chronological)")
+    ax.set_ylabel("Cumulative PnL ($)")
+
+    # -------------------------------------------------------------------
+    # Panel (2,2): Pareto frontier scatter
+    # -------------------------------------------------------------------
+    ax = axes[2, 2]
+    if not sweep_df.empty:
+        valid_scatter = sweep_df[
+            (sweep_df["n_filled"] > 0) & (sweep_df["sharpe"].notna())
+        ].copy()
+
+        if not valid_scatter.empty:
+            ax.scatter(valid_scatter["total_pnl"], valid_scatter["sharpe"],
+                       c="#BDBDBD", s=30, alpha=0.5, edgecolors="gray",
+                       linewidth=0.3, label="All strategies")
+
+            # Highlight Pareto frontier
+            if pareto_df is not None and not pareto_df.empty:
+                pareto_valid = pareto_df[pareto_df["sharpe"].notna()]
+                if not pareto_valid.empty:
+                    pareto_sorted = pareto_valid.sort_values("total_pnl")
+                    ax.plot(pareto_sorted["total_pnl"], pareto_sorted["sharpe"],
+                            "o-", color="#F44336", markersize=6, linewidth=2,
+                            label="Pareto frontier", zorder=5)
+
+                    # Annotate Pareto points
+                    for _, r in pareto_sorted.iterrows():
+                        ax.annotate(
+                            f"t={r['threshold']:.2f}\ns={int(r['target_size'])}",
+                            (r["total_pnl"], r["sharpe"]),
+                            textcoords="offset points", xytext=(8, 0),
+                            fontsize=6, color="#C62828",
+                        )
+
+    ax.set_title("Pareto Frontier: PnL vs Sharpe\n(all strategies)")
+    ax.set_xlabel("Total PnL ($)")
+    ax.set_ylabel("Weekly Sharpe (annualized)")
+    ax.axhline(y=0, color="black", linewidth=0.5)
+    ax.axvline(x=0, color="black", linewidth=0.5)
+    ax.legend(fontsize=8)
+
+    save_figure(fig, OUT_DIR / "queue_depth.png")
+
+
+# ---------------------------------------------------------------------------
+# Console output
+# ---------------------------------------------------------------------------
+
+def print_tables(queue_depth_df, summary_df, comparison_df,
+                 sensitivity_df, sweep_df, adverse_df, optimal_df, pareto_df):
+    """Print summary tables to console."""
+
+    # Table 1: Queue depth summary stats
+    print("\n" + "=" * 80)
+    print("  QUEUE DEPTH SUMMARY STATISTICS")
+    print("=" * 80)
+    depths = queue_depth_df["estimated_queue_depth"].dropna()
+    if len(depths) > 0:
+        print(f"  Markets with sweeps: {len(depths):,}")
+        print(f"  {'Percentile':<15} {'Queue Depth':>12}")
+        print(f"  {'-' * 30}")
+        for pctl, label in [(10, "p10"), (25, "p25"), (50, "p50 (median)"),
+                             (75, "p75"), (90, "p90")]:
+            val = np.percentile(depths, pctl)
+            print(f"  {label:<15} {val:>12.0f}")
+        print(f"  {'mean':<15} {depths.mean():>12.1f}")
+
+    # Table 2: Implied BOOK_SHARE by target_size
+    print("\n" + "=" * 80)
+    print("  IMPLIED BOOK_SHARE BY TARGET SIZE")
+    print("=" * 80)
+    if not summary_df.empty:
+        print(f"  {'Target Size':>12} {'Median':>8} {'Mean':>8}"
+              f" {'p25':>8} {'p75':>8}")
+        print(f"  {'-' * 50}")
+        for _, r in summary_df.iterrows():
+            print(f"  {int(r['target_size']):>12}"
+                  f" {r['median_book_share']:>8.3f}"
+                  f" {r['mean_book_share']:>8.3f}"
+                  f" {r['p25_book_share']:>8.3f}"
+                  f" {r['p75_book_share']:>8.3f}")
+
+    # Table 3: PnL comparison: fixed vs dynamic BOOK_SHARE
+    print("\n" + "=" * 80)
+    print(f"  PnL COMPARISON: FIXED vs DYNAMIC BOOK_SHARE (target_size={REFERENCE_TARGET_SIZE})")
+    print("=" * 80)
+    if not comparison_df.empty:
+        print(f"  {'Method':<20} {'N Filled':>9} {'Total PnL':>12}"
+              f" {'Contracts':>11} {'Sharpe':>8}")
+        print(f"  {'-' * 65}")
+        for _, r in comparison_df.iterrows():
+            s = f"{r['sharpe']:.2f}" if not np.isnan(r['sharpe']) else "  N/A"
+            print(f"  {r['method']:<20} {int(r['n_filled']):>9}"
+                  f" ${r['total_pnl']:>+10.2f}"
+                  f" {r['total_contracts']:>11.0f}"
+                  f" {s:>8}")
+
+    # Table 4: Sweep gap sensitivity (stability check)
+    print("\n" + "=" * 80)
+    print("  SWEEP GAP SENSITIVITY")
+    print("=" * 80)
+    if not sensitivity_df.empty:
+        print(f"  {'Gap (sec)':>10} {'Markets':>8} {'Sweeps':>8}"
+              f" {'Med Depth':>10} {'Mean Depth':>11}"
+              f" {'p25':>8} {'p75':>8}")
+        print(f"  {'-' * 70}")
+        for _, r in sensitivity_df.iterrows():
+            md = f"{r['median_queue_depth']:.0f}" if not np.isnan(
+                r['median_queue_depth']) else "N/A"
+            mn = f"{r['mean_queue_depth']:.1f}" if not np.isnan(
+                r['mean_queue_depth']) else "N/A"
+            p25 = f"{r['p25_queue_depth']:.0f}" if not np.isnan(
+                r['p25_queue_depth']) else "N/A"
+            p75 = f"{r['p75_queue_depth']:.0f}" if not np.isnan(
+                r['p75_queue_depth']) else "N/A"
+            print(f"  {int(r['sweep_gap_sec']):>10} {int(r['n_markets']):>8}"
+                  f" {int(r['n_total_sweeps']):>8}"
+                  f" {md:>10} {mn:>11}"
+                  f" {p25:>8} {p75:>8}")
+
+    # Table 5: Recommended realistic strategy from dynamic sweep
+    print("\n" + "=" * 80)
+    print("  RECOMMENDED REALISTIC STRATEGY (dynamic BOOK_SHARE)")
+    print("=" * 80)
+    if not sweep_df.empty:
+        valid = sweep_df[
+            (sweep_df["n_filled"] > 0) & (sweep_df["total_pnl"] > 0)
+        ]
+        if not valid.empty:
+            # Best PnL
+            best_pnl = valid.loc[valid["total_pnl"].idxmax()]
+            s = (f"{best_pnl['sharpe']:.2f}"
+                 if not np.isnan(best_pnl['sharpe']) else "N/A")
+            print(f"  Best PnL:")
+            print(f"    VPIN threshold = {best_pnl['threshold']:.2f},"
+                  f" target size = {int(best_pnl['target_size'])}")
+            print(f"    Entered: {int(best_pnl['n_entered'])},"
+                  f" Filled: {int(best_pnl['n_filled'])}"
+                  f" ({best_pnl['fill_rate']:.0%})")
+            print(f"    Total PnL: ${best_pnl['total_pnl']:+.2f},"
+                  f" $/ct: ${best_pnl['pnl_per_ct']:+.4f},"
+                  f" Sharpe: {s}")
+            print()
+
+            # Best Sharpe (positive PnL only)
+            sharpe_valid = valid[valid["sharpe"].notna()]
+            if not sharpe_valid.empty:
+                best_sharpe = sharpe_valid.loc[sharpe_valid["sharpe"].idxmax()]
+                print(f"  Best Sharpe:")
+                print(f"    VPIN threshold = {best_sharpe['threshold']:.2f},"
+                      f" target size = {int(best_sharpe['target_size'])}")
+                print(f"    Entered: {int(best_sharpe['n_entered'])},"
+                      f" Filled: {int(best_sharpe['n_filled'])}"
+                      f" ({best_sharpe['fill_rate']:.0%})")
+                print(f"    Total PnL: ${best_sharpe['total_pnl']:+.2f},"
+                      f" $/ct: ${best_sharpe['pnl_per_ct']:+.4f},"
+                      f" Sharpe: {best_sharpe['sharpe']:.2f}")
+
+    # Table 6: Adverse selection by VPIN quintile
+    print("\n" + "=" * 80)
+    print("  ADVERSE SELECTION BY VPIN QUINTILE")
+    print("=" * 80)
+    if not adverse_df.empty:
+        print(f"  {'Q':>3} {'VPIN Range':>18} {'N':>6} {'Filled':>7} {'Fill%':>6}"
+              f" {'All Edge':>9} {'Fill Edge':>10} {'Adv Gap':>8}"
+              f" {'Post VPIN':>10} {'Avg PnL':>9}")
+        print(f"  {'-' * 100}")
+        for _, r in adverse_df.iterrows():
+            fe = f"{r['filled_market_edge']:>+8.1%}" if not np.isnan(r['filled_market_edge']) else "     N/A"
+            ag = f"{r['adverse_selection_gap']:>+7.1%}" if not np.isnan(r['adverse_selection_gap']) else "    N/A"
+            pv = f"{r['post_entry_vpin']:>9.4f}" if not np.isnan(r['post_entry_vpin']) else "      N/A"
+            ap = f"${r['avg_pnl_filled']:>+.4f}" if not np.isnan(r['avg_pnl_filled']) else "      N/A"
+            print(f"  {int(r['quintile']):>3} {r['vpin_range']:>18}"
+                  f" {int(r['n_total']):>6} {int(r['n_filled']):>7}"
+                  f" {r['fill_rate']:>5.0%}"
+                  f" {r['all_market_edge']:>+8.1%} {fe} {ag}"
+                  f" {pv} {ap}")
+
+    # Table 7: Optimal strategies
+    print("\n" + "=" * 80)
+    print("  OPTIMAL STRATEGIES")
+    print("=" * 80)
+    if not optimal_df.empty:
+        for _, r in optimal_df.iterrows():
+            label = r["selection"].replace("_", " ").title()
+            s = f"{r['sharpe']:.2f}" if not np.isnan(r['sharpe']) else "N/A"
+            print(f"  {label}:")
+            print(f"    VPIN threshold = {r['threshold']:.2f},"
+                  f" target size = {int(r['target_size'])}")
+            print(f"    Entered: {int(r['n_entered'])}, Filled: {int(r['n_filled'])}"
+                  f" ({r['fill_rate']:.0%})")
+            print(f"    Total PnL: ${r['total_pnl']:+.2f},"
+                  f" $/contract: ${r['pnl_per_ct']:+.4f},"
+                  f" Sharpe: {s}")
+            print()
+
+    if not pareto_df.empty:
+        print(f"  Pareto frontier: {len(pareto_df)} non-dominated strategies")
+        print(f"    PnL range: ${pareto_df['total_pnl'].min():.2f}"
+              f" to ${pareto_df['total_pnl'].max():.2f}")
+        sharpe_vals = pareto_df["sharpe"].dropna()
+        if not sharpe_vals.empty:
+            print(f"    Sharpe range: {sharpe_vals.min():.2f}"
+                  f" to {sharpe_vals.max():.2f}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    t0 = time.time()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Phase 1: Data loading
+    print("Phase 1: Loading data...")
+    con = connect()
+    entries = load_entries(con)
+    post_trades = load_post_entry_trades(con)
+    trades = load_trades(con)
+    snapshots = load_price_snapshots(con)
+    metadata = load_market_metadata(con)
+    con.close()
+
+    if entries.empty or post_trades.empty:
+        print("  No data found. Exiting.")
+        return
+
+    print(f"  Loaded {len(entries):,} entries, {len(post_trades):,} post-entry trades,"
+          f" {len(trades):,} all trades")
+    print(f"  Loaded {len(snapshots):,} price snapshots,"
+          f" {len(metadata):,} market metadata rows")
+
+    # Phase 2: Compute VPIN
+    print("\nPhase 2: Computing VPIN at entry time...")
+    vpin_t0 = time.time()
+    vpin_map = compute_vpin_at_entry(trades)
+    print(f"  {len(vpin_map):,} markets with VPIN in {time.time() - vpin_t0:.1f}s")
+
+    print("  Computing post-entry VPIN...", end=" ", flush=True)
+    pe_t0 = time.time()
+    post_entry_vpin_map = compute_post_entry_vpin(post_trades)
+    print(f"{len(post_entry_vpin_map):,} markets in {time.time() - pe_t0:.1f}s")
+
+    # Free trades DataFrame — only needed for VPIN computation above
+    del trades
+    gc.collect()
+
+    # Phase 3: Sweep detection -> queue depth -> implied BOOK_SHARE
+    print("\nPhase 3: Detecting sweeps...")
+    sweep_t0 = time.time()
+    sweeps = detect_sweeps(post_trades, sweep_gap_sec=SWEEP_GAP_SEC)
+    n_markets_with_sweeps = sweeps["ticker"].nunique() if not sweeps.empty else 0
+    n_exhaustive = int(sweeps["is_exhaustive"].sum()) if not sweeps.empty else 0
+    print(f"  {len(sweeps):,} sweeps across {n_markets_with_sweeps:,} markets"
+          f" ({n_exhaustive:,} exhaustive) in {time.time() - sweep_t0:.1f}s")
+
+    if sweeps.empty:
+        print("  No sweeps detected. Exiting.")
+        return
+
+    print("  Computing per-market queue depth...")
+    queue_depth_df = compute_queue_depth(sweeps)
+    print(f"  {len(queue_depth_df):,} markets with queue depth estimates")
+    print(f"  Median queue depth: {queue_depth_df['estimated_queue_depth'].median():.0f}"
+          f" contracts")
+
+    print("  Computing implied BOOK_SHARE...")
+    implied_bs_per_market, bs_summary = compute_implied_book_share(queue_depth_df)
+    print(f"  Computed for {len(BOOK_SHARE_SIZES)} target sizes x"
+          f" {len(queue_depth_df)} markets")
+
+    # Phase 4: Adverse selection analysis by VPIN quintile
+    print("\nPhase 4: Adverse selection analysis...")
+    adverse_df = adverse_selection_analysis(entries, post_trades,
+                                             vpin_map, post_entry_vpin_map)
+
+    # Phase 5: Fill comparison (fixed vs dynamic vs adverse)
+    print(f"\nPhase 5: Running fill comparison (target={REFERENCE_TARGET_SIZE})...")
+    comp_t0 = time.time()
+    comparison_df = run_comparison(entries, post_trades, REFERENCE_TARGET_SIZE,
+                                   queue_depth_df)
+    print(f"  Comparison completed in {time.time() - comp_t0:.1f}s")
+
+    # Phase 6: Strategy sweep (110 combos, dynamic BS + adverse fills)
+    print(f"\nPhase 6: Sweeping {len(VPIN_THRESHOLDS)} thresholds x"
+          f" {len(TARGET_SIZES)} sizes = "
+          f"{len(VPIN_THRESHOLDS) * len(TARGET_SIZES)} strategies"
+          f" (dynamic BOOK_SHARE + adverse fills)...")
+    sweep_t0 = time.time()
+    sweep_df = sweep_strategies_dynamic(entries, post_trades, vpin_map,
+                                        queue_depth_df,
+                                        VPIN_THRESHOLDS, TARGET_SIZES,
+                                        adverse_mode="expected")
+    print(f"  Sweep completed in {time.time() - sweep_t0:.1f}s")
+
+    # Phase 7: Optimal strategies + Pareto frontier
+    print("\nPhase 7: Optimal strategy selection...")
+    optimal_df, pareto_df = find_optimal_strategies(sweep_df)
+
+    # Phase 8: Validation (sweep gap sensitivity)
+    print("\nPhase 8: Sweep gap sensitivity analysis...")
+    sens_t0 = time.time()
+    sensitivity_df = sweep_gap_sensitivity(post_trades)
+    print(f"  Sensitivity analysis in {time.time() - sens_t0:.1f}s")
+
+    # Phase 9: Save outputs + plot + console tables
+    print("\nPhase 9: Saving outputs...")
+
+    # Enrich queue_depth_df with implied_book_share at reference size and validation data
+    qd_out = queue_depth_df.copy()
+    if not implied_bs_per_market.empty:
+        bs_500 = implied_bs_per_market[
+            implied_bs_per_market["target_size"] == REFERENCE_TARGET_SIZE
+        ][["ticker", "implied_book_share"]].rename(
+            columns={"implied_book_share": "implied_book_share_500"}
+        )
+        qd_out = qd_out.merge(bs_500, on="ticker", how="left")
+
+    if not snapshots.empty:
+        qd_out = qd_out.merge(
+            snapshots[["ticker", "spread_24h"]], on="ticker", how="left"
+        )
+
+    if not metadata.empty:
+        qd_out = qd_out.merge(
+            metadata[["ticker", "market_vol"]], on="ticker", how="left"
+        )
+
+    qd_out.to_csv(OUT_DIR / "queue_depth_by_market.csv", index=False)
+    del qd_out
+    sweep_df.to_csv(OUT_DIR / "queue_depth_sweep.csv", index=False)
+    comparison_df.to_csv(OUT_DIR / "queue_depth_comparison.csv", index=False)
+    bs_summary.to_csv(OUT_DIR / "queue_depth_summary.csv", index=False)
+    sensitivity_df.to_csv(OUT_DIR / "queue_depth_sensitivity.csv", index=False)
+    if not adverse_df.empty:
+        adverse_df.to_csv(OUT_DIR / "queue_depth_adverse_selection.csv", index=False)
+    if not optimal_df.empty:
+        optimal_df.to_csv(OUT_DIR / "queue_depth_optimal.csv", index=False)
+    if not pareto_df.empty:
+        pareto_df.to_csv(OUT_DIR / "queue_depth_pareto.csv", index=False)
+
+    print(f"  Saved CSVs to {OUT_DIR}")
+
+    # Console output
+    print_tables(queue_depth_df, bs_summary, comparison_df,
+                 sensitivity_df, sweep_df, adverse_df, optimal_df, pareto_df)
+
+    # Free sensitivity_df before plot (not needed by plot_all)
+    del sensitivity_df
+    gc.collect()
+
+    # Plot
+    print("\n  Generating 9-panel plot...")
+    plot_all(queue_depth_df, implied_bs_per_market, comparison_df,
+             sweep_df, snapshots, metadata, entries, post_trades,
+             vpin_map=vpin_map, adverse_df=adverse_df,
+             pareto_df=pareto_df)
+
+    print(f"\n  -> Saved CSVs + queue_depth.png to {OUT_DIR}")
+    print(f"  Total runtime: {time.time() - t0:.0f}s")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXEARNINGSMENTIONHOOD-26JUL17-UK/candlesticks?start_ts=1785279240&end_ts=1785279300&period_interval=1",
+  "captured_at": "2026-10-16T03:28:35.759579+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 688,
+  "sha256": "4e8c0719e0963d87212445547e793e7169acc0cbecbc6b4b5c7b143271d7e601"
+}

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL04-BARA/candlesticks?start_ts=1783192080&end_ts=1783192140&period_interval=1",
+  "captured_at": "2026-10-16T03:28:29.945942+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 704,
+  "sha256": "0162635ee18b2e0609a2db010915d060309bbb091c6ec2abff4fad5d0f2c138a"
+}

@@ -1,0 +1,464 @@
+"""Compare 4 sizing strategies to find which maximizes realized PnL/Sharpe.
+
+Strategies compared:
+1. Fixed           - constant target_size across all markets
+2. Volume-prop     - size proportional to pre-entry volume (no lookahead)
+3. Edge-scaled     - size proportional to per-bucket edge
+                     **LOOKAHEAD WARNING**: uses win rates from same entries
+4. L2-depth-capped - size capped by L2 order book depth
+                     Uses live L2 snapshot (current market structure assumption)
+
+Note: Kelly criterion was removed — it optimizes bankroll growth assuming
+guaranteed fills, but in limit-order market making fills are partial (10-50%
+fill rate). The actual constraint is how much we CAN get filled, not how
+much we SHOULD risk. Volume-prop and L2-depth-cap address this directly.
+
+All strategies use:
+- adverse_mode="expected" (no lookahead in fill simulation)
+- spread_adj=MAKER_SPREAD_ADJ (currently -1)
+- Dynamic per-market book_share_map from queue depth estimation
+
+Usage: uv run python -m analysis.mention.sizing_comparison
+"""
+
+import gc
+import time
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from analysis.lib.fills import simulate_fills, weekly_sharpe
+from analysis.lib.queries import load_entries, load_post_entry_trades, load_trades
+from analysis.lib.db import MAKER_SPREAD_ADJ, FILL_TOL, BUCKET_WIDTH, OUT_BASE, connect, MIN_MARKET_VOL
+from analysis.mention.queue_depth import detect_sweeps, compute_queue_depth
+from analysis.mention.multi_window_backtest import _compute_pre_entry_volume
+from analysis.lib.plotting import save_figure, setup_style
+
+OUT_DIR = OUT_BASE / "mention"
+
+# ---------------------------------------------------------------------------
+# Strategy definitions and parameter grids
+# ---------------------------------------------------------------------------
+
+FIXED_SIZES = [20, 50, 100, 200, 500]
+VOLUME_FRACTIONS = [0.01, 0.025, 0.05, 0.10]
+EDGE_BASES = [50, 100, 200]
+L2_BASES = [50, 100, 200, 500]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _build_book_share_map_scalar(depth_map, target_size):
+    """Build book_share_map for a scalar target_size."""
+    return {
+        ticker: target_size / (target_size + depth)
+        for ticker, depth in depth_map.items()
+    }
+
+
+def _build_book_share_map_dict(depth_map, per_market_sizes):
+    """Build book_share_map for a per-market target_size dict.
+
+    Uses median of per-market sizes as fallback for markets without
+    a specific size.
+    """
+    valid_sizes = [s for s in per_market_sizes.values() if s > 0]
+    median_size = float(np.median(valid_sizes)) if valid_sizes else 50.0
+
+    return {
+        ticker: per_market_sizes.get(ticker, median_size)
+                / (per_market_sizes.get(ticker, median_size) + depth)
+        for ticker, depth in depth_map.items()
+    }
+
+
+def _run_sim(entries, post_trades, target_size, book_share_map):
+    """Run a single simulation and extract summary metrics."""
+    sim = simulate_fills(
+        entries, post_trades,
+        target_size=target_size,
+        book_share_map=book_share_map,
+        adverse_mode="expected",
+        spread_adj=MAKER_SPREAD_ADJ,
+    )
+    filled = sim[sim["filled"] > 0]
+    total_pnl = sim["pnl"].sum()
+    total_filled = filled["filled"].sum() if len(filled) > 0 else 0
+    pnl_per_ct = total_pnl / total_filled if total_filled > 0 else 0.0
+    n_entered = len(sim)
+    n_markets = len(filled)
+    sharpe = (
+        weekly_sharpe(filled["pnl"], filled["close_time"])
+        if n_markets >= 5
+        else float("nan")
+    )
+
+    # Compute avg and median target size
+    if isinstance(target_size, dict):
+        sizes = [
+            target_size.get(t, 0)
+            for t in entries["ticker"]
+            if target_size.get(t, 0) > 0
+        ]
+        avg_size = float(np.mean(sizes)) if sizes else 0.0
+        median_size = float(np.median(sizes)) if sizes else 0.0
+    else:
+        avg_size = float(target_size)
+        median_size = float(target_size)
+
+    return {
+        "total_pnl": total_pnl,
+        "total_filled": total_filled,
+        "pnl_per_ct": pnl_per_ct,
+        "sharpe": sharpe,
+        "n_entered": n_entered,
+        "n_markets": n_markets,
+        "avg_size": avg_size,
+        "median_size": median_size,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+def plot_frontier(results_df):
+    """Scatter of PnL vs Sharpe, colored by strategy, sized by total_filled."""
+    setup_style()
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    strategy_colors = {
+        "fixed": "#2196F3",
+        "volume_prop": "#4CAF50",
+        "edge_scaled": "#FF9800",
+        "l2_depth_cap": "#F44336",
+    }
+
+    for strategy_name, grp in results_df.groupby("strategy"):
+        color = strategy_colors.get(strategy_name, "#9E9E9E")
+        # Scale point sizes: min 30, max 300
+        fills = grp["total_filled"].values
+        if fills.max() > 0:
+            sizes = 30 + 270 * (fills / results_df["total_filled"].max())
+        else:
+            sizes = np.full(len(fills), 50)
+
+        ax.scatter(
+            grp["total_pnl"], grp["sharpe"],
+            c=color, s=sizes, alpha=0.75,
+            edgecolors="black", linewidth=0.5,
+            label=strategy_name, zorder=3,
+        )
+
+        # Label each point with its param
+        for _, row in grp.iterrows():
+            if not np.isnan(row["sharpe"]):
+                ax.annotate(
+                    str(row["param"]),
+                    (row["total_pnl"], row["sharpe"]),
+                    textcoords="offset points", xytext=(6, 4),
+                    fontsize=6, color=color, alpha=0.9,
+                )
+
+    # Annotate best no-lookahead point and overall best separately
+    no_lookahead = {"fixed", "volume_prop", "l2_depth_cap"}
+    valid = results_df[results_df["sharpe"].notna()].copy()
+    if not valid.empty:
+        # Best no-lookahead strategy (production-safe)
+        valid_safe = valid[valid["strategy"].isin(no_lookahead)]
+        if not valid_safe.empty:
+            safe_idx = valid_safe["total_pnl"].idxmax()
+            safe = valid_safe.loc[safe_idx]
+            ax.annotate(
+                f"BEST (no lookahead): {safe['strategy']} ({safe['param']})\n"
+                f"PnL=${safe['total_pnl']:.0f}, Sharpe={safe['sharpe']:.2f}",
+                (safe["total_pnl"], safe["sharpe"]),
+                textcoords="offset points", xytext=(10, -20),
+                fontsize=8, fontweight="bold",
+                arrowprops=dict(arrowstyle="->", color="black", lw=1.5),
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="black", alpha=0.9),
+            )
+
+        # If a lookahead strategy beats it, annotate that too (as ceiling)
+        best_idx = valid["total_pnl"].idxmax()
+        best = valid.loc[best_idx]
+        if best["strategy"] not in no_lookahead:
+            ax.annotate(
+                f"CEILING (in-sample): {best['strategy']} ({best['param']})\n"
+                f"PnL=${best['total_pnl']:.0f}, Sharpe={best['sharpe']:.2f}",
+                (best["total_pnl"], best["sharpe"]),
+                textcoords="offset points", xytext=(10, 15),
+                fontsize=7, fontstyle="italic",
+                arrowprops=dict(arrowstyle="->", color="gray", lw=1),
+                bbox=dict(boxstyle="round,pad=0.3", fc="lightyellow", ec="gray", alpha=0.8),
+            )
+
+    ax.axhline(0, color="black", linewidth=0.5)
+    ax.axvline(0, color="black", linewidth=0.5)
+    ax.set_xlabel("Total PnL ($)")
+    ax.set_ylabel("Weekly Sharpe (annualized)")
+    ax.set_title("Sizing Strategy Frontier: PnL vs Sharpe\n(point size = total contracts filled)")
+    ax.legend(fontsize=9, loc="best")
+
+    save_figure(fig, OUT_DIR / "sizing_frontier.png")
+
+
+# ---------------------------------------------------------------------------
+# Console output
+# ---------------------------------------------------------------------------
+
+def print_results_table(results_df):
+    """Print all combos sorted by total_pnl descending."""
+    print("\n" + "=" * 120)
+    print("  SIZING STRATEGY COMPARISON (all combos, sorted by total PnL)")
+    print("=" * 120)
+    print(f"  {'Strategy':<16} {'Param':>12} {'Total PnL':>12} {'Filled':>10}"
+          f" {'$/ct':>10} {'Sharpe':>8} {'Entered':>8} {'Filled':>8}"
+          f" {'Avg Size':>10} {'Med Size':>10}")
+    print(f"  {'-' * 118}")
+
+    sorted_df = results_df.sort_values("total_pnl", ascending=False)
+    for _, r in sorted_df.iterrows():
+        s = f"{r['sharpe']:.2f}" if not np.isnan(r["sharpe"]) else "   N/A"
+        print(
+            f"  {r['strategy']:<16} {str(r['param']):>12}"
+            f" ${r['total_pnl']:>+10.2f}"
+            f" {r['total_filled']:>10.0f}"
+            f" ${r['pnl_per_ct']:>+.4f}"
+            f" {s:>8}"
+            f" {r['n_entered']:>8}"
+            f" {r['n_markets']:>8}"
+            f" {r['avg_size']:>10.1f}"
+            f" {r['median_size']:>10.1f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    t0 = time.time()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Phase 1: Data loading
+    # ------------------------------------------------------------------
+    print("Phase 1: Loading data...")
+    phase_t0 = time.time()
+
+    con = connect()
+    entries = load_entries(con)
+    post_trades = load_post_entry_trades(con)
+    trades = load_trades(con)
+    con.close()
+
+    if entries.empty or post_trades.empty:
+        print("  No data found. Exiting.")
+        return
+
+    print(f"  {len(entries):,} entries, {len(post_trades):,} post-entry trades,"
+          f" {len(trades):,} all trades")
+    print(f"  Phase 1 done in {time.time() - phase_t0:.1f}s")
+
+    # ------------------------------------------------------------------
+    # Phase 2: Queue depth + pre-entry volume + L2 + bucket stats
+    # ------------------------------------------------------------------
+    print("\nPhase 2: Computing queue depth, pre-entry volume, bucket stats...")
+    phase_t0 = time.time()
+
+    # 2a: Sweep detection -> queue depth -> depth_map
+    sweeps = detect_sweeps(post_trades)
+    qd = compute_queue_depth(sweeps)
+    depth_map = qd.set_index("ticker")["estimated_queue_depth"].to_dict()
+    print(f"  Queue depth: {len(depth_map):,} markets,"
+          f" median={np.median(list(depth_map.values())):.0f}")
+
+    # 2b: Pre-entry volume (no lookahead)
+    pre_entry_vol = _compute_pre_entry_volume(trades, entries)
+    print(f"  Pre-entry volume: {len(pre_entry_vol):,} markets")
+
+    # 2c: L2 snapshot
+    try:
+        l2 = pd.read_csv(OUT_DIR / "live_l2_snapshot.csv")
+        print(f"  L2 snapshot: {len(l2):,} rows")
+    except FileNotFoundError:
+        print("  WARNING: live_l2_snapshot.csv not found. L2-depth-capped strategy"
+              " will be skipped.")
+        l2 = None
+
+    # 2d: Per-bucket win rates (for edge-scaled and Kelly strategies)
+    # LOOKAHEAD WARNING: uses entries["result"] grouped by bucket.
+    # This is in-sample. Document clearly in output.
+    entries_copy = entries.copy()
+    entries_copy["bucket_lo"] = (
+        entries_copy["entry_no_price"].astype(int) // BUCKET_WIDTH
+    ) * BUCKET_WIDTH
+    bucket_stats = entries_copy.groupby("bucket_lo").agg(
+        n=("result", "count"),
+        wins=("result", lambda x: (x == "no").sum()),
+    )
+    bucket_stats["win_rate"] = bucket_stats["wins"] / bucket_stats["n"]
+    bucket_stats["edge"] = (
+        bucket_stats["win_rate"]
+        - (bucket_stats.index + BUCKET_WIDTH / 2) / 100.0
+    )
+    print(f"  Bucket stats: {len(bucket_stats)} buckets")
+
+    # Free trades (only needed for pre-entry volume)
+    del trades
+    gc.collect()
+
+    print(f"  Phase 2 done in {time.time() - phase_t0:.1f}s")
+
+    # ------------------------------------------------------------------
+    # Phase 3: Run all 5 strategies
+    # ------------------------------------------------------------------
+    print("\nPhase 3: Running 4 sizing strategy simulations...")
+    phase_t0 = time.time()
+    all_results = []
+
+    # ---- Strategy 1: Fixed ----
+    print("  Strategy 1/4: Fixed sizing...")
+    for target_size in FIXED_SIZES:
+        bsm = _build_book_share_map_scalar(depth_map, target_size)
+        metrics = _run_sim(entries, post_trades, target_size, bsm)
+        all_results.append({
+            "strategy": "fixed",
+            "param": target_size,
+            **metrics,
+        })
+    print(f"    {len(FIXED_SIZES)} combos done")
+
+    # ---- Strategy 2: Volume-proportional ----
+    print("  Strategy 2/4: Volume-proportional sizing...")
+    for vf in VOLUME_FRACTIONS:
+        ts_dict = {
+            ticker: max(20, min(int(pre_entry_vol.get(ticker, 0) * vf), 1000))
+            for ticker in entries["ticker"]
+        }
+        bsm = _build_book_share_map_dict(depth_map, ts_dict)
+        metrics = _run_sim(entries, post_trades, ts_dict, bsm)
+        all_results.append({
+            "strategy": "volume_prop",
+            "param": vf,
+            **metrics,
+        })
+    print(f"    {len(VOLUME_FRACTIONS)} combos done")
+
+    # ---- Strategy 3: Edge-scaled ----
+    # LOOKAHEAD WARNING: Uses win rates from same entries. In-sample only.
+    print("  Strategy 3/4: Edge-scaled sizing (LOOKAHEAD: in-sample win rates)...")
+    edge_values = bucket_stats["edge"].values
+    median_edge = float(np.median(edge_values))
+    if median_edge <= 0:
+        # Fallback: use mean of positive edges
+        pos_edges = edge_values[edge_values > 0]
+        median_edge = float(np.mean(pos_edges)) if len(pos_edges) > 0 else 0.01
+    print(f"    median_edge = {median_edge:.4f}")
+
+    for base in EDGE_BASES:
+        ts_dict = {}
+        for ticker in entries["ticker"]:
+            ep = int(entries.loc[entries["ticker"] == ticker, "entry_no_price"].iloc[0])
+            bl = (ep // BUCKET_WIDTH) * BUCKET_WIDTH
+            if bl in bucket_stats.index:
+                edge = bucket_stats.loc[bl, "edge"]
+            else:
+                edge = median_edge
+            ts_dict[ticker] = int(base * np.clip(edge / median_edge, 0.5, 2.0))
+
+        bsm = _build_book_share_map_dict(depth_map, ts_dict)
+        metrics = _run_sim(entries, post_trades, ts_dict, bsm)
+        all_results.append({
+            "strategy": "edge_scaled",
+            "param": base,
+            **metrics,
+        })
+    print(f"    {len(EDGE_BASES)} combos done")
+
+    # ---- Strategy 4: L2-depth-capped ----
+    if l2 is not None:
+        print("  Strategy 4/4: L2-depth-capped sizing"
+              " (current market structure assumption)...")
+
+        # Filter NO_BID rows (price_cents is already the NO price)
+        no_book = l2[l2["side"] == "NO_BID"].copy()
+        no_book["no_price_cents"] = no_book["price_cents"]
+
+        # Per ticker, sum NO quantity
+        l2_depth_by_ticker = no_book.groupby("ticker")["quantity"].sum().to_dict()
+
+        # Per bucket: median L2 depth
+        entries_with_l2 = entries.copy()
+        entries_with_l2["l2_depth"] = entries_with_l2["ticker"].map(l2_depth_by_ticker)
+        entries_with_l2["bucket_lo"] = (
+            entries_with_l2["entry_no_price"].astype(int) // BUCKET_WIDTH
+        ) * BUCKET_WIDTH
+        bucket_l2_depth = entries_with_l2.groupby("bucket_lo")["l2_depth"].median()
+
+        for base in L2_BASES:
+            ts_dict = {}
+            for ticker in entries["ticker"]:
+                ep = int(
+                    entries.loc[entries["ticker"] == ticker, "entry_no_price"].iloc[0]
+                )
+                bl = (ep // BUCKET_WIDTH) * BUCKET_WIDTH
+
+                # Per-ticker L2 depth if available, else median for bucket
+                if ticker in l2_depth_by_ticker:
+                    bucket_depth = l2_depth_by_ticker[ticker]
+                elif bl in bucket_l2_depth.index and not np.isnan(bucket_l2_depth[bl]):
+                    bucket_depth = bucket_l2_depth[bl]
+                else:
+                    bucket_depth = 0
+
+                if bucket_depth > 0:
+                    ts_dict[ticker] = min(base, int(bucket_depth * 0.15))
+                else:
+                    ts_dict[ticker] = base  # no L2 data: use base as-is
+
+            bsm = _build_book_share_map_dict(depth_map, ts_dict)
+            metrics = _run_sim(entries, post_trades, ts_dict, bsm)
+            all_results.append({
+                "strategy": "l2_depth_cap",
+                "param": base,
+                **metrics,
+            })
+        print(f"    {len(L2_BASES)} combos done")
+    else:
+        print("  Strategy 4/4: L2-depth-capped SKIPPED (no L2 snapshot file)")
+
+    print(f"  Phase 3 done in {time.time() - phase_t0:.1f}s")
+
+    # ------------------------------------------------------------------
+    # Phase 4: Assemble results and output
+    # ------------------------------------------------------------------
+    print("\nPhase 4: Saving outputs...")
+    phase_t0 = time.time()
+
+    results_df = pd.DataFrame(all_results)
+
+    # CSV
+    results_df.to_csv(OUT_DIR / "sizing_comparison.csv", index=False)
+    print(f"  Saved sizing_comparison.csv ({len(results_df)} rows)")
+
+    # Console table
+    print_results_table(results_df)
+
+    # Plot
+    print("\n  Generating sizing frontier plot...")
+    plot_frontier(results_df)
+    print(f"  Saved sizing_frontier.png")
+
+    print(f"  Phase 4 done in {time.time() - phase_t0:.1f}s")
+    print(f"\nTotal runtime: {time.time() - t0:.0f}s")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXSHAQMENTION&limit=1000",
+  "captured_at": "2026-10-16T03:28:06.466870+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 25605,
+  "sha256": "4b20b1fb7813e5d14302e3264f31954d94b4a2688ca93ac5e5cfb57dca3dd35d"
+}

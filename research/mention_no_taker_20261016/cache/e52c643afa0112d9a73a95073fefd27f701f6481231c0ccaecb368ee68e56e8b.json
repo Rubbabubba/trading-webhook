@@ -1,0 +1,9 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXTRUMPMENTION-26JUL07-NATO/candlesticks?start_ts=1783348740&end_ts=1783348800&period_interval=1",
+  "captured_at": "2026-10-16T03:28:17.005146+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 200,
+  "bytes": 58,
+  "sha256": "63b63cf22ed32d15dedac0859f0e578f1d2c42a9c4f5e41c048516fb3f741eb2"
+}
