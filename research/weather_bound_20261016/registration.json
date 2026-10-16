@@ -1,0 +1,123 @@
+{
+  "id": "weather_six_hour_high_bound_data_qualification_v1_20261016",
+  "registered_at": "2026-10-16T03:02:24.894381+00:00",
+  "hypothesis": "A correctly mapped six-hour ASOS maximum wholly inside the NWS local-standard climate day, conservatively reduced by2F, may provide a reliable lower bound on the final reported daily high. This is a data-qualification hypothesis, not a profitable trading claim.",
+  "dates": {
+    "start": "2026-07-01",
+    "end": "2026-08-31",
+    "planned_city_days": 186,
+    "excluded_prior_inspected": [
+      {
+        "station": "KLAX",
+        "date": "2026-07-18"
+      },
+      {
+        "station": "KLAX",
+        "date": "2026-07-19"
+      }
+    ],
+    "uninspected_city_days": 184
+  },
+  "stations": [
+    {
+      "station": "KNYC",
+      "iem": "NYC",
+      "network": "NY_ASOS",
+      "series": "KXHIGHNY",
+      "standard_utc_offset_hours": -5,
+      "rules_keywords": [
+        "central park",
+        "national weather service"
+      ]
+    },
+    {
+      "station": "KMDW",
+      "iem": "MDW",
+      "network": "IL_ASOS",
+      "series": "KXHIGHCHI",
+      "standard_utc_offset_hours": -6,
+      "rules_keywords": [
+        "midway",
+        "national weather service"
+      ]
+    },
+    {
+      "station": "KLAX",
+      "iem": "LAX",
+      "network": "CA_ASOS",
+      "series": "KXHIGHLAX",
+      "standard_utc_offset_hours": -8,
+      "rules_keywords": [
+        "los angeles",
+        "national weather service"
+      ],
+      "additional_station_evidence": [
+        "los angeles international",
+        "lax"
+      ]
+    }
+  ],
+  "observations": {
+    "source": "Iowa Environmental Mesonet raw routine/SPECI METAR archive, original raw text retained",
+    "query_period": [
+      "2026-07-01T00:00:00Z",
+      "2026-09-02T00:00:00Z"
+    ],
+    "report_type": [
+      3,
+      4
+    ],
+    "field": "metar",
+    "reject": [
+      "COR reports",
+      "maintenance dollar flag",
+      "conflicting raw reports at same station/valid timestamp",
+      "missing/ambiguous six-hour group",
+      "CSV/raw timestamp or station mismatch"
+    ],
+    "six_hour_group": "exactly one standalone1snTTT afterRMK; signedtenthsC, nearestwholeF must be within0.100001F",
+    "synoptic_window": "Raw report must be within15minutes of nominal00/06/12/18UTC; entire nominal-6h-15m through nominal+15m interval must be inside climate day",
+    "bound": "recovered integer six-hour maximum minus2F",
+    "assumed_availability": "nominal report end plus60minutes, unverified historical dissemination, never use valid timestamp as actual receipt"
+  },
+  "decision": {
+    "utc_hours": [
+      13,
+      19,
+      1
+    ],
+    "one_am_is_following_utc_date": true,
+    "availability_lag_minutes": 60,
+    "selection": "First fixed decision time with any provably resolved listed binary contract using available lower bound; closest crossed integer outcome boundary, then ticker/side tie order; one candidate/city-day; no prices or outcomes supplied to selection",
+    "metadata": "Strict binary strike_type machine bounds, exact yes_sub_title integer interval must agree; correct station rules/open/close required; incomplete ladders do not reject individually resolvable contracts"
+  },
+  "evaluation": {
+    "numeric_final": "Finite whole-F expiration_value and settlement_value_dollars agree with official YES/NO label; missing stays unverified",
+    "primary": "Whether recovered lower bound exceeds final high; every such contradiction is retained and rejects locked-bound interpretation",
+    "secondary": "Selected logical YES/NO outcome label/numeric agreement; no PnL, quote, order or fill inference"
+  },
+  "success": {
+    "minimum_complete_city_days": 150,
+    "minimum_distinct_dates": 45,
+    "minimum_complete_days_per_station": 40,
+    "minimum_stations": 3,
+    "maximum_numeric_bound_contradictions": 0,
+    "does_not_qualify_demo_or_live": true
+  },
+  "limits": {
+    "max_requests": 220,
+    "minimum_request_interval_seconds": 0.5,
+    "maximum_response_bytes": 4000000
+  },
+  "automatic_rejection": "Any independently numerically verified bound contradiction rejects mechanism version; never increase buffer or remove losing cases after inspection. Missing/partial station/rule/settlement data is visible and blocks data-qualification success.",
+  "research_basis": [
+    "https://mesonet.agron.iastate.edu/onsite/news.phtml?id=1469",
+    "https://www.weather.gov/lot/weather_observations_faq"
+  ],
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "profitability_proven": false,
+  "frozen_V14_unchanged": true
+}

@@ -1,0 +1,344 @@
+{
+  "schema": "cached_weather_identity_coverage_v1",
+  "captured_at": "2026-10-16T02:53:51.692623+00:00",
+  "scope": "Already inspected first34files; identities/timestamps only, no new strategy holdout",
+  "counts": {
+    "source_lines": 19539905,
+    "weather_book_rows": 21182
+  },
+  "weather_tickers": {
+    "KXHIGHLAX-26JUL18-B72.5": {
+      "rows": 99,
+      "first_at": 1784427892.415302,
+      "last_at": 1784431700.3419838
+    },
+    "KXHIGHLAX-26JUL18-B74.5": {
+      "rows": 114,
+      "first_at": 1784427892.4154444,
+      "last_at": 1784431850.9418898
+    },
+    "KXHIGHLAX-26JUL18-B76.5": {
+      "rows": 100,
+      "first_at": 1784427892.4155955,
+      "last_at": 1784431851.1452253
+    },
+    "KXHIGHLAX-26JUL18-B78.5": {
+      "rows": 149,
+      "first_at": 1784427892.4157066,
+      "last_at": 1784431859.855991
+    },
+    "KXHIGHLAX-26JUL18-T72": {
+      "rows": 93,
+      "first_at": 1784427892.4158227,
+      "last_at": 1784431857.8114934
+    },
+    "KXHIGHLAX-26JUL18-T79": {
+      "rows": 60,
+      "first_at": 1784427892.4159622,
+      "last_at": 1784432331.8577101
+    },
+    "KXHIGHLAX-26JUL19-B73.5": {
+      "rows": 475,
+      "first_at": 1784427892.4161067,
+      "last_at": 1784431810.0765724
+    },
+    "KXHIGHLAX-26JUL19-B75.5": {
+      "rows": 4692,
+      "first_at": 1784427892.4162734,
+      "last_at": 1784431853.845214
+    },
+    "KXHIGHLAX-26JUL19-B77.5": {
+      "rows": 7941,
+      "first_at": 1784427892.4164832,
+      "last_at": 1784431854.3034735
+    },
+    "KXHIGHLAX-26JUL19-B79.5": {
+      "rows": 5023,
+      "first_at": 1784427892.4166813,
+      "last_at": 1784431845.9611073
+    },
+    "KXHIGHLAX-26JUL19-T73": {
+      "rows": 117,
+      "first_at": 1784427892.4168456,
+      "last_at": 1784431811.6213279
+    },
+    "KXHIGHLAX-26JUL19-T80": {
+      "rows": 2319,
+      "first_at": 1784427892.4170082,
+      "last_at": 1784431865.9342396
+    }
+  },
+  "weather_universe_tickers": [
+    "KXHIGHLAX-26JUL18-B72.5",
+    "KXHIGHLAX-26JUL18-B74.5",
+    "KXHIGHLAX-26JUL18-B76.5",
+    "KXHIGHLAX-26JUL18-B78.5",
+    "KXHIGHLAX-26JUL18-T72",
+    "KXHIGHLAX-26JUL18-T79",
+    "KXHIGHLAX-26JUL19-B73.5",
+    "KXHIGHLAX-26JUL19-B75.5",
+    "KXHIGHLAX-26JUL19-B77.5",
+    "KXHIGHLAX-26JUL19-B79.5",
+    "KXHIGHLAX-26JUL19-T73",
+    "KXHIGHLAX-26JUL19-T80"
+  ],
+  "registry_series": [
+    "KXHIGHNY",
+    "KXHIGHCHI",
+    "KXHIGHMIA",
+    "KXHIGHLAX",
+    "KXHIGHPHIL",
+    "KXHIGHAUS",
+    "KXHIGHDEN",
+    "KXHIGHTATL",
+    "KXHIGHTBOS",
+    "KXHIGHTDAL",
+    "KXHIGHTDC",
+    "KXHIGHTEWR",
+    "KXHIGHTHOU",
+    "KXHIGHTLV",
+    "KXHIGHTMIN",
+    "KXHIGHTNOLA",
+    "KXHIGHTOKC",
+    "KXHIGHTPHX",
+    "KXHIGHTSAN",
+    "KXHIGHTSATX",
+    "KXHIGHTSDF",
+    "KXHIGHTSEA",
+    "KXHIGHTSFO",
+    "KXHIGHTTTN",
+    "KXLOWTATL",
+    "KXLOWTAUS",
+    "KXLOWTBOS",
+    "KXLOWTCHI",
+    "KXLOWTDAL",
+    "KXLOWTDC",
+    "KXLOWTDEN",
+    "KXLOWTEWR",
+    "KXLOWTHOU",
+    "KXLOWTLAX",
+    "KXLOWTLV",
+    "KXLOWTMIA",
+    "KXLOWTMIN",
+    "KXLOWTNOLA",
+    "KXLOWTNYC",
+    "KXLOWTOKC",
+    "KXLOWTPHIL",
+    "KXLOWTPHX",
+    "KXLOWTSAN",
+    "KXLOWTSATX",
+    "KXLOWTSDF",
+    "KXLOWTSEA",
+    "KXLOWTSFO",
+    "KXLOWTTTN"
+  ],
+  "files": [
+    {
+      "file": 1,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T022023.251189Z_ip-172-31-3-129_04de9e.jsonl.gz",
+      "bytes": 26009864,
+      "sha256": "2d95103808c22e7284f722f4edf66b1cc0194b519f363918c5199fff7df9951a"
+    },
+    {
+      "file": 2,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T022523.296675Z_ip-172-31-3-129_f9616e.jsonl.gz",
+      "bytes": 67944837,
+      "sha256": "bf5b66483b259275ef4de242ea94a03f098a4856dfecc3277ee8912e0bf1f314"
+    },
+    {
+      "file": 3,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T022802.195407Z_ip-172-31-3-129_5460e1.jsonl.gz",
+      "bytes": 69106452,
+      "sha256": "50a3714759d2d7e8ca9b7e64cfd449e31e90aa6f0f667014050485fd04ad3d41"
+    },
+    {
+      "file": 4,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T023018.532199Z_ip-172-31-3-129_81630c.jsonl.gz",
+      "bytes": 69139698,
+      "sha256": "242a2f393849fa2c073a26804dc4e83e9844b610eb681bd5198dad658a0555de"
+    },
+    {
+      "file": 5,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T023240.256013Z_ip-172-31-3-129_98b415.jsonl.gz",
+      "bytes": 68117533,
+      "sha256": "0c1cbb33bb05287ab5932652318b338fa94367444b9fd0bd72ffdfce4eb71840"
+    },
+    {
+      "file": 6,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T023456.569561Z_ip-172-31-3-129_50db72.jsonl.gz",
+      "bytes": 59965899,
+      "sha256": "5b1605514724e7823152008cfd70f8c86b893d6778cf466314c9036c3d6a6d3c"
+    },
+    {
+      "file": 7,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T023643.137774Z_ip-172-31-3-129_6c297a.jsonl.gz",
+      "bytes": 68889918,
+      "sha256": "b2db6743a491d9a91a59b082cffd53add073a07e05c494b9c66e4d98882725dc"
+    },
+    {
+      "file": 8,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T023842.827028Z_ip-172-31-3-129_e1d9fc.jsonl.gz",
+      "bytes": 67241627,
+      "sha256": "6637b8ea90bc23cc9399a1d521c36927811a4ac4030efdf97bda192d1702c040"
+    },
+    {
+      "file": 9,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T024048.345029Z_ip-172-31-3-129_44c640.jsonl.gz",
+      "bytes": 69186152,
+      "sha256": "ed37d8242a466e04a2dbf6ea5ea6d501e83c8292a638e43e375881f32fd82b74"
+    },
+    {
+      "file": 10,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T024249.072705Z_ip-172-31-3-129_abce9a.jsonl.gz",
+      "bytes": 69522651,
+      "sha256": "26d45a6e16d769f3438ddeacb4021cb1ccbd88b7d54679b2f666a55f7908478c"
+    },
+    {
+      "file": 11,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T024448.218443Z_ip-172-31-3-129_633c3b.jsonl.gz",
+      "bytes": 67410745,
+      "sha256": "72407969ced6ff377461ca4cb1634af8088cb98c3dfb997216853f2b7229136d"
+    },
+    {
+      "file": 12,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T024651.836112Z_ip-172-31-3-129_efc183.jsonl.gz",
+      "bytes": 60218701,
+      "sha256": "f37399b6094149dca6849c493d758e96c6b6875693be43815f99ae9ddf3c9f4b"
+    },
+    {
+      "file": 13,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T024830.888776Z_ip-172-31-3-129_bb4f2e.jsonl.gz",
+      "bytes": 68686460,
+      "sha256": "2efe7b31b8df1fb13885bbc534a72795b8d5c82abb65e2e73ee2a89b71ea8e89"
+    },
+    {
+      "file": 14,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T025023.747132Z_ip-172-31-3-129_79e323.jsonl.gz",
+      "bytes": 68678878,
+      "sha256": "e4584bdb3290ba2757b6cceb78fc7db9351cb1fe97170dc42751bf2945c57866"
+    },
+    {
+      "file": 15,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T025238.694036Z_ip-172-31-3-129_92508b.jsonl.gz",
+      "bytes": 67939864,
+      "sha256": "16dcbf5c40911e2b0a255c51c41d11388d7322a4f0164848d687bbbd60f5d704"
+    },
+    {
+      "file": 16,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T025427.641378Z_ip-172-31-3-129_1955e5.jsonl.gz",
+      "bytes": 68370914,
+      "sha256": "fb12d7cfabfcbfbab4c815234788ae05439903abbb1c56c24b0d02e007d2002c"
+    },
+    {
+      "file": 17,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T025621.581139Z_ip-172-31-3-129_bf9c12.jsonl.gz",
+      "bytes": 66260479,
+      "sha256": "eea3c4d5e14f207863d377e669827b77ab86c99c0e8df38e87383ca88e16b04c"
+    },
+    {
+      "file": 18,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T025834.750326Z_ip-172-31-3-129_bb3449.jsonl.gz",
+      "bytes": 60064081,
+      "sha256": "72c5a00df0f5c6a7c66435a94084578043036de3cfb537ec6cb25b850afd95f2"
+    },
+    {
+      "file": 19,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T030024.879178Z_ip-172-31-3-129_1a9da8.jsonl.gz",
+      "bytes": 70585115,
+      "sha256": "60fd367bc870b12fd25a75447a78905e053ffc902d805abca7e222171541f49c"
+    },
+    {
+      "file": 20,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T030242.411151Z_ip-172-31-3-129_7e4b80.jsonl.gz",
+      "bytes": 69375274,
+      "sha256": "3fb82aa2b195e5d9f8001f098e7034890f695fdeb12232e359cf458e8b42a7bb"
+    },
+    {
+      "file": 21,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T030503.057391Z_ip-172-31-3-129_148079.jsonl.gz",
+      "bytes": 68033436,
+      "sha256": "de053b1bdf27e7854b55a4ce7bd38e8485a759c32c155664bd6ee6c6e33a8234"
+    },
+    {
+      "file": 22,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T030727.272158Z_ip-172-31-3-129_27a39a.jsonl.gz",
+      "bytes": 66517961,
+      "sha256": "526c37248247f668064e4eab263e6d37746ac3ef1e2564a06b292aed5f03cedd"
+    },
+    {
+      "file": 23,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T030954.635514Z_ip-172-31-3-129_c838ea.jsonl.gz",
+      "bytes": 59965276,
+      "sha256": "ea85185f2253e5f57886ccd915e7c8bdffb387cdcf1fe8a755768735afce7968"
+    },
+    {
+      "file": 24,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T031131.795031Z_ip-172-31-3-129_a84e64.jsonl.gz",
+      "bytes": 70852818,
+      "sha256": "f937cadabed3cf1a8a742de5dce6b5f5a4cb3ac4209b14e9c8fd1efc85caa657"
+    },
+    {
+      "file": 25,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T031347.518567Z_ip-172-31-3-129_453f0d.jsonl.gz",
+      "bytes": 69637435,
+      "sha256": "9a8a6e9895eb8598a606732142e0da029fd042100d8dac1f762fc19e8b52e4d5"
+    },
+    {
+      "file": 26,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T031606.419107Z_ip-172-31-3-129_94a4a9.jsonl.gz",
+      "bytes": 68655989,
+      "sha256": "9701797ebd8c3ca6241d295329c84edbf1054b52af14292382f5ef59dd6b00c7"
+    },
+    {
+      "file": 27,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T031823.823490Z_ip-172-31-3-129_753a65.jsonl.gz",
+      "bytes": 67810309,
+      "sha256": "bc46980494cf8d8b90b3c10d3bb551d5d30a5e10d81ef163e21175007b6af128"
+    },
+    {
+      "file": 28,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T032057.498127Z_ip-172-31-3-129_9d1f4b.jsonl.gz",
+      "bytes": 58964848,
+      "sha256": "e8a6f0cda61e2ed50923feecaf47fb42dce497fa53e5bb0c6ec337bc87b255d9"
+    },
+    {
+      "file": 29,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T032247.941043Z_ip-172-31-3-129_bed8cb.jsonl.gz",
+      "bytes": 65332327,
+      "sha256": "7b1c52e729d2d01d14438a94b902f3600bdca89573d87a94a4b2d0abb2ff204f"
+    },
+    {
+      "file": 30,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T032507.389089Z_ip-172-31-3-129_a47771.jsonl.gz",
+      "bytes": 66693319,
+      "sha256": "bc4136e2f22eccb5e00c5ac34ae5ca1d65078ae342a3ba16cdf28d6e7375175e"
+    },
+    {
+      "file": 31,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T032747.297891Z_ip-172-31-3-129_ec8af7.jsonl.gz",
+      "bytes": 66363884,
+      "sha256": "168edca8c0cfd739c6a186b4538e0d6f707fc8d84958e5ee6340289c44cdf1a4"
+    },
+    {
+      "file": 32,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T033114.190355Z_ip-172-31-3-129_3c3b35.jsonl.gz",
+      "bytes": 15948404,
+      "sha256": "80dbb861bb94045474dabacc889c52e6db5bfa101afe34a8839191de8aa8d166"
+    },
+    {
+      "file": 33,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T033614.226016Z_ip-172-31-3-129_a82a7b.jsonl.gz",
+      "bytes": 1651230,
+      "sha256": "0d18fb5d22d7ae10688142f81a89b69f34d96bd1a606c996da5645cbf61b3727"
+    },
+    {
+      "file": 34,
+      "path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\research\\receipt-depth-cache-20261015\\kalshi_orderbooks_20260719T033650.530314Z_ip-172-31-3-129_f61a97.jsonl.gz",
+      "bytes": 19122720,
+      "sha256": "66fa1932ceb52ad1c6998bacf5bb2c79dcce2ee0fcc510f2362de29a7058ab68"
+    }
+  ],
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "profitability_proven": false
+}
