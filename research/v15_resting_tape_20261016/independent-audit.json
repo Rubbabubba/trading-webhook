@@ -1,0 +1,14 @@
+{
+  "schema": "v15_resting_independent_audit_v2",
+  "review_sha256": "b347f728c72f387554cdd42173b0f65584eb43a6f46b3ed330fb95519846ab33",
+  "selected_events_checked": 76,
+  "causal_source_views_checked": 64999,
+  "raw_tape_pages_checked": 71,
+  "public_tape_rows": 109,
+  "conditional_paths_checked": 2,
+  "ambiguous_trade_paths_checked": 11,
+  "result": "passed_internal_consistency_not_profit_or_own_fill_certification",
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "profitability_proven": false
+}
