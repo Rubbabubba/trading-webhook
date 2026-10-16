@@ -1,0 +1,38 @@
+{
+  "schema": "continuing_capture_independent_integrity_audit_v1",
+  "audited_at": "2026-10-16T03:53:07.474572+00:00",
+  "source_protocol_sha256": "18676f9903040869c3991dbaa52cc7cd2d3054dd4d15fcf64aa628a03c2f3d57",
+  "source_started_at": 1792114963.0758681,
+  "blobs_checked": 205,
+  "raw_bytes_checked": 187182,
+  "quotes_checked": 686,
+  "usable_quotes": 392,
+  "events": 110,
+  "quotes_after_returned_close": 1,
+  "polls_checked": 82,
+  "pages_checked": 82,
+  "public_trades_checked": 37,
+  "trade_events": 7,
+  "trades_with_prior_quote_at_most_seconds": {
+    "2": 0,
+    "5": 0,
+    "30": 37
+  },
+  "taker_sides": {
+    "yes": 21,
+    "no": 16
+  },
+  "block_flags": {
+    "False": 37
+  },
+  "known_limitations": [
+    "Only selected30-second windows; not continuous coverage",
+    "Second-resolution execution clocks can overlap fractional receipt boundary",
+    "Displayed prior depth and public trades do not establish our queue or fill",
+    "No fees, strategy returns, settlements or executable activation assessed"
+  ],
+  "result": "source_integrity_consistent_only",
+  "profitability_proven": false,
+  "actual_orders": 0,
+  "actual_fills": 0
+}

@@ -1,0 +1,13 @@
+{
+  "schema": "continuing_capture_nearest_prior_overlap_v1",
+  "source_quote_cutoff": 1792122787.474572,
+  "trades": 37,
+  "nearest_prior_quote_age_at_most_seconds": {
+    "2": 0,
+    "5": 0,
+    "30": 37
+  },
+  "no_prior_usable_quote": 0,
+  "actual_fills": 0,
+  "profitability_proven": false
+}

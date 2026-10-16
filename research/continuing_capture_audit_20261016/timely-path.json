@@ -1,0 +1,124 @@
+{
+  "schema": "postrepair_genuine_timely_path_v1",
+  "now": 1792122945.4118562,
+  "signal_id": 70,
+  "signal_at": 1792122602.190212,
+  "v15_marks": [
+    [
+      5,
+      1792122611.775655,
+      "{\"challenger\": {\"gross_cents\": \"2\", \"stressed_cents\": \"0\"}, \"frozen_v10\": {\"gross_cents\": \"0\", \"no_trade\": true, \"stressed_cents\": \"0\"}, \"frozen_v12\": {\"gross_cents\": \"4\", \"stressed_cents\": \"2\"}}"
+    ],
+    [
+      30,
+      1792122637.087872,
+      "{\"challenger\": {\"gross_cents\": \"2\", \"stressed_cents\": \"0\"}, \"frozen_v10\": {\"gross_cents\": \"0\", \"no_trade\": true, \"stressed_cents\": \"0\"}, \"frozen_v12\": {\"gross_cents\": \"4\", \"stressed_cents\": \"2\"}}"
+    ],
+    [
+      300,
+      1792122904.44195,
+      "{\"challenger\": {\"gross_cents\": \"2\", \"stressed_cents\": \"0\"}, \"frozen_v10\": {\"gross_cents\": \"0\", \"no_trade\": true, \"stressed_cents\": \"0\"}, \"frozen_v12\": {\"gross_cents\": \"4\", \"stressed_cents\": \"2\"}}"
+    ]
+  ],
+  "timely_marks": [
+    [
+      5,
+      1792122611.775655,
+      "{\"gross_cents\": \"4\", \"stressed_cents\": \"2\"}"
+    ],
+    [
+      30,
+      1792122637.087872,
+      "{\"gross_cents\": \"4\", \"stressed_cents\": \"2\"}"
+    ],
+    [
+      300,
+      1792122904.44195,
+      "{\"gross_cents\": \"4\", \"stressed_cents\": \"2\"}"
+    ]
+  ],
+  "worker": {
+    "environment": "demo",
+    "execution_policy_id": "v9_retired_after_8_losses_20260924",
+    "phase": "running",
+    "production_execution_enabled": false,
+    "revision": "bbbb166f49ec4433206e7d5416def1de04825ad1",
+    "status_age_seconds": 0,
+    "status_at": "2026-10-16T03:55:24.884053+00:00",
+    "strategy_execution_enabled": false,
+    "strategy_id": "stable_balanced_maker_v9",
+    "v12_demo_trial_enabled": true,
+    "v12_demo_trial_policy_id": "v12_one_contract_demo_trial_20261001",
+    "v12_fillability_trial_enabled": true,
+    "v12_fillability_trial_policy_id": "v12_one_tick_fillability_trial_20261002"
+  },
+  "timely_summary": {
+    "execution_enabled": false,
+    "fill_assumed": false,
+    "legacy_warning": "Legacy markout labels do not guarantee horizon timing. Preserve originals; use explicit timestamp audits and separate prospective measurements.",
+    "maximum_lateness_seconds": 5,
+    "promotion_ready": false,
+    "schema": "kalshi_timely_shadow_measurement_v1",
+    "started_at": 1792098514.6670554,
+    "strategies": {
+      "v10": {
+        "complete_signals": 0,
+        "independent_complete_events": 0,
+        "signals": 0
+      },
+      "v11": {
+        "complete_signals": 0,
+        "independent_complete_events": 0,
+        "signals": 0
+      },
+      "v12": {
+        "complete_signals": 1,
+        "independent_complete_events": 1,
+        "signals": 9
+      }
+    }
+  },
+  "candidate_review": {
+    "blockers": [
+      "minimum_complete_signals",
+      "minimum_independent_events",
+      "positive_cluster_bound_every_horizon",
+      "separate_demo_trial_registration_required",
+      "actual_fills_and_fees_missing",
+      "operational_execution_verification_missing"
+    ],
+    "candidate": "kalshi_high_edge_two_tick_v15",
+    "complete_signals": 2,
+    "exclusion_reasons_nonexclusive": {
+      "missing_horizon": 68
+    },
+    "execution_enabled": false,
+    "execution_evidence": {
+      "actual_v15_fees_verified": false,
+      "actual_v15_fills_verified": false,
+      "executable_exit_path_verified": false,
+      "queue_fill_model_verified": false
+    },
+    "fill_assumed": false,
+    "full_review_reference": "status.json#evidence.selected_candidate_release_review",
+    "generated_at": "2026-10-16T03:55:24.785729+00:00",
+    "incomplete_or_invalid_signals": 68,
+    "independent_complete_events": 2,
+    "input_rows_sha256": "caf28b1557356737b9a788261aa76f47733577cc8054e2c2032de7e9c853d0ea",
+    "live_promotion_ready": false,
+    "original_quote_gates": {
+      "minimum_complete_signals": false,
+      "minimum_independent_events": false,
+      "positive_cluster_bound_every_horizon": false,
+      "positive_stressed_quote_net_every_horizon": true
+    },
+    "original_quote_screen_passed": false,
+    "profitability_proven": false,
+    "release_decision": "blocked_insufficient_or_failed_evidence",
+    "review_implementation_sha256": "fa1fbc122b423f137f72faf1c78b2835b75561602d8e47caf9c74c9127a97386",
+    "review_registration_sha256": "92265fb15c3ea523e26b37c0ff41ac9d93111677e96074be561b449c41871f43",
+    "schema": "kalshi_v15_release_review_v1",
+    "signals": 70,
+    "unused_new_holdout_supplied": false
+  }
+}

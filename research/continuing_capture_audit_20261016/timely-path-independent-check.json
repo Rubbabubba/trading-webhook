@@ -1,0 +1,22 @@
+{
+  "schema": "independent_timely_path_arithmetic_audit_v1",
+  "source_sha256": "1448b2a456df79e4d018f39f9a311b19ff84655392811a4cdc8aa0d060cd8981",
+  "lateness_seconds": {
+    "5": 4.585443019866943,
+    "30": 4.89766001701355,
+    "300": 2.2517380714416504
+  },
+  "all_frozen_timing_windows_pass": true,
+  "v15_stressed_quote_cents": {
+    "5": "0",
+    "30": "0",
+    "300": "0"
+  },
+  "timely_v12_stressed_quote_cents": {
+    "5": "2",
+    "30": "2",
+    "300": "2"
+  },
+  "actual_fills_verified": false,
+  "profitability_proven": false
+}
