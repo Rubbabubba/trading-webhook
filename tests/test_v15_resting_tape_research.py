@@ -1,5 +1,7 @@
 import pytest
 from research.v15_resting_tape_20261016.model import classify,exit_observation,summarize
+from research.v15_resting_tape_20261016.tape import Tape
+from datetime import datetime,timezone
 
 
 A=dict(ticker='T',activation_at=1001,cancel_request_at=1061,cancel_ack_at=1062)
@@ -72,3 +74,54 @@ def test_missing_or_late_exit_cannot_be_replaced_by_favorable_quote():
     p=classify(A,S,V,[trade()],complete=True)
     assert exit_observation(p,5,None,1015)['state']=='unresolved_exit'
     assert exit_observation(p,5,V,1020.001)['state']=='unresolved_exit'
+
+
+def raw_trade(identity='x',price='.40'):
+    from decimal import Decimal
+    return dict(trade_id=identity,ticker='T',count_fp='1.00',yes_price_dollars=price,
+        no_price_dollars=str(1-Decimal(price)),taker_outcome_side='no',
+        taker_book_side='ask',taker_side='no',is_block_trade=False,
+        created_time=datetime.fromtimestamp(1010,timezone.utc).isoformat())
+
+
+def test_tape_pagination_dedup_and_exact_cache_reuse(tmp_path):
+    calls=[]
+    def reader(params):
+        calls.append(params)
+        return dict(trades=[raw_trade()]+([raw_trade('y')] if params.get('cursor') else []),
+                    cursor='' if params.get('cursor') else 'next')
+    source=Tape(tmp_path,reader);result=source.fetch(A)
+    assert result['complete'] and len(result['trades'])==2 and len(calls)==2
+    assert calls[0]['min_ts']==1000 and calls[0]['max_ts']==1063
+    assert calls[1]['ticker']==calls[0]['ticker'] and calls[1]['is_block_trade']=='false'
+    def forbidden(params):raise AssertionError('cached request repeated')
+    again=Tape(tmp_path,forbidden)
+    assert again.fetch(A)['complete'] and again.requests==0
+
+
+def test_conflicting_trade_identity_blocks_partial_tape(tmp_path):
+    def reader(params):
+        return dict(trades=[raw_trade(price='.30' if params.get('cursor') else '.40')],
+                    cursor='' if params.get('cursor') else 'next')
+    r=Tape(tmp_path,reader).fetch(A)
+    assert not r['complete'] and 'conflicting_trade_identity' in r['error']
+    assert classify(A,S,V,r['trades'],complete=r['complete'])['state']=='tape_incomplete_uncertain_possible_fill'
+
+
+def test_page_cap_and_cursor_loop_do_not_mean_no_trades(tmp_path):
+    calls=[]
+    def reader(params):
+        calls.append(params);return dict(trades=[],cursor='c'+str(len(calls)))
+    r=Tape(tmp_path/'cap',reader).fetch(A)
+    assert len(calls)==3 and not r['complete'] and r['error']=='page_capacity_incomplete'
+    r=Tape(tmp_path/'cycle',lambda p:dict(trades=[],cursor='same')).fetch(A)
+    assert not r['complete'] and 'pagination_cursor_repeated' in r['error']
+
+
+def test_cache_tampering_blocks_without_refetch(tmp_path):
+    source=Tape(tmp_path,lambda p:dict(trades=[],cursor=''))
+    assert source.fetch(A)['complete']
+    next(tmp_path.glob('*.body')).write_text('tampered')
+    def forbidden(params):raise AssertionError('no blind refetch')
+    r=Tape(tmp_path,forbidden).fetch(A)
+    assert not r['complete'] and 'hash_changed' in r['error']
