@@ -65,4 +65,10 @@ class DemoMarkets:
                 self.rule_archive_error=type(exc).__name__+':'+str(exc)
                 try:record_fault(archive,self.rule_archive_error)
                 except sqlite3.Error:pass
+        continuing=getattr(self,'continuing_capture',None)
+        if continuing is not None:
+            try:continuing.quote(result)
+            except Exception as exc:
+                try:continuing.fault('capture_hook_'+type(exc).__name__)
+                except Exception:pass
         return result

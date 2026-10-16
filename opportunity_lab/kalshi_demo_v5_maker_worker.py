@@ -19,6 +19,7 @@ from .kalshi_binary_journal import BinaryJournal
 from .kalshi_demo_broker import DemoClient, check_exchange
 from .kalshi_demo_market_data import DemoMarkets
 from .kalshi_rule_vintage_archive import init as init_rule_archive, status as rule_archive_status
+from .kalshi_continuing_capture import Recorder as ContinuingCapture, priority_pending as capture_priority_pending, unavailable_status as capture_unavailable_status
 from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame
 from .kalshi_depth_replenishment import init as init_depth_recorder, capture as capture_depth, status as depth_status
 from .kalshi_public_trade_liquidity import init as init_trade_probe, poll as poll_trade_probe, status as trade_probe_status
@@ -1627,6 +1628,11 @@ def write_status(path, state, journal, **values):
     current_evidence['selected_candidate_release_review'] = review_selected_candidate(state.db, now=time.time())
     current_evidence['timely_shadow_measurement'] = timely_measurement_status(state.db)
     current_evidence['rule_vintage_archive'] = rule_archive_status(state.db)
+    continuing=getattr(state,'continuing_capture',None)
+    if continuing is not None:
+        current_evidence['continuing_capture'] = continuing.status()
+    elif getattr(state,'continuing_capture_error',None):
+        current_evidence['continuing_capture'] = capture_unavailable_status(state.continuing_capture_error)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     latest_v12 = state.db.execute(
         "SELECT detail,observed_at,ticker FROM v12_shadow_signals ORDER BY id DESC LIMIT 1"
@@ -1708,6 +1714,12 @@ def run(data_root, *, cycles=None):
     markets = DemoMarkets(); broker = BinaryDemoBroker(journal, client)
     init_rule_archive(state.db)
     markets.rule_archive_db = state.db
+    state.continuing_capture=None;state.continuing_capture_error=None
+    try:
+        state.continuing_capture=ContinuingCapture(root/'continuing-capture-v1.sqlite3')
+        markets.continuing_capture=state.continuing_capture
+    except Exception as exc:
+        state.continuing_capture_error='capture_init_'+type(exc).__name__
     cohort = state.load("cohort", []); cohort_at = state.load("cohort_at", 0)
     if state.load("cohort_selector") != COHORT_SELECTOR:
         # Keep the last validated cohort serving while the first full-universe
@@ -1978,6 +1990,15 @@ def run(data_root, *, cycles=None):
                     depth_now = time.time()
                     poll_depth_trade_probe(state.db,markets,depth_now,
                                            signal_candidate=targeted_trade_candidate(state.db,depth_now))
+                    if state.continuing_capture is not None:
+                        try:
+                            capped=(state.db.execute('SELECT count(*) FROM scan_trade_v4_polls').fetchone()[0]>=4096
+                                    or state.db.execute('SELECT count(*) FROM scan_trade_v4_trades').fetchone()[0]>=20000)
+                            state.continuing_capture.poll(markets,time.time(),legacy_capped=capped,
+                                priority_blocked=capture_priority_pending(state.db,time.time()))
+                        except Exception as exc:
+                            try:state.continuing_capture.fault('capture_poll_'+type(exc).__name__)
+                            except Exception:pass
                 write_status(root / "status.json", state, journal, phase="running", errors=[],
                              demo_balance_cents=(snapshot or {}).get("balance", {}).get("balance"),
                              open_positions=len(end_accounting["positions"]), cohort_size=len(cohort))
@@ -1990,6 +2011,7 @@ def run(data_root, *, cycles=None):
             cycle += 1
             if cycles is None or cycle < cycles: time.sleep(2)
     finally:
+        if state.continuing_capture is not None:state.continuing_capture.close()
         journal.close(); state.close(); lock.close()
 
 

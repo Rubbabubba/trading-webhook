@@ -1,0 +1,13 @@
+{
+  "schema": "kalshi_continuing_capture_v1",
+  "environment": "demo",
+  "purpose": "Continue prospective immutable quote and post-quote public-trade evidence after legacy capture protocols reach their lifetime caps. New source version, not a strategy or order grant.",
+  "legacy_evidence": "Never modify/delete/reset V1-V8 protocols, records, counters or caps. Do not import old rows as new prospective observations.",
+  "quote_source": "Reuse successful maker DemoMarkets.quote reads only; no additional quote HTTP calls. Preserve metadata/book request and receipt clocks separately, rule projection and normalized depth20.",
+  "trade_source": "Resume only the capped scan V4 read slot: at most one poll per60seconds, two pages of100records. Query30seconds strictly after a captured usable quote; wait until window ends, discard as unobserved if retrieval age exceeds120seconds. Oldest eligible window first; other unpolled/expired quotes remain visible. No added service, schedule or model calls.",
+  "priority": "Poll only while account is flat with no working order, V4 is capped, and no maker/V15/timely markout is pending or due in next30seconds. Preserve source selection/skips; never force an entry.",
+  "archive": "Separate SQLite file, append-only content-addressed gzip blobs for deduplicated metadata/book states, immutable receipt and public trade identities, durable poll intent before transport. Exact raw response pages retained. No owned fills inferred.",
+  "limits": {"maximum_compressed_bytes":16777216,"maximum_accounted_bytes":33554432,"maximum_records":250000,"maximum_database_bytes":100663296,"minimum_free_bytes":134217728,"maximum_quote_bytes":65536,"maximum_page_bytes":256000,"minimum_poll_interval_seconds":60,"maximum_pages":2,"page_limit":100,"window_seconds":30,"maximum_retrieval_age_seconds":120,"retrieval_completion_reserve_seconds":30,"priority_guard_seconds":30},
+  "capacity_rule": "At capacity or low disk, stop new evidence and report the exact condition; retain every earlier record. No automatic deletion, risk-limit increase or paid storage purchase.",
+  "execution_enabled":false,"fill_assumed":false,"profitability_evidence":false,"promotion_ready":false
+}
