@@ -1,0 +1,42 @@
+{
+  "schema": "measurement_scheduler_deployment_receipt_v1",
+  "recorded_at": "2026-10-16T01:56:53.899625+00:00",
+  "revision": "ecaf928c13e5056e251703e720597b22de460c9b",
+  "deploy_id": "dep-db8o7guq1p3s738pqlmg",
+  "state": "Live",
+  "instance": "cw42w",
+  "tests_passed": 58,
+  "synthetic_tests_only": true,
+  "worker_status_at": "2026-10-16T01:55:54.210692+00:00",
+  "status_age_seconds": 5.2,
+  "phase": "running",
+  "errors": [],
+  "positions": 0,
+  "production_execution_enabled": false,
+  "packet_bytes": 47526,
+  "publication_accepted": true,
+  "monitor_triggers": [],
+  "capture": {
+    "quotes": 66,
+    "events": 12,
+    "polls": 12,
+    "public_trades": 0,
+    "error_count": 0,
+    "expired_unpolled_quotes": 47,
+    "incomplete_windows": 0
+  },
+  "measurement": {
+    "v12_signals": 8,
+    "complete_signals": 0,
+    "deferred_receipt": {},
+    "operational_effect": "Awaiting genuine new signal; no artificial signal inserted"
+  },
+  "profitability_proven": false,
+  "limitations": [
+    "Old missing measurements preserved",
+    "No causal attribution of individual historical misses",
+    "Network and reconciliation can still cause misses",
+    "Life OS signed out; owner capability receipt not updated"
+  ],
+  "proof": "measurement-scheduler-render-live.png"
+}
