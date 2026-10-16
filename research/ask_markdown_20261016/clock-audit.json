@@ -1,0 +1,448 @@
+{
+  "audited_at": "2026-10-16T00:17:36.925901+00:00",
+  "schema": "receipt_clock_reorder_audit_v1",
+  "files": [
+    {
+      "file": 4,
+      "records": 620030,
+      "first_ns": 1784428218481872883,
+      "last_ns": 1784428360212235163
+    },
+    {
+      "file": 5,
+      "records": 622730,
+      "first_ns": 1784428360212301704,
+      "last_ns": 1784428496537158674
+    },
+    {
+      "file": 6,
+      "records": 556889,
+      "first_ns": 1784428496537211254,
+      "last_ns": 1784428583064515780
+    }
+  ],
+  "reorders": [
+    {
+      "file": 6,
+      "record": 555671,
+      "previous_ns": 1784428582889643579,
+      "current_ns": 1784428582886115789,
+      "backward_ns": 3527790,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXMVECROSSCATEGORY-S20261E97C75643D-F1531C7887D",
+        "shard_id": 2,
+        "sid": 1,
+        "seq": 10079
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXUSLGAME-26JUL18SANLAS-TIE",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 31848
+      }
+    },
+    {
+      "file": 6,
+      "record": 555677,
+      "previous_ns": 1784428582889751340,
+      "current_ns": 1784428582886026458,
+      "backward_ns": 3724882,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXMVECROSSCATEGORY-S2026BB7C64A48FF-83172025FC3",
+        "shard_id": 12,
+        "sid": 1,
+        "seq": 10025
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTCD-26JUL1823-T64899.99",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52207
+      }
+    },
+    {
+      "file": 6,
+      "record": 555751,
+      "previous_ns": 1784428582908220026,
+      "current_ns": 1784428582908052284,
+      "backward_ns": 167742,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXMVECROSSCATEGORY-S20261E97C75643D-38BEABFC484",
+        "shard_id": 2,
+        "sid": 1,
+        "seq": 10080
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXNBASUMMERGAME-26JUL18SASPHX-SAS",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 31873
+      }
+    },
+    {
+      "file": 6,
+      "record": 555752,
+      "previous_ns": 1784428582908052284,
+      "current_ns": 1784428582907963223,
+      "backward_ns": 89061,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXNBASUMMERGAME-26JUL18SASPHX-SAS",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 31873
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXMLBF5-26JUL182205WSHATH-WSH",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52231
+      }
+    },
+    {
+      "file": 6,
+      "record": 555788,
+      "previous_ns": 1784428582912486974,
+      "current_ns": 1784428582912344283,
+      "backward_ns": 142691,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXSOL15M-26JUL182245-45",
+        "shard_id": 18,
+        "sid": 1,
+        "seq": 5022
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXETHD-26JUL1823-T1874.99",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52249
+      }
+    },
+    {
+      "file": 6,
+      "record": 555790,
+      "previous_ns": 1784428582912576025,
+      "current_ns": 1784428582912251051,
+      "backward_ns": 324974,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXSOL15M-26JUL182245-45",
+        "shard_id": 18,
+        "sid": 1,
+        "seq": 5023
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXUSLGAME-26JUL18SANLAS-LAS",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 31891
+      }
+    },
+    {
+      "file": 6,
+      "record": 556068,
+      "previous_ns": 1784428582947595329,
+      "current_ns": 1784428582947347436,
+      "backward_ns": 247893,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXMVECROSSCATEGORY-S20265D97EB92DB8-7ADD99CB077",
+        "shard_id": 6,
+        "sid": 1,
+        "seq": 10106
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTC15M-26JUL182245-45",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 32030
+      }
+    },
+    {
+      "file": 6,
+      "record": 556069,
+      "previous_ns": 1784428582947347436,
+      "current_ns": 1784428582947241055,
+      "backward_ns": 106381,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXBTC15M-26JUL182245-45",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 32030
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTCD-26JUL1823-T64899.99",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52388
+      }
+    },
+    {
+      "file": 6,
+      "record": 556115,
+      "previous_ns": 1784428582954818160,
+      "current_ns": 1784428582954651408,
+      "backward_ns": 166752,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXNBASUMMERSPREAD-26JUL18INDNOP-IND16",
+        "shard_id": 18,
+        "sid": 1,
+        "seq": 5024
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXITFMATCH-26JUL18CRIKAM-CRI",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52411
+      }
+    },
+    {
+      "file": 6,
+      "record": 556116,
+      "previous_ns": 1784428582954651408,
+      "current_ns": 1784428582954470086,
+      "backward_ns": 181322,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXITFMATCH-26JUL18CRIKAM-CRI",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52411
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTC15M-26JUL182245-45",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 32053
+      }
+    },
+    {
+      "file": 6,
+      "record": 556160,
+      "previous_ns": 1784428582961347552,
+      "current_ns": 1784428582961116810,
+      "backward_ns": 230742,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXXRP15M-26JUL182245-45",
+        "shard_id": 18,
+        "sid": 1,
+        "seq": 5025
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTC15M-26JUL182245-45",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 32075
+      }
+    },
+    {
+      "file": 6,
+      "record": 556161,
+      "previous_ns": 1784428582961116810,
+      "current_ns": 1784428582961021789,
+      "backward_ns": 95021,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXBTC15M-26JUL182245-45",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 32075
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52433
+      }
+    },
+    {
+      "file": 6,
+      "record": 556168,
+      "previous_ns": 1784428582962777709,
+      "current_ns": 1784428582962560086,
+      "backward_ns": 217623,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXXRP15M-26JUL182245-45",
+        "shard_id": 18,
+        "sid": 1,
+        "seq": 5026
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTC15M-26JUL182245-45",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 32079
+      }
+    },
+    {
+      "file": 6,
+      "record": 556169,
+      "previous_ns": 1784428582962560086,
+      "current_ns": 1784428582962435215,
+      "backward_ns": 124871,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXBTC15M-26JUL182245-45",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 32079
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTCD-26JUL1823-T64799.99",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52436
+      }
+    },
+    {
+      "file": 6,
+      "record": 556461,
+      "previous_ns": 1784428583006040194,
+      "current_ns": 1784428583005884822,
+      "backward_ns": 155372,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXMVECROSSCATEGORY-S2026CADAF28D8A5-043FDAE199C",
+        "shard_id": 13,
+        "sid": 1,
+        "seq": 10026
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXMLBTEAMTOTAL-26JUL182008SFSEA-SF5",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52581
+      }
+    },
+    {
+      "file": 6,
+      "record": 556462,
+      "previous_ns": 1784428583005884822,
+      "current_ns": 1784428583005715840,
+      "backward_ns": 168982,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXMLBTEAMTOTAL-26JUL182008SFSEA-SF5",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52581
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTC15M-26JUL182245-45",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 32224
+      }
+    },
+    {
+      "file": 6,
+      "record": 556501,
+      "previous_ns": 1784428583012172103,
+      "current_ns": 1784428583012012091,
+      "backward_ns": 160012,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXSOL15M-26JUL182245-45",
+        "shard_id": 18,
+        "sid": 1,
+        "seq": 5031
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52598
+      }
+    },
+    {
+      "file": 6,
+      "record": 556502,
+      "previous_ns": 1784428583012012091,
+      "current_ns": 1784428583011846219,
+      "backward_ns": 165872,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52598
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTC15M-26JUL182245-45",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 32240
+      }
+    },
+    {
+      "file": 6,
+      "record": 556874,
+      "previous_ns": 1784428583062513008,
+      "current_ns": 1784428583062252625,
+      "backward_ns": 260383,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXXRP15M-26JUL182245-45",
+        "shard_id": 18,
+        "sid": 1,
+        "seq": 5034
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTCD-26JUL1917-T64249.99",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52784
+      }
+    },
+    {
+      "file": 6,
+      "record": 556889,
+      "previous_ns": 1784428583064515780,
+      "current_ns": 1784428583064124176,
+      "backward_ns": 391604,
+      "previous": {
+        "record_type": "delta",
+        "ticker": "KXBTC15M-26JUL182245-45",
+        "shard_id": 17,
+        "sid": 1,
+        "seq": 32427
+      },
+      "current": {
+        "record_type": "delta",
+        "ticker": "KXBTCD-26JUL1823-T64999.99",
+        "shard_id": 0,
+        "sid": 1,
+        "seq": 52794
+      }
+    }
+  ],
+  "decision": "replay_aborted_no_performance_claim",
+  "source_file_order_unchanged": true
+}

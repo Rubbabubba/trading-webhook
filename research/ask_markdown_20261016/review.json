@@ -1,0 +1,800 @@
+{
+  "schema": "external_ask_markdown_review_v1",
+  "source_fault": {
+    "reason": "time_reorder",
+    "file": 6,
+    "previous_seconds": 1784428582.8896434,
+    "current_seconds": 1784428582.8861158
+  },
+  "complete_registered_window": false,
+  "preliminary_signals": 26,
+  "selected_event_attempts": 20,
+  "states": {
+    "conditional_settlement_complete": 14,
+    "entry_unfilled_late": 5,
+    "entry_price_guard_rejected": 1
+  },
+  "families": {
+    "KXNWSLGAME": 1,
+    "KXNBASUMMERTOTAL": 1,
+    "KXMLBF5TOTAL": 2,
+    "KXMLBTOTAL": 3,
+    "KXMLBHR": 1,
+    "KXMLBF5SPREAD": 1,
+    "KXBTC": 1,
+    "KXMLBTEAMTOTAL": 2,
+    "KXSOLD": 3,
+    "KXETHD": 3,
+    "KXXRPD": 1,
+    "KXWCSTART": 1
+  },
+  "rejections": {
+    "duplicate_event_attempt": 6
+  },
+  "scenarios": {
+    "0": {
+      "complete_net_cents": -4,
+      "unresolved_full_principal_stress_cents": 0,
+      "net_with_unresolved_stress_cents": -4,
+      "event_mean_cents": -0.2857142857142857,
+      "normal_event_95_lcb_cents": -27.399489382517018
+    },
+    "2": {
+      "complete_net_cents": -32,
+      "unresolved_full_principal_stress_cents": 0,
+      "net_with_unresolved_stress_cents": -32,
+      "event_mean_cents": -2.2857142857142856,
+      "normal_event_95_lcb_cents": -29.399489382517018
+    },
+    "5": {
+      "complete_net_cents": -74,
+      "unresolved_full_principal_stress_cents": 0,
+      "net_with_unresolved_stress_cents": -74,
+      "event_mean_cents": -5.285714285714286,
+      "normal_event_95_lcb_cents": -32.39948938251702
+    }
+  },
+  "selected": [
+    {
+      "ticker": "KXNWSLGAME-26JUL18RACHDA-RAC",
+      "side": "no",
+      "decision_at": 1784428370,
+      "subscription": [
+        17,
+        1
+      ],
+      "decision_quote": {
+        "yb": 74.0,
+        "ya": 75.0,
+        "nb": 25.0,
+        "na": 26.0,
+        "mid": 74.5,
+        "imbalance": 0.6416782353848527
+      },
+      "prior_quote": {
+        "yb": 71.0,
+        "ya": 76.0,
+        "nb": 24.0,
+        "na": 29.0,
+        "mid": 73.5,
+        "imbalance": 0.7240642547259534
+      },
+      "decision_ask": 26.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428371.0899384,
+      "entry_price": 26,
+      "event_id": "KXNWSLGAME-26JUL18RACHDA",
+      "family": "KXNWSLGAME",
+      "payout_cents": 100,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": 68,
+        "2": 66,
+        "5": 63
+      }
+    },
+    {
+      "ticker": "KXNBASUMMERTOTAL-26JUL18SASPHX-185",
+      "side": "no",
+      "decision_at": 1784428375,
+      "subscription": [
+        17,
+        1
+      ],
+      "decision_quote": {
+        "yb": 46.0,
+        "ya": 48.0,
+        "nb": 52.0,
+        "na": 54.0,
+        "mid": 47.0,
+        "imbalance": 0.4488078541374474
+      },
+      "prior_quote": {
+        "yb": 39.0,
+        "ya": 48.0,
+        "nb": 52.0,
+        "na": 61.0,
+        "mid": 43.5,
+        "imbalance": 0.49454392837157246
+      },
+      "decision_ask": 54.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428376.1400318,
+      "entry_price": 54,
+      "event_id": "KXNBASUMMERTOTAL-26JUL18SASPHX",
+      "family": "KXNBASUMMERTOTAL",
+      "payout_cents": 100,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": 40,
+        "2": 38,
+        "5": 35
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL182207DETLAA-7",
+      "side": "no",
+      "decision_at": 1784428380,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 75.0,
+        "ya": 78.0,
+        "nb": 22.0,
+        "na": 25.0,
+        "mid": 76.5,
+        "imbalance": 0.02085747392815759
+      },
+      "prior_quote": {
+        "yb": 68.0,
+        "ya": 78.0,
+        "nb": 22.0,
+        "na": 32.0,
+        "mid": 73.0,
+        "imbalance": 0.5034013605442177
+      },
+      "decision_ask": 25.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428381.0096893,
+      "entry_price": 25,
+      "event_id": "KXMLBF5TOTAL-26JUL182207DETLAA",
+      "family": "KXMLBF5TOTAL",
+      "payout_cents": 0,
+      "official_result": "yes",
+      "net_cents_by_extra_stress": {
+        "0": -31,
+        "2": -33,
+        "5": -36
+      }
+    },
+    {
+      "ticker": "KXMLBTOTAL-26JUL182008SFSEA-9",
+      "side": "no",
+      "decision_at": 1784428380,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 33.0,
+        "ya": 36.0,
+        "nb": 64.0,
+        "na": 67.0,
+        "mid": 34.5,
+        "imbalance": 0.4975124378109453
+      },
+      "prior_quote": {
+        "yb": 27.0,
+        "ya": 36.0,
+        "nb": 64.0,
+        "na": 73.0,
+        "mid": 31.5,
+        "imbalance": 0.2857142857142857
+      },
+      "decision_ask": 67.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428381.0060916,
+      "entry_price": 67,
+      "event_id": "KXMLBTOTAL-26JUL182008SFSEA",
+      "family": "KXMLBTOTAL",
+      "payout_cents": 100,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": 27,
+        "2": 25,
+        "5": 22
+      }
+    },
+    {
+      "ticker": "KXMLBTOTAL-26JUL182207DETLAA-10",
+      "side": "yes",
+      "decision_at": 1784428380,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 76.0,
+        "ya": 77.0,
+        "nb": 23.0,
+        "na": 24.0,
+        "mid": 76.5,
+        "imbalance": 0.9710144927536232
+      },
+      "prior_quote": {
+        "yb": 68.0,
+        "ya": 80.0,
+        "nb": 20.0,
+        "na": 32.0,
+        "mid": 74.0,
+        "imbalance": 0.9824837975126992
+      },
+      "decision_ask": 77.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428381.12692,
+      "entry_price": 77,
+      "event_id": "KXMLBTOTAL-26JUL182207DETLAA",
+      "family": "KXMLBTOTAL",
+      "payout_cents": 0,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": -83,
+        "2": -85,
+        "5": -88
+      }
+    },
+    {
+      "ticker": "KXMLBHR-26JUL182205WSHATH-ATHDWALTON35-1",
+      "side": "no",
+      "decision_at": 1784428385,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 12.0,
+        "ya": 13.0,
+        "nb": 87.0,
+        "na": 88.0,
+        "mid": 12.5,
+        "imbalance": 0.04786324786324787
+      },
+      "prior_quote": {
+        "yb": 4.0,
+        "ya": 13.0,
+        "nb": 87.0,
+        "na": 96.0,
+        "mid": 8.5,
+        "imbalance": 0.9010416666666666
+      },
+      "decision_ask": 88.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXMLBHR-26JUL182205WSHATH",
+      "family": "KXMLBHR"
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL182205WSHATH-ATH3",
+      "side": "no",
+      "decision_at": 1784428410,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 84.0,
+        "ya": 87.0,
+        "nb": 13.0,
+        "na": 16.0,
+        "mid": 85.5,
+        "imbalance": 0.211864406779661
+      },
+      "prior_quote": {
+        "yb": 80.0,
+        "ya": 88.0,
+        "nb": 12.0,
+        "na": 20.0,
+        "mid": 84.0,
+        "imbalance": 0.017857142857142856
+      },
+      "decision_ask": 16.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428411.3611887,
+      "entry_price": 16,
+      "event_id": "KXMLBF5SPREAD-26JUL182205WSHATH",
+      "family": "KXMLBF5SPREAD",
+      "payout_cents": 0,
+      "official_result": "yes",
+      "net_cents_by_extra_stress": {
+        "0": -22,
+        "2": -24,
+        "5": -27
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL182205WSHATH-7",
+      "side": "yes",
+      "decision_at": 1784428415,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 84.0,
+        "ya": 86.0,
+        "nb": 14.0,
+        "na": 16.0,
+        "mid": 85.0,
+        "imbalance": 0.4904850397143752
+      },
+      "prior_quote": {
+        "yb": 84.0,
+        "ya": 89.0,
+        "nb": 11.0,
+        "na": 16.0,
+        "mid": 86.5,
+        "imbalance": 0.5175438596491229
+      },
+      "decision_ask": 86.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428416.0085988,
+      "entry_price": 86,
+      "event_id": "KXMLBF5TOTAL-26JUL182205WSHATH",
+      "family": "KXMLBF5TOTAL",
+      "payout_cents": 0,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": -92,
+        "2": -94,
+        "5": -97
+      }
+    },
+    {
+      "ticker": "KXBTC-26JUL1823-B64850",
+      "side": "no",
+      "decision_at": 1784428420,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 54.0,
+        "ya": 55.0,
+        "nb": 45.0,
+        "na": 46.0,
+        "mid": 54.5,
+        "imbalance": 0.8333333333333334
+      },
+      "prior_quote": {
+        "yb": 47.0,
+        "ya": 55.0,
+        "nb": 45.0,
+        "na": 53.0,
+        "mid": 51.0,
+        "imbalance": 0.588477366255144
+      },
+      "decision_ask": 46.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428421.5848823,
+      "entry_price": 46,
+      "event_id": "KXBTC-26JUL1823",
+      "family": "KXBTC",
+      "payout_cents": 100,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": 48,
+        "2": 46,
+        "5": 43
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL182207DETLAA-DET8",
+      "side": "no",
+      "decision_at": 1784428420,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 71.0,
+        "ya": 74.0,
+        "nb": 26.0,
+        "na": 29.0,
+        "mid": 72.5,
+        "imbalance": 0.75
+      },
+      "prior_quote": {
+        "yb": 65.0,
+        "ya": 74.0,
+        "nb": 26.0,
+        "na": 35.0,
+        "mid": 69.5,
+        "imbalance": 0.75
+      },
+      "decision_ask": 29.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428421.0527143,
+      "entry_price": 29,
+      "event_id": "KXMLBTEAMTOTAL-26JUL182207DETLAA",
+      "family": "KXMLBTEAMTOTAL",
+      "payout_cents": 100,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": 65,
+        "2": 63,
+        "5": 60
+      }
+    },
+    {
+      "ticker": "KXSOLD-26JUL2417-T73.9999",
+      "side": "yes",
+      "decision_at": 1784428420,
+      "subscription": [
+        17,
+        1
+      ],
+      "decision_quote": {
+        "yb": 70.0,
+        "ya": 72.0,
+        "nb": 28.0,
+        "na": 30.0,
+        "mid": 71.0,
+        "imbalance": 0.13344887348353554
+      },
+      "prior_quote": {
+        "yb": 68.0,
+        "ya": 76.0,
+        "nb": 24.0,
+        "na": 32.0,
+        "mid": 72.0,
+        "imbalance": 0.20261437908496732
+      },
+      "decision_ask": 72.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXSOLD-26JUL2417",
+      "family": "KXSOLD"
+    },
+    {
+      "ticker": "KXETHD-26JUL1917-T1879.99",
+      "side": "yes",
+      "decision_at": 1784428435,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 38.0,
+        "ya": 40.0,
+        "nb": 60.0,
+        "na": 62.0,
+        "mid": 39.0,
+        "imbalance": 0.780952380952381
+      },
+      "prior_quote": {
+        "yb": 34.0,
+        "ya": 46.0,
+        "nb": 54.0,
+        "na": 66.0,
+        "mid": 40.0,
+        "imbalance": 0.9975124378109452
+      },
+      "decision_ask": 40.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428436.041913,
+      "entry_price": 40,
+      "event_id": "KXETHD-26JUL1917",
+      "family": "KXETHD",
+      "payout_cents": 0,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": -46,
+        "2": -48,
+        "5": -51
+      }
+    },
+    {
+      "ticker": "KXSOLD-26JUL1917-T76.9999",
+      "side": "no",
+      "decision_at": 1784428435,
+      "subscription": [
+        17,
+        1
+      ],
+      "decision_quote": {
+        "yb": 28.0,
+        "ya": 31.0,
+        "nb": 69.0,
+        "na": 72.0,
+        "mid": 29.5,
+        "imbalance": 0.8404761904761905
+      },
+      "prior_quote": {
+        "yb": 24.0,
+        "ya": 31.0,
+        "nb": 69.0,
+        "na": 76.0,
+        "mid": 27.5,
+        "imbalance": 0.9950248756218906
+      },
+      "decision_ask": 72.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428436.455032,
+      "entry_price": 72,
+      "event_id": "KXSOLD-26JUL1917",
+      "family": "KXSOLD",
+      "payout_cents": 100,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": 22,
+        "2": 20,
+        "5": 17
+      }
+    },
+    {
+      "ticker": "KXXRPD-26JUL1823-T1.0999",
+      "side": "no",
+      "decision_at": 1784428435,
+      "subscription": [
+        17,
+        1
+      ],
+      "decision_quote": {
+        "yb": 16.0,
+        "ya": 17.0,
+        "nb": 83.0,
+        "na": 84.0,
+        "mid": 16.5,
+        "imbalance": 0.9950248756218906
+      },
+      "prior_quote": {
+        "yb": 10.0,
+        "ya": 17.0,
+        "nb": 83.0,
+        "na": 90.0,
+        "mid": 13.5,
+        "imbalance": 0.49875311720698257
+      },
+      "decision_ask": 84.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428436.0506177,
+      "entry_price": 84,
+      "event_id": "KXXRPD-26JUL1823",
+      "family": "KXXRPD",
+      "payout_cents": 100,
+      "official_result": "no",
+      "net_cents_by_extra_stress": {
+        "0": 10,
+        "2": 8,
+        "5": 5
+      }
+    },
+    {
+      "ticker": "KXSOLD-26JUL1823-T76.2499",
+      "side": "yes",
+      "decision_at": 1784428440,
+      "subscription": [
+        17,
+        1
+      ],
+      "decision_quote": {
+        "yb": 70.0,
+        "ya": 72.0,
+        "nb": 28.0,
+        "na": 30.0,
+        "mid": 71.0,
+        "imbalance": 0.3957703927492447
+      },
+      "prior_quote": {
+        "yb": 69.0,
+        "ya": 75.0,
+        "nb": 25.0,
+        "na": 31.0,
+        "mid": 72.0,
+        "imbalance": 0.5
+      },
+      "decision_ask": 72.0,
+      "state": "entry_price_guard_rejected",
+      "fill_assumed": false,
+      "event_id": "KXSOLD-26JUL1823",
+      "family": "KXSOLD"
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL191610SFSEA-SEA2",
+      "side": "yes",
+      "decision_at": 1784428450,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 83.0,
+        "ya": 85.0,
+        "nb": 15.0,
+        "na": 17.0,
+        "mid": 84.0,
+        "imbalance": 0.48148148148148145
+      },
+      "prior_quote": {
+        "yb": 83.0,
+        "ya": 88.0,
+        "nb": 12.0,
+        "na": 17.0,
+        "mid": 85.5,
+        "imbalance": 0.37681159420289856
+      },
+      "decision_ask": 85.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXMLBTEAMTOTAL-26JUL191610SFSEA",
+      "family": "KXMLBTEAMTOTAL"
+    },
+    {
+      "ticker": "KXETHD-26JUL2417-T1999.99",
+      "side": "yes",
+      "decision_at": 1784428460,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 9.0,
+        "ya": 12.0,
+        "nb": 88.0,
+        "na": 91.0,
+        "mid": 10.5,
+        "imbalance": 0.8843537414965986
+      },
+      "prior_quote": {
+        "yb": 8.0,
+        "ya": 31.0,
+        "nb": 69.0,
+        "na": 92.0,
+        "mid": 19.5,
+        "imbalance": 0.9441087613293051
+      },
+      "decision_ask": 12.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXETHD-26JUL2417",
+      "family": "KXETHD"
+    },
+    {
+      "ticker": "KXWCSTART-26JUL19ESPARG-ESP-FRUIZ8",
+      "side": "yes",
+      "decision_at": 1784428465,
+      "subscription": [
+        17,
+        1
+      ],
+      "decision_quote": {
+        "yb": 81.0,
+        "ya": 83.0,
+        "nb": 17.0,
+        "na": 19.0,
+        "mid": 82.0,
+        "imbalance": 0.7142857142857143
+      },
+      "prior_quote": {
+        "yb": 77.0,
+        "ya": 88.0,
+        "nb": 12.0,
+        "na": 23.0,
+        "mid": 82.5,
+        "imbalance": 0.03389830508474576
+      },
+      "decision_ask": 83.0,
+      "state": "entry_unfilled_late",
+      "fill_assumed": false,
+      "event_id": "KXWCSTART-26JUL19ESPARG-ESP",
+      "family": "KXWCSTART"
+    },
+    {
+      "ticker": "KXETHD-26JUL1823-T1869.99",
+      "side": "no",
+      "decision_at": 1784428485,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 71.0,
+        "ya": 73.0,
+        "nb": 27.0,
+        "na": 29.0,
+        "mid": 72.0,
+        "imbalance": 0.0020531351373547406
+      },
+      "prior_quote": {
+        "yb": 68.0,
+        "ya": 73.0,
+        "nb": 27.0,
+        "na": 32.0,
+        "mid": 70.5,
+        "imbalance": 0.45267211674886837
+      },
+      "decision_ask": 29.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428486.1553195,
+      "entry_price": 29,
+      "event_id": "KXETHD-26JUL1823",
+      "family": "KXETHD",
+      "payout_cents": 0,
+      "official_result": "yes",
+      "net_cents_by_extra_stress": {
+        "0": -35,
+        "2": -37,
+        "5": -40
+      }
+    },
+    {
+      "ticker": "KXMLBTOTAL-26JUL182205WSHATH-13",
+      "side": "yes",
+      "decision_at": 1784428495,
+      "subscription": [
+        0,
+        1
+      ],
+      "decision_quote": {
+        "yb": 68.0,
+        "ya": 69.0,
+        "nb": 31.0,
+        "na": 32.0,
+        "mid": 68.5,
+        "imbalance": 0.42742569826540217
+      },
+      "prior_quote": {
+        "yb": 67.0,
+        "ya": 72.0,
+        "nb": 28.0,
+        "na": 33.0,
+        "mid": 69.5,
+        "imbalance": 0.9925974179793912
+      },
+      "decision_ask": 69.0,
+      "state": "conditional_settlement_complete",
+      "fill_assumed": false,
+      "entry_at": 1784428496.286029,
+      "entry_price": 69,
+      "event_id": "KXMLBTOTAL-26JUL182205WSHATH",
+      "family": "KXMLBTOTAL",
+      "payout_cents": 100,
+      "official_result": "yes",
+      "net_cents_by_extra_stress": {
+        "0": 25,
+        "2": 23,
+        "5": 20
+      }
+    }
+  ],
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "execution_enabled": false,
+  "promotion_ready": false,
+  "profitability_proven": false,
+  "decision": "exploratory_only_no_qualification",
+  "limitations": [
+    "One short unused window from same date; not independent multi-date holdout",
+    "Recorder clocks and modern official rule metadata do not prove our latency or original rule publication",
+    "5c fee and1c slippage reserves are assumptions; actual historical fees unverified",
+    "Top3displayed depth and settlement accounting are conditional, never actual fills",
+    "Source license other, no production rights assumed",
+    "Unfilled attempts and unknown settlements remain retained",
+    "Source-clock fault stops processing; prefix is not the complete registered window"
+  ]
+}

@@ -1,0 +1,131 @@
+{
+  "id": "external_ask_markdown_settlement_v1_20261016",
+  "registered_at": "2026-10-16T00:14:54.395878+00:00",
+  "hypothesis": "A transient ask markdown of at least3c with an unchanged or stronger bid may offer a settlement-value entry; this is distinct from directional momentum and is not an inversion of its losses.",
+  "source_grounding": "Existing Transient Ask Markdown Fill Test engineering queue; independent unvalidated hypothesis, not published profitability.",
+  "files": [
+    {
+      "type": "file",
+      "oid": "d16ea98fe71e7980ec39d13c7300f85c951d5ac8",
+      "size": 26009864,
+      "lfs": {
+        "oid": "2d95103808c22e7284f722f4edf66b1cc0194b519f363918c5199fff7df9951a",
+        "size": 26009864,
+        "pointerSize": 133
+      },
+      "xetHash": "4e841e98653e5f3cccd000d758eb60da560e2bc0d78bc68997ba67e730129572",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T022023.251189Z_ip-172-31-3-129_04de9e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "5a8878b3350bd7b360b758deeb45ab61d22979c4",
+      "size": 67944837,
+      "lfs": {
+        "oid": "bf5b66483b259275ef4de242ea94a03f098a4856dfecc3277ee8912e0bf1f314",
+        "size": 67944837,
+        "pointerSize": 133
+      },
+      "xetHash": "9885fcd64a0bc204cbdb75686c3d5771434c766d62fd35cf3fde904bf32b872d",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T022523.296675Z_ip-172-31-3-129_f9616e.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7fac51f37ee274db6b301c6bf52cfd83730e4e7d",
+      "size": 69106452,
+      "lfs": {
+        "oid": "50a3714759d2d7e8ca9b7e64cfd449e31e90aa6f0f667014050485fd04ad3d41",
+        "size": 69106452,
+        "pointerSize": 133
+      },
+      "xetHash": "634eec6ad9f2cd978552a49b24d42d0c0ce50e67cd1de3d274556ebbee705148",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T022802.195407Z_ip-172-31-3-129_5460e1.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "6d2f913338b6e39dab7c5fff2315ed8148724110",
+      "size": 69139698,
+      "lfs": {
+        "oid": "242a2f393849fa2c073a26804dc4e83e9844b610eb681bd5198dad658a0555de",
+        "size": 69139698,
+        "pointerSize": 133
+      },
+      "xetHash": "b6c5ab45677ed02256f5bc97a42c43e2cf1a7e5a1e49d59930dc25e941126645",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023018.532199Z_ip-172-31-3-129_81630c.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "181a90d9f46c6e745eb7bc70f5e3a3f76195dc86",
+      "size": 68117533,
+      "lfs": {
+        "oid": "0c1cbb33bb05287ab5932652318b338fa94367444b9fd0bd72ffdfce4eb71840",
+        "size": 68117533,
+        "pointerSize": 133
+      },
+      "xetHash": "70b799bf56143572636b85739d2c2c9a0bcd4648df7b0fcdbedb767de6cb7bb4",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023240.256013Z_ip-172-31-3-129_98b415.jsonl.gz"
+    },
+    {
+      "type": "file",
+      "oid": "7ccb23e9f5b77cc09b4f3e22ec9ce4095c6df8b0",
+      "size": 59965899,
+      "lfs": {
+        "oid": "5b1605514724e7823152008cfd70f8c86b893d6778cf466314c9036c3d6a6d3c",
+        "size": 59965899,
+        "pointerSize": 133
+      },
+      "xetHash": "2f7ff69ae844558f5381f16e14dd8a1d70bea483867509a382f15b14ed471c61",
+      "path": "data/2026/07/19/kalshi_orderbooks_20260719T023456.569561Z_ip-172-31-3-129_50db72.jsonl.gz"
+    }
+  ],
+  "warmup_files": 4,
+  "decision_files": [
+    5,
+    6
+  ],
+  "selection": "Chronological next two uninspected files; first four used only for snapshot/sequence/history initialization. No entries from inspected window. No outcome-driven extension.",
+  "signal": {
+    "grid_seconds": 5,
+    "lookback_seconds": 10,
+    "lookback_tolerance_seconds": 2,
+    "minimum_ask_drop_cents": 3,
+    "minimum_bid_change_cents": 0,
+    "maximum_spread_cents": 3,
+    "entry_cents": [
+      10,
+      90
+    ],
+    "quote_age_seconds": 1,
+    "sides": [
+      "yes",
+      "no"
+    ],
+    "ticker_attempt_cap": 1,
+    "event_attempt_cap": 1,
+    "eligible_event_cap": 100
+  },
+  "entry": {
+    "delay_seconds": 1,
+    "maximum_lateness_seconds": 1,
+    "minimum_displayed_contracts": 1,
+    "price_guard": "Delayed ask must not exceed decision ask and must remain10\u201390c",
+    "require_snapshot_initialized_unbroken_sequence": true
+  },
+  "outcome": {
+    "type": "hold_to_official_settlement",
+    "fee_reserve_cents": 5,
+    "slippage_cents": 1,
+    "additional_stress_cents": [
+      0,
+      2,
+      5
+    ],
+    "unverified_or_unresolved": "Retain unknown; full-principal-loss stress; do not drop"
+  },
+  "metadata": "Official binary contract/event/rules and open/earliest close, occurrence, expected expiration required. Exclude entries outside trading windows; one earliest chronological attempt per official event even if entry fails. Modern metadata does not prove contemporaneous rule availability.",
+  "gate": "Exploratory one-date diagnostic cannot qualify. Require100complete signals,40independent events,5families and positive stressed event-cluster95%lower bound on unused multi-date holdout, fee/source verification and authentic operational evidence before separately authorized Demo trial.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "actual_orders": 0,
+  "prior_failed_results_preserved": true,
+  "no_optimization_on_inspected_data": true
+}

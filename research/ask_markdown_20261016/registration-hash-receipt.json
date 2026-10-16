@@ -1,0 +1,7 @@
+{
+  "registration_unchanged": true,
+  "registered_at": "2026-10-16T00:14:54.395878+00:00",
+  "original_console_log_sha256": "e35d5488e3f2be97c7925547e8fa0e1cdf7fd8cc732a2ef87c4b70695a3bd848",
+  "actual_file_bytes_sha256": "027872a258ea42b35bb2eea6b60bc001a034928e98cf180ac776a41e58e4ed04",
+  "reason": "Original console log hashed LF string before Windows text write converted newlines to CRLF. Replay hashes actual persisted bytes. Registration content and parameters unchanged. Future generator logs actual persisted bytes."
+}

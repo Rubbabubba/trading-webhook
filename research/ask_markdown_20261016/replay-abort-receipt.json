@@ -1,0 +1,10 @@
+{
+  "first_attempt": "2026-10-16 approximately00:16UTC",
+  "state": "aborted_time_reorder",
+  "performance_result": null,
+  "original_exception": "ValueError: time_reorder",
+  "diagnosis": "clock-audit.json identifies cross-shard receipt clock regressions in sixth file; original raw file and order retained",
+  "implementation_correction": "Retain already observed prefix and pending unknown attempts on fail-closed stop, rather than discard all evidence on exception. Do not sort timestamps, relax source guard, change signal parameters or inspect after-fault prices for strategy results.",
+  "scope": "Incomplete registered window cannot pass regardless of prefix profit",
+  "actual_orders": 0
+}
