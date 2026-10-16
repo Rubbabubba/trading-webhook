@@ -73,8 +73,17 @@ def station_rules(m,station):
     rules=str(m.get('rules_primary') or '').lower()
     if not all(k in rules for k in station['rules_keywords']):return False
     if station['station']=='KLAX':
-        return 'los angeles international' in rules or 'clilax' in rules or bool(re.search(r'\blax\b',rules))
+        return ('los angeles international' in rules or 'clilax' in rules or bool(re.search(r'\blax\b',rules))
+            or str(m.get('event_ticker') or '').startswith('KXHIGHLAX-')
+            and bool(re.search(r'los angeles airport,?\s+ca\b',rules)))
     return True
+
+
+def source_agency(m):
+    rules=str(m.get('rules_primary') or '').lower()
+    if 'the weather company' in rules:return 'TWC'
+    if 'national weather service' in rules:return 'NWS'
+    return 'unverified'
 
 
 def select_day(day,station,reports,markets):
@@ -122,6 +131,8 @@ def numeric_final(markets):
 
 def run():
     spec=json.loads((ROOT/'registration.json').read_text());capture=json.loads((ROOT/'collection.json').read_text())
+    recovered=json.loads((ROOT/'routing-recovery.json').read_text())
+    capture['events']={**capture['events'],**recovered['events']}
     files={};by_station={};source_counts={}
     def body(receipt):
         if receipt.get('status')!=200:raise ValueError('source_not_successful')
@@ -152,6 +163,10 @@ def run():
                 payload=json.loads(body(capture['events'][event]));markets=payload.get('markets',[])
                 if payload.get('cursor') or not markets or len(markets)>24 or any(m.get('event_ticker')!=event for m in markets):
                     raise ValueError('missing_incomplete_or_wrong_event')
+                agencies=sorted({source_agency(projection(m)) for m in markets})
+                record['settlement_source_agencies']=agencies
+                if agencies!=['NWS']:
+                    record.update(state='unsupported_settlement_source');days.append(record);continue
                 if any(m.get('market_type')!='binary' or not station_rules(projection(m),station) for m in markets):
                     raise ValueError('event_station_mapping_unverified')
                 candidate,relevant,rejects=select_day(day,station,by_station[station['station']],[projection(m) for m in markets])
@@ -175,7 +190,10 @@ def run():
     station_counts=dict(Counter(d['station'] for d in complete));date_count=len({d['date'] for d in complete})
     passed=(len(complete)>=150 and date_count>=45 and len(station_counts)==3 and min(station_counts.values(),default=0)>=40
         and not contradictions and not capture['access_blocks'] and all(d['state']=='bound_consistent' for d in evaluated))
-    result=dict(schema='weather_bound_unpriced_result_v1',registration_sha256=hashlib.sha256((ROOT/'registration.json').read_bytes()).hexdigest(),
+    result=dict(schema='weather_bound_unpriced_result_v2_routed',registration_sha256=hashlib.sha256((ROOT/'registration.json').read_bytes()).hexdigest(),
+        source_repair_registration_sha256=hashlib.sha256((ROOT/'source-routing-repair.json').read_bytes()).hexdigest(),
+        source_identity_evidence_sha256=hashlib.sha256((ROOT/'source-identity-evidence.json').read_bytes()).hexdigest(),
+        routing_recovery_sha256=hashlib.sha256((ROOT/'routing-recovery.json').read_bytes()).hexdigest(),
         states=dict(Counter(d['state'] for d in days)),complete_city_days=len(complete),complete_distinct_dates=date_count,
         complete_by_station=station_counts,selected_logical_candidates=sum(d['selected'] is not None for d in evaluated),
         selected_logical_incorrect=sum(d.get('selected_logical_outcome_correct') is False for d in evaluated),

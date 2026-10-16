@@ -1,0 +1,10 @@
+{
+  "url": "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?station=MDW&network=IL_ASOS&data=metar&year1=2026&month1=7&day1=1&year2=2026&month2=9&day2=2&tz=Etc%2FUTC&format=onlycomma&latlon=no&elev=no&missing=M&trace=T&direct=no&report_type=3&report_type=4",
+  "captured_at": "2026-10-16T03:03:50.854408+00:00",
+  "authenticated": false,
+  "method": "GET",
+  "status": 200,
+  "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\5fd1fadb049e67e0d37c1fcb67d0e0583a27117f7d4f58626f1d07884ecfc064.body",
+  "body_sha256": "556bd35c269a401efea109489dbee2462583178dc224f94b9676d6cf01889362",
+  "bytes": 190766
+}

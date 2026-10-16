@@ -1,0 +1,34 @@
+{
+  "schema": "weather_bound_source_identity_evidence_v1",
+  "recorded_at": "2026-10-16T03:15:41.776371+00:00",
+  "historical_cutoff": "2026-08-16T00:00:00Z",
+  "routing": "51Aug15-31event responses empty in historical storage recovered from /markets; no frame/date replacement",
+  "lax_alias": {
+    "historical_official_rules": "Los Angeles Airport, CA; National Weather Service Climatological Report Daily",
+    "official_series": "KXHIGHLAX",
+    "nws_product": "CLILAX",
+    "nws_product_name": "Los Angeles Intl Airport CA",
+    "primary_corroboration": "https://forecast.weather.gov/product.php?format=CI&glossary=1&issuedby=LAX&product=CLI&site=LSX&version=2",
+    "original_contract_pdf_vintage_verified": false,
+    "normalization_scope": "Only KXHIGHLAX event identity plus exact Los Angeles Airport, CA and NWS daily-report wording; not a city-only fallback"
+  },
+  "encoding_diagnostic": "Apparent U00C2degree corruption was caused by a debugging read_text on UTF8rawbody usingWindowslocale. json.loads(bytes) already decoded correctly; no numerical/text parser repair needed.",
+  "source_agency_change": {
+    "observed_aug14_markets": "NYC and Chicago rules explicitly The Weather Company; recovered later dates must be classified by their own rules, never as legacyNWS",
+    "current_series_source": "The Weather Company",
+    "current_contract": "https://assets.kalshi.com/contract_terms/GLOBALTEMPERATURE.pdf",
+    "current_contract_hierarchy": [
+      "The Weather Company",
+      "National Weather Service",
+      "national weather service forarea"
+    ],
+    "not_a_verified_exact_global_cutover_date": true
+  },
+  "unchanged": [
+    "2Fbound",
+    "allmaintenanceCORandconflictguards",
+    "fixedframeandpriorinspectedexclusions",
+    "successminimums",
+    "no prices/orderauthority/PnL"
+  ]
+}

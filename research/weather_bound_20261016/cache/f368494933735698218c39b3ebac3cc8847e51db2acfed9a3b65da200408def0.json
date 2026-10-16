@@ -1,0 +1,10 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL10&limit=1000",
+  "captured_at": "2026-10-16T03:05:24.342222+00:00",
+  "authenticated": false,
+  "method": "GET",
+  "status": 200,
+  "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f368494933735698218c39b3ebac3cc8847e51db2acfed9a3b65da200408def0.body",
+  "body_sha256": "6fa8f252dece109e695bcb33717cc25f9756c3785b1bde6e5a40a19f97c4b3ef",
+  "bytes": 14456
+}

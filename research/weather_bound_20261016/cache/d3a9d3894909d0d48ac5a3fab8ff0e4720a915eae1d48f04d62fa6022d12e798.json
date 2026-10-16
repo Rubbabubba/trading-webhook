@@ -1,0 +1,10 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/cutoff",
+  "captured_at": "2026-10-16T03:10:27.730176+00:00",
+  "authenticated": false,
+  "method": "GET",
+  "status": 200,
+  "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\d3a9d3894909d0d48ac5a3fab8ff0e4720a915eae1d48f04d62fa6022d12e798.body",
+  "body_sha256": "846cd58b582a714412defcdfa636ee703f78b94510eb92e33a72254610b7c9d9",
+  "bytes": 188
+}

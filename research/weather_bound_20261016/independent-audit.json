@@ -1,0 +1,16 @@
+{
+  "schema": "weather_bound_independent_source_audit_v1",
+  "result_sha256": "074767f02d1e1ed867c3b7f48ea8821f09b73deb17da5b6f2442021e103d6ffa",
+  "immutable_public_responses_checked": 242,
+  "planned_city_days_checked": 186,
+  "usable_city_days_checked": 41,
+  "numeric_contract_labels_checked": 246,
+  "selected_measurement_bounds_checked": 28,
+  "unsupported_TWC_city_days": 54,
+  "result": "passed_partial_data_consistency; source qualification remains failed",
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "price_inputs": 0,
+  "pnl_cents": null,
+  "profitability_proven": false
+}

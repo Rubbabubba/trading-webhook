@@ -1,6 +1,6 @@
 from datetime import date,datetime,timezone
 import pytest
-from research.weather_bound_20261016.evaluate import report,climate_window,interval,projection,select_day,numeric_final
+from research.weather_bound_20261016.evaluate import report,climate_window,interval,projection,select_day,numeric_final,source_agency,station_rules
 
 UTC=timezone.utc
 ST=dict(station='KNYC',iem='NYC',standard_utc_offset_hours=-5,
@@ -74,3 +74,17 @@ def test_numeric_final_does_not_substitute_label_for_measurement():
     assert high is None and n==0 and faults
     high,n,faults=numeric_final([market(expiration_value='')])
     assert high is None and n==0
+
+
+def test_current_weather_company_rules_cannot_be_treated_as_legacy_nws():
+    m=market(rules_primary='The maximum temperature at New York City according to The Weather Company')
+    assert source_agency(projection(m))=='TWC'
+    assert not station_rules(projection(m),ST)
+
+
+def test_lax_alias_requires_exact_historical_series_and_airport_wording():
+    station=dict(station='KLAX',rules_keywords=['los angeles','national weather service'])
+    m=projection(market(event_ticker='KXHIGHLAX-26JUL01',rules_primary='Los Angeles Airport, CA National Weather Service Climatological Report Daily'))
+    assert station_rules(m,station)
+    assert not station_rules({**m,'event_ticker':'OTHER'},station)
+    assert not station_rules({**m,'rules_primary':'Los Angeles Downtown CA National Weather Service'},station)

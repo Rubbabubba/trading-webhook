@@ -1,0 +1,12 @@
+{
+  "source": "https://cryptostruct.com/prediction-markets/kalshi-kxhighlax",
+  "web_read": "public provider page accessible via web tool",
+  "direct_get": "HTTP 403 after sandbox DNS failure; stopped without bypass",
+  "sample_selection": "provider advertises busiest contract of settled day; outcome-selected, not untouched performance holdout",
+  "observed_web_sample": "KXHIGHLAX-26SEP28-B76.5, UTC 2026-09-29; differs from prior indexed September 3 sample",
+  "download_verified": false,
+  "purchase_authorized": false,
+  "purchases": 0,
+  "orders": 0,
+  "profitability_proven": false
+}
