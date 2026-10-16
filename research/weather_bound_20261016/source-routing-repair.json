@@ -1,0 +1,25 @@
+{
+  "id": "weather_bound_source_routing_repair_v1_20261016",
+  "registered_at": "2026-10-16T03:10:23.822547+00:00",
+  "original_result": "result-v1-source-blocked.json",
+  "purpose": "Resolve51fixed-frame August15-31cityevents missing fromhistorical storage, inspect official storagecutoff and exact LAXcontract definition; no newdates or tradingprices.",
+  "max_additional_requests": 60,
+  "original_requests": 189,
+  "max_cumulative_requests": 249,
+  "allowed": [
+    "oneGET/historical/cutoff",
+    "oneGET/series/KXHIGHLAX",
+    "exactmissingeventGET/markets withsame event ticker/limit1000",
+    "oneofficialLAXcontractPDF fromseries metadata"
+  ],
+  "source_format": "Normalize only knownU+00C2U+00B0degree encoding todegree glyph, with unchanged machine/text integer-bound equality required",
+  "unchanged": [
+    "2Fbuffer",
+    "maintenance/COR/conflict rejection",
+    "fixeddates/stations/exclusions",
+    "sample thresholds",
+    "no prices/orders/PnL",
+    "all frozenV14gates"
+  ],
+  "station_alias": "Accept a newLAXlabel only if independently established byofficialcontract definition; otherwise remainblocked"
+}
