@@ -1406,13 +1406,13 @@ def scan_market_candidate(state, journal, markets, market):
     try:
         quote = markets.quote({"ticker": market["ticker"]})
         frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
-        record_sampling_book_health(state, market["ticker"], usable=True, now=time.time())
         rows = observe_frame(state, market["ticker"], frame, event_id(market))
         preferred = preferred_outcome(state, journal, market["ticker"])
         signal = maker_quote(rows, frame, preferred)
         v12_signal, _reason = v12_shadow_decision(rows, frame)
         frame = dict(frame)
         frame["v12_trial_signal"] = v12_signal
+        record_sampling_book_health(state, market["ticker"], usable=True, now=time.time())
         return frame, signal
     except ValueError as error:
         reason = str(error)

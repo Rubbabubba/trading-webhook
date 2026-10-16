@@ -41,5 +41,7 @@
   },
   "deployed": false,
   "prospective_effect_verified": false,
-  "profitability_proven": false
+  "profitability_proven": false,
+  "first_deployment": "e98ac2b live, healthy, accepted46148byte report; genuine failures stayed at1, exposing premature usable=True reset before observe_frame validated book",
+  "followup_repair": "Move success reset after all scan book/signal validation; add regression where HTTP succeeds but observe_frame rejects missing_book. Preserve initial deployment and receipts."
 }

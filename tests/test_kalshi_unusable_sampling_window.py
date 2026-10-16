@@ -74,3 +74,15 @@ def test_unexpected_failure_propagates_without_counting_lifecycle_failure():
     with pytest.raises(ValueError,match="transport_clock_invalid"):
         worker.scan_market_candidate(state,object(),Markets(),window[0])
     assert "sampling_window_book_health" not in state.data
+
+
+def test_http_success_with_invalid_empty_book_does_not_reset_consecutive_failures(monkeypatch):
+    state,cohort,window=setup()
+    class Markets:
+        def quote(self,payload):return {"observed_at":1000}
+    monkeypatch.setattr(worker,"one_contract_frame",lambda q,**kw:dict(received_at=1000))
+    def invalid(*a,**kw):raise ValueError("missing_book")
+    monkeypatch.setattr(worker,"observe_frame",invalid)
+    for _ in range(2):
+        assert worker.scan_market_candidate(state,object(),Markets(),window[0])==(None,None)
+    assert state.data["sampling_window_book_health"]["failures"][window[0]["ticker"]]["consecutive"]==2
