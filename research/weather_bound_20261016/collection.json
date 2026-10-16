@@ -1,0 +1,1903 @@
+{
+  "schema": "weather_bound_collection_v1",
+  "registration_sha256": "13454cc015fbcdc824b6b925cb1cddd0e0ac28ebb5fcd9e15f60bb214584e2b3",
+  "captured_at": "2026-10-16T03:05:59.852119+00:00",
+  "observations": {
+    "KNYC": {
+      "url": "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?station=NYC&network=NY_ASOS&data=metar&year1=2026&month1=7&day1=1&year2=2026&month2=9&day2=2&tz=Etc%2FUTC&format=onlycomma&latlon=no&elev=no&missing=M&trace=T&direct=no&report_type=3&report_type=4",
+      "captured_at": "2026-10-16T03:03:49.734136+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\51ff1958ed409a284f1741fd8cea15b89ff17ca2099329630515fa0514479d17.body",
+      "body_sha256": "6201b2bd1ebff7f2ad660f2fb8fa125aee4151cdd1600138450663ea3c35ec8a",
+      "bytes": 210832
+    },
+    "KMDW": {
+      "url": "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?station=MDW&network=IL_ASOS&data=metar&year1=2026&month1=7&day1=1&year2=2026&month2=9&day2=2&tz=Etc%2FUTC&format=onlycomma&latlon=no&elev=no&missing=M&trace=T&direct=no&report_type=3&report_type=4",
+      "captured_at": "2026-10-16T03:03:50.854408+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\5fd1fadb049e67e0d37c1fcb67d0e0583a27117f7d4f58626f1d07884ecfc064.body",
+      "body_sha256": "556bd35c269a401efea109489dbee2462583178dc224f94b9676d6cf01889362",
+      "bytes": 190766
+    },
+    "KLAX": {
+      "url": "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?station=LAX&network=CA_ASOS&data=metar&year1=2026&month1=7&day1=1&year2=2026&month2=9&day2=2&tz=Etc%2FUTC&format=onlycomma&latlon=no&elev=no&missing=M&trace=T&direct=no&report_type=3&report_type=4",
+      "captured_at": "2026-10-16T03:03:51.893763+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\06c4276821ee73ee613ed5aa43b52a91eccef8558015a3e22fdc25ae9426ac3e.body",
+      "body_sha256": "5c907a2303d1f5128208fa024be6d0fa202eeda5c5ddb3717682a2d6f6ac67cb",
+      "bytes": 177388
+    }
+  },
+  "events": {
+    "KXHIGHNY-26JUL01": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL01&limit=1000",
+      "captured_at": "2026-10-16T03:03:52.996122+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\b90b23b324183a61aad9b9e3c2fe619947b5ac983fbac01d966a47c3416293fe.body",
+      "body_sha256": "c434aeaa05f7a5d2555e3cafa2516d442fae6f6a23db4c188d9b95cfaa42c47a",
+      "bytes": 14597
+    },
+    "KXHIGHNY-26JUL02": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL02&limit=1000",
+      "captured_at": "2026-10-16T03:03:53.775181+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\89cc537d488fd6b4670b1ebb1b3fac589e03bd4995862cc2149fcd5dbca9bce9.body",
+      "body_sha256": "5cca9e5b901b1f48cbcf47efb3f1681b2d196f187eb192d49c95479ec67e5608",
+      "bytes": 14652
+    },
+    "KXHIGHNY-26JUL03": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL03&limit=1000",
+      "captured_at": "2026-10-16T03:03:54.490481+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\736f487488e43425f10cdb0e886dcab19eb02530a2d91ff9eb3e8cf0de91f5df.body",
+      "body_sha256": "e84bdae26c39dfc45087eebb11ab4e7d14cce848711cc65d36614a8e24b951e4",
+      "bytes": 14639
+    },
+    "KXHIGHNY-26JUL04": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL04&limit=1000",
+      "captured_at": "2026-10-16T03:03:55.259579+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\9bb82222d22dfcfdeac9d96fec7176159f112094d95d4f6bb5445a3ace3a9ba5.body",
+      "body_sha256": "c10a7a008bd09c877ba85c82edfed180d42814a922c6faec4cb16d6623453d3c",
+      "bytes": 14624
+    },
+    "KXHIGHNY-26JUL05": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL05&limit=1000",
+      "captured_at": "2026-10-16T03:03:55.950058+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\7fd5062e5a668367d437394972e3ee289911a1633c1a3432adfdc8e1210263ea.body",
+      "body_sha256": "6f3ea2bbd0c4073a239f07254cf7d10024eb5a8e5ce33810543b2d71f88aa3bc",
+      "bytes": 14578
+    },
+    "KXHIGHNY-26JUL06": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL06&limit=1000",
+      "captured_at": "2026-10-16T03:03:56.630681+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\43639beb96c2e06882f3389367c8e2f96b290e64c14ecbb79cc3bbb3618e125c.body",
+      "body_sha256": "b9ea22ca33a195246927cd296b9b65171d7ecc2279eadfc0b718925515dc458b",
+      "bytes": 14590
+    },
+    "KXHIGHNY-26JUL07": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL07&limit=1000",
+      "captured_at": "2026-10-16T03:03:57.326376+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\4e0f0d63296b7ee269d99b38e7a06d2057a003546abdc4cb0b864f31bed2f66d.body",
+      "body_sha256": "6d893a1d9a52ae78c8008632f86724cbdac7b44d90df312f6dd2fbcee6f389cd",
+      "bytes": 14589
+    },
+    "KXHIGHNY-26JUL08": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL08&limit=1000",
+      "captured_at": "2026-10-16T03:03:58.016266+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\592129e63378e7604fa3daa22604ea3c70b3f1c6a4530ae23c2155c36cdd2d76.body",
+      "body_sha256": "d443351c5b47202bab54202d4e38898584158271b9c4cab32527c1f8510bc14f",
+      "bytes": 14592
+    },
+    "KXHIGHNY-26JUL09": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL09&limit=1000",
+      "captured_at": "2026-10-16T03:03:58.703905+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\9b4b5a2cbd4d0f78a35ea5c8309d00dd3802a8269720108d5cfa638ec1005aa2.body",
+      "body_sha256": "4544c28e992cf78e19d98d29c9c79bc909fe4b658a1932b41de382b4a82c7932",
+      "bytes": 14591
+    },
+    "KXHIGHNY-26JUL10": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL10&limit=1000",
+      "captured_at": "2026-10-16T03:03:59.413650+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\011f1c931fb048192a64eace13a9d4339d739009f8bf7ef6a08a6b84b2e32b57.body",
+      "body_sha256": "11e02978a2838b788f4caa88fe6bca29ec7666f0ece1e363d4ca23c8a0e9c315",
+      "bytes": 14596
+    },
+    "KXHIGHNY-26JUL11": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL11&limit=1000",
+      "captured_at": "2026-10-16T03:04:00.103488+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\bd14b83185111dd38a37e07a200984cd615d81176cbd7bea089c9c94a4af49fb.body",
+      "body_sha256": "b179068c23c0250b1c97f299a20d4927e963b4ee37e9118632adbf0c8d5311a4",
+      "bytes": 14596
+    },
+    "KXHIGHNY-26JUL12": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL12&limit=1000",
+      "captured_at": "2026-10-16T03:04:00.780673+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\d49ea8c573e0f0b3c523a5a5effc8e4c8d5fdb38dac692feed9a73206f4f1c20.body",
+      "body_sha256": "31698f7db6594dcc23b822ea417256c516d9a21140da4a97bad3fe06a56d9db4",
+      "bytes": 14597
+    },
+    "KXHIGHNY-26JUL13": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL13&limit=1000",
+      "captured_at": "2026-10-16T03:04:01.474717+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\7f023e4f0ccdaa22ae5d0e79769158acb70d62b462e1af07f9471860bd2b4cee.body",
+      "body_sha256": "c8988271fda0b3e371405a9cf0f6ffa7ec2047605bf6cb3ca5043695e0ee2d41",
+      "bytes": 14597
+    },
+    "KXHIGHNY-26JUL14": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL14&limit=1000",
+      "captured_at": "2026-10-16T03:04:02.147444+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\cc2e300840629452e8ec1c987a390b9a6d74cb7d134ba8c38d06dfec1b238cfe.body",
+      "body_sha256": "5c17fa5b5ab19c938821b0038ca76ff71069798389d31839e1395f8133819213",
+      "bytes": 14594
+    },
+    "KXHIGHNY-26JUL15": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL15&limit=1000",
+      "captured_at": "2026-10-16T03:04:02.860091+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\62bae636afe01060c3237d1a6d9d60012c2371c792a598964c93bb424352b44b.body",
+      "body_sha256": "ab19bf8a6bc290a42bf5a3838c452f3d906e58e47c63f71feff2eb299b585b63",
+      "bytes": 14657
+    },
+    "KXHIGHNY-26JUL16": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL16&limit=1000",
+      "captured_at": "2026-10-16T03:04:03.583333+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\36b108f9193a53754972f83e14d270277b3e01f53b56d279d860608caa081f73.body",
+      "body_sha256": "9d87c97937b08c30ef155a1d95bae0a23b432f4289b0d28d25373fcc523da9af",
+      "bytes": 14598
+    },
+    "KXHIGHNY-26JUL17": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL17&limit=1000",
+      "captured_at": "2026-10-16T03:04:04.269879+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\136a665310f62ed55777de59ff2278eaa971b7e4a0aaa877c113942fb5cae779.body",
+      "body_sha256": "ea37f5b9db00f1aeb8d86cc2278ffe8354c21f8c096e8bf43554b689003357e3",
+      "bytes": 14581
+    },
+    "KXHIGHNY-26JUL18": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL18&limit=1000",
+      "captured_at": "2026-10-16T03:04:04.994341+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\0482b61d8db51015579dd47dfbeae32c8ab6221d0b11483ff646ccc0dfc20c89.body",
+      "body_sha256": "6f57e8932e1963da08109c7ef4ce3f65897665a04145228b38a7af0ead653000",
+      "bytes": 14599
+    },
+    "KXHIGHNY-26JUL19": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL19&limit=1000",
+      "captured_at": "2026-10-16T03:04:05.692817+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\5596f93db9cdd81f4358a5774e5ac41bef41fbcee5f3586684bc6265609f6f72.body",
+      "body_sha256": "991c8ccebf41bfa249e8acd22e5bebdab33759f997048739a15ff9323ac56fee",
+      "bytes": 14592
+    },
+    "KXHIGHNY-26JUL20": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL20&limit=1000",
+      "captured_at": "2026-10-16T03:04:06.390231+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\84a617f53f789b664407b5d45432010690e406a99776fd0e1365f067f5391f37.body",
+      "body_sha256": "60a95525737f3013950178c073b86c06de27a5bb38e25302d574a4cc016b6e49",
+      "bytes": 14599
+    },
+    "KXHIGHNY-26JUL21": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL21&limit=1000",
+      "captured_at": "2026-10-16T03:04:07.068415+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\62b3068e183ec2139864522ca25c15a5ef2fe3e25b359803e4531616f3bde2c2.body",
+      "body_sha256": "0fa7ff88010084f2984d214e6ade5dfd4a697499392dd6f5f497d2922a749292",
+      "bytes": 14600
+    },
+    "KXHIGHNY-26JUL22": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL22&limit=1000",
+      "captured_at": "2026-10-16T03:04:07.745324+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\bb2ad289109f8fe13a6275d84e64a0dbe563f27ed9bdc6c91380d0377789b102.body",
+      "body_sha256": "8ea0e665c6760acd5e5548293675154a8b48a2b241eaf64869cea26b79866866",
+      "bytes": 14597
+    },
+    "KXHIGHNY-26JUL23": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL23&limit=1000",
+      "captured_at": "2026-10-16T03:04:08.437079+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\b9fde84b2ec4fb48156fcfd02cfb401402a4383c0e221ce933b5f651ce69a3b9.body",
+      "body_sha256": "8ff2b65f935833239cba26803743ed1c9194c3fa63652a96625870060d87a86d",
+      "bytes": 14598
+    },
+    "KXHIGHNY-26JUL24": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL24&limit=1000",
+      "captured_at": "2026-10-16T03:04:09.135593+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\45d11fddf336505753182597e2503245243206a8a5193570154e567db023753f.body",
+      "body_sha256": "585cda33b9ebd5a86781352d9ce6cabbb27ea325b22770948eab6539553ef8ee",
+      "bytes": 14597
+    },
+    "KXHIGHNY-26JUL25": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL25&limit=1000",
+      "captured_at": "2026-10-16T03:04:09.814556+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\18907b56f8f270b353db5ada6dc74c2facc9cd8a296eedce8662f29b1c2c8dad.body",
+      "body_sha256": "6133b2cec17f9eafa49c0e564812a38f31162e25e991e0c0affdb0f4c8236be1",
+      "bytes": 14597
+    },
+    "KXHIGHNY-26JUL26": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL26&limit=1000",
+      "captured_at": "2026-10-16T03:04:10.499242+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\7f81f0091be6e475daf005d0ad2c746b141add4b9959fa6abbd7b33f8040cfe0.body",
+      "body_sha256": "5424f5efa6df8e3eb7290ed9d0c0cbe3ca1429a8f1057d1dce61b92f1208bf36",
+      "bytes": 14586
+    },
+    "KXHIGHNY-26JUL27": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL27&limit=1000",
+      "captured_at": "2026-10-16T03:04:11.181894+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\2e1914f0bea2082a76ced9f0ec147752a123f2611b5ff7614f45726ba5edae80.body",
+      "body_sha256": "39e52f34e5cb7e1f4f1691fdd4d65d3d3a76a766fa40bf8ab561e677d3ba1ee9",
+      "bytes": 14591
+    },
+    "KXHIGHNY-26JUL28": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL28&limit=1000",
+      "captured_at": "2026-10-16T03:04:11.868229+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f6e562fc827f0e1583f8e7d33e32246232e263a7f9bdc18ae36d2d15ced54201.body",
+      "body_sha256": "d66efcbcc18e03f174ecb1dd8385663164d8bed01631aef1fd056c3141c36e9f",
+      "bytes": 14599
+    },
+    "KXHIGHNY-26JUL29": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL29&limit=1000",
+      "captured_at": "2026-10-16T03:04:12.571926+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\155cd25da7ef98e34af8d3284dbd2d109f6381dfe37b2a88c960fd1b0e03d882.body",
+      "body_sha256": "625e797d2d06215c104bf702329f88dec8547618befd045c520eaadca7c04d57",
+      "bytes": 14599
+    },
+    "KXHIGHNY-26JUL30": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL30&limit=1000",
+      "captured_at": "2026-10-16T03:04:13.248693+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\41a8b349bd44e0574144b480d8653102df7ef87f72e684275fb8f66bad10a319.body",
+      "body_sha256": "7a8dad8bd914f25d511e443ab28fef3e8a7226113e097fa934d5855d166460be",
+      "bytes": 14596
+    },
+    "KXHIGHNY-26JUL31": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26JUL31&limit=1000",
+      "captured_at": "2026-10-16T03:04:13.939755+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\b185293f806e1594b134c66e107f4404cb3bb2c53619dd5ca48cbdb76b189973.body",
+      "body_sha256": "4d0983ab4984a9c41063d34eb316d0cc0bfb748c19424378ad7ac76331515086",
+      "bytes": 14626
+    },
+    "KXHIGHNY-26AUG01": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG01&limit=1000",
+      "captured_at": "2026-10-16T03:04:14.621341+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\3f8ca396d2e7717dab9c3916856f2e4f1dbcbd5c6887bd3cb5ca9f44539cef40.body",
+      "body_sha256": "52178fcf9ad046469d803242fd608dad6952ca1bfad71b6da4cfaf388b438025",
+      "bytes": 14639
+    },
+    "KXHIGHNY-26AUG02": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG02&limit=1000",
+      "captured_at": "2026-10-16T03:04:15.322820+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\1c5866b3be6dc32b368e8f8d72bbe59a50fa04241511da6c78d96416e410674c.body",
+      "body_sha256": "985a048d94401d0166bbf90e9760120bfd346c14ffcf3830bcc0284051aabd40",
+      "bytes": 14639
+    },
+    "KXHIGHNY-26AUG03": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG03&limit=1000",
+      "captured_at": "2026-10-16T03:04:16.031503+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\75a4350977814fd028c65bcaeee6ece4cdb4d626bf13a0570247c1c781c3add5.body",
+      "body_sha256": "6936a866dbce0216bc21cacf5980c4a36ad8ce135e305c7e858e88f091308c3a",
+      "bytes": 14640
+    },
+    "KXHIGHNY-26AUG04": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG04&limit=1000",
+      "captured_at": "2026-10-16T03:04:16.714207+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\e4df2cef15f869af413a201453639c8c79d9909d8d2f13b29d3fee14e6657b68.body",
+      "body_sha256": "44722392f2c97c320f4a5cc60794e435ebcaec402d49d8c8fdfda2c9c5ea083c",
+      "bytes": 14640
+    },
+    "KXHIGHNY-26AUG05": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG05&limit=1000",
+      "captured_at": "2026-10-16T03:04:17.393509+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\d79eadf5cfe655aeb75f51f32023ff78584836f57018f51ebfdcbd4834157fcd.body",
+      "body_sha256": "c0ff88bd44a488b4511be4ac44920a97c8a86444adebf733dab2f3fc498cb51b",
+      "bytes": 14640
+    },
+    "KXHIGHNY-26AUG06": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG06&limit=1000",
+      "captured_at": "2026-10-16T03:04:18.067195+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\9c507c86b080ea56aa78db375aa4c72fa859072434a6eeb93b2c7eb2cb684797.body",
+      "body_sha256": "b9c663e25a6ee33621c373dde4d2b1efaec80952b99e7ee13dd97a590459933c",
+      "bytes": 14639
+    },
+    "KXHIGHNY-26AUG07": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG07&limit=1000",
+      "captured_at": "2026-10-16T03:04:18.748919+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\2929036bec596578ff8885a8e2a39bf55d1b7e943cce248070eb15c5664b945e.body",
+      "body_sha256": "c29a8e3c2e39ed2b42b3f1060e0b86041f08a696e2d50ee8b112682953ca60fd",
+      "bytes": 14640
+    },
+    "KXHIGHNY-26AUG08": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG08&limit=1000",
+      "captured_at": "2026-10-16T03:04:19.440652+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\59aced9707826fbb73935cd8a1af253853e74b887a8b3c45fd99dbef81bbfcd9.body",
+      "body_sha256": "983143fae1a708fc20129b079aa3fcdcb20d8153088e13a2459322419e2b79b6",
+      "bytes": 14638
+    },
+    "KXHIGHNY-26AUG09": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG09&limit=1000",
+      "captured_at": "2026-10-16T03:04:20.110876+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\de6b1565e00fc6488699e5be22a81e5f6efc0fc9dfe99bffb2f44c8e2e6c55c3.body",
+      "body_sha256": "c7ccd0430495ae2a038ad10909d2d9ddb2e46555d8cce568b336e7c6527e4ff9",
+      "bytes": 14639
+    },
+    "KXHIGHNY-26AUG10": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG10&limit=1000",
+      "captured_at": "2026-10-16T03:04:20.807792+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\50c22ef3a7f7a6056f89bd19e373d74d7f6bd0bf0c0c19174e1bdd318f4b6cc5.body",
+      "body_sha256": "b81ea4b06c88f337aece7efd63327d9518fa6f8995d37944d5b96fbb656464bc",
+      "bytes": 14644
+    },
+    "KXHIGHNY-26AUG11": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG11&limit=1000",
+      "captured_at": "2026-10-16T03:04:21.512463+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\adf6016b327affc14ddf90e48771383275d13170f858e64bd9f1d1abbef39013.body",
+      "body_sha256": "968728c215293233f17baed350bc5551d9503dce3b90709c499940b74b9a40db",
+      "bytes": 14643
+    },
+    "KXHIGHNY-26AUG12": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG12&limit=1000",
+      "captured_at": "2026-10-16T03:04:22.226457+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\14a5c5a941b45d1edb0367096f1f1d4c22b9c35e052cf16271e95ec1e542a50a.body",
+      "body_sha256": "c5c34d8eecc34963de29435000fdc4cd8facd055076f2c9f7de52c2aea9d6ad2",
+      "bytes": 14646
+    },
+    "KXHIGHNY-26AUG13": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG13&limit=1000",
+      "captured_at": "2026-10-16T03:04:22.898306+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\6d285de449840c605b6107f1c7b1a89ac171eb6cb25d6c9b7843def64831ae1a.body",
+      "body_sha256": "e7de407750d031d37985e1bb8bf0109345804d722962a065a29c99562dae219c",
+      "bytes": 14643
+    },
+    "KXHIGHNY-26AUG14": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG14&limit=1000",
+      "captured_at": "2026-10-16T03:04:23.613092+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\814a38b909ba9683c9403c7a42b91ed150fa1418de079a0fcebf5148462e4223.body",
+      "body_sha256": "3d17450509e553342b80361cc16d710ca0f4173519f6b275c0f3455d0d5b22c0",
+      "bytes": 15050
+    },
+    "KXHIGHNY-26AUG15": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG15&limit=1000",
+      "captured_at": "2026-10-16T03:04:24.324154+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\26733eb3a65494799f779cd957a1c3f813af67ebd1a3c04b506481b3b84b26dd.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG16": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG16&limit=1000",
+      "captured_at": "2026-10-16T03:04:24.981999+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\51afa47e9df9551c0cf4b4f76aeff15c5969c6da5e020654e7dca87dc870f232.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG17": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG17&limit=1000",
+      "captured_at": "2026-10-16T03:04:25.611274+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\705c0b4a6f29d640f0486abb85ea351d97285339904a28a7726f1a99e64262a0.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG18": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG18&limit=1000",
+      "captured_at": "2026-10-16T03:04:26.251366+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\21944acdd4b5c6fe14fa277a2f065caba463eb3dcc80ec136c6a123e48c0ed1e.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG19": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG19&limit=1000",
+      "captured_at": "2026-10-16T03:04:26.924391+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\4124ff2ca4a28846efbbbfb5f1bafe353fe93f1a1a36e3583c144a1efb6241a2.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG20": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG20&limit=1000",
+      "captured_at": "2026-10-16T03:04:27.587971+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\b237b61144b25a276d122a7c857d30a2482b72d61f6d71ffc3cc819e914b7b9d.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG21": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG21&limit=1000",
+      "captured_at": "2026-10-16T03:04:28.263284+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\9cfd472cd56fff483c7bfe8d7801c444eb80e571f37d98d1613c0ec35810519c.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG22": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG22&limit=1000",
+      "captured_at": "2026-10-16T03:04:28.953049+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\05e75c2d3a0cc96e89a323d7a120fc1ac1074d67b62859bdde6d5c9b1588afaa.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG23": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG23&limit=1000",
+      "captured_at": "2026-10-16T03:04:29.618130+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\1f10cdcd035d0301811a0da8dd0372dca65d13e0780177f71f215ec414c4f3fb.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG24": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG24&limit=1000",
+      "captured_at": "2026-10-16T03:04:30.254995+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\70ee9e02d0073bdd4a65a91ea71bbf9ed87f8185d166aefc7ca9a339cf52e146.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG25": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG25&limit=1000",
+      "captured_at": "2026-10-16T03:04:30.927440+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\adc985731f899c5aaf3aee346635f93e5dd5590477729202bfd3d0a27059b7ee.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG26": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG26&limit=1000",
+      "captured_at": "2026-10-16T03:04:31.595781+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\a02e63d6e6a9134da37a77ab64519bf20a34d20e80da1725c2ef46f113ada842.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG27": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG27&limit=1000",
+      "captured_at": "2026-10-16T03:04:32.233940+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\26ab5ce29edbb2accb30adae86237c5450bba6c0aa55837e44c96760c532efc8.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG28": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG28&limit=1000",
+      "captured_at": "2026-10-16T03:04:32.899356+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\8d99687a2ad01f6ad233a7046decc45e209806055e7948950054656c57427817.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG29": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG29&limit=1000",
+      "captured_at": "2026-10-16T03:04:33.565122+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\73ae38ff8bf2283116fe7ed7d87bec66ddd4fc14d1cd9e8f97d6f234ce45e68a.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG30": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG30&limit=1000",
+      "captured_at": "2026-10-16T03:04:34.257372+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\9db2dcebd53879da35aff4ebd5549a004836eb91e88665b5e5c67579980d3f46.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHNY-26AUG31": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHNY-26AUG31&limit=1000",
+      "captured_at": "2026-10-16T03:04:34.947403+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f97fa164c3bcbf4809b9a99fcd5e672f3bb526fdf29f995b73fa6d4a5f00be99.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26JUL01": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL01&limit=1000",
+      "captured_at": "2026-10-16T03:04:35.620597+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f782bd68748af92bc41f86990e4ab922d2a6379b9f1d800bed9ec84a0a5b4ff2.body",
+      "body_sha256": "48f85216876c3b51ca49390cbff2edfeeeb5fa27e3db6eff2fbac45d1fe08a76",
+      "bytes": 14592
+    },
+    "KXHIGHCHI-26JUL02": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL02&limit=1000",
+      "captured_at": "2026-10-16T03:04:36.314908+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\16d3bde47cf437f38eb0b441a65e42018f0b642cb90d150386d12156ce9b2e15.body",
+      "body_sha256": "8dd1a04a5d15d2ad36080c94e5b1a679dd2c79c3008d6f5f3dc8521e52c7b85d",
+      "bytes": 14581
+    },
+    "KXHIGHCHI-26JUL03": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL03&limit=1000",
+      "captured_at": "2026-10-16T03:04:36.980361+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\29cb4d882fafc20bb0a26783587f5ec9de9207f53fd32e74fd101f8eabc9b087.body",
+      "body_sha256": "96155938b7e18112dc886b979f6f0cc4e2c8942412094f3ff5d54c8d3121fcf2",
+      "bytes": 14562
+    },
+    "KXHIGHCHI-26JUL04": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL04&limit=1000",
+      "captured_at": "2026-10-16T03:04:37.698748+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\9e4eb019e75a6e27e02ea05d6d9d5885c8164c37463308405f566f5ec5017a15.body",
+      "body_sha256": "6839bf5ff104a6fdbf415c92b84ee30e7ad897ee8e5d0d2cf99053d3a1ba4cc3",
+      "bytes": 14567
+    },
+    "KXHIGHCHI-26JUL05": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL05&limit=1000",
+      "captured_at": "2026-10-16T03:04:38.402610+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\3f998461dd79547ad07d6d7c0ee2665cc02e18ac032cb76c399bab148216c498.body",
+      "body_sha256": "9070214b3887d7745a5fa5051d67a0cfb140f8a129e61ac77546f02590d07970",
+      "bytes": 14553
+    },
+    "KXHIGHCHI-26JUL06": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL06&limit=1000",
+      "captured_at": "2026-10-16T03:04:39.117083+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\86fad2e1e94c4ab5c67cffeb2471113f07fdee7ff20df3eb9fcd8d1716df93ae.body",
+      "body_sha256": "d5df91f62a9935b5c0c80e6047a348002c134343f866b28eb8be860492c70e84",
+      "bytes": 14562
+    },
+    "KXHIGHCHI-26JUL07": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL07&limit=1000",
+      "captured_at": "2026-10-16T03:04:39.818061+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\b8319b6b9393aee5994dc69d7bc5ba21c435eb86b41d6588bb4e95c58d9beff6.body",
+      "body_sha256": "db0888c9d663cd639b86d0ceda3a507dc0dfaf1593ff728c5bc65ed8930cd7eb",
+      "bytes": 14563
+    },
+    "KXHIGHCHI-26JUL08": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL08&limit=1000",
+      "captured_at": "2026-10-16T03:04:40.514262+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\fa678da2df4438549c44087ed31828fad9aa8239d0114a60733f9a03b96e6ea0.body",
+      "body_sha256": "0200674c6b8adc578f64389e64ecfb2b8a3204c9581881a0878d011a85a66f11",
+      "bytes": 14566
+    },
+    "KXHIGHCHI-26JUL09": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL09&limit=1000",
+      "captured_at": "2026-10-16T03:04:41.281955+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\ef434b1bd4c42b5265ab2809e319d254dec91d316c0cdd31db3d68e965f1185c.body",
+      "body_sha256": "513c4dc8eecafdae9909b8db2bea3151cb1dc1a27fd4142b388650ab10a932d3",
+      "bytes": 14567
+    },
+    "KXHIGHCHI-26JUL10": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL10&limit=1000",
+      "captured_at": "2026-10-16T03:04:41.978076+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\7ec7b8a9151a1c87f40257f61f4ac0a5d2fecaec2696db41a1c64681d24cc734.body",
+      "body_sha256": "43e3c232241329eb740c61cdadca4df52719556488dfd26e8bc3e7363e25b45f",
+      "bytes": 14562
+    },
+    "KXHIGHCHI-26JUL11": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL11&limit=1000",
+      "captured_at": "2026-10-16T03:04:42.649580+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\944de96a733fd11f7bb63e08816ebb48faf30019634ec9ffa01de9f46fe1e03d.body",
+      "body_sha256": "81ff94b67d92a94aa4b58a81126965da28736714c040eb72bab0e20a8098ae11",
+      "bytes": 14572
+    },
+    "KXHIGHCHI-26JUL12": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL12&limit=1000",
+      "captured_at": "2026-10-16T03:04:43.342436+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\201d031eb9065f61d720effe0f525e9f14f687c8e87aac9e16f3bcee20c10eaa.body",
+      "body_sha256": "b6992e951b325c9bd00dd3c3e3f4a2dd8c8ca3f57c8c103ff7101e58639046c2",
+      "bytes": 14566
+    },
+    "KXHIGHCHI-26JUL13": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL13&limit=1000",
+      "captured_at": "2026-10-16T03:04:44.038096+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\c995fa4c072eb843556dabb94e26eca6ef7c6021586ee6c07544850292ef43b1.body",
+      "body_sha256": "f533c0393a2bdabe1ba761f6b78d327368abd8d914e58f49a318ecf206369d5b",
+      "bytes": 14575
+    },
+    "KXHIGHCHI-26JUL14": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL14&limit=1000",
+      "captured_at": "2026-10-16T03:04:44.750372+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\525adf29f49063187c037af6d5e32d2e055522863c9dd73bb22360df26430545.body",
+      "body_sha256": "5348eae3e7a9c89e6c834bd189d3d5cc8ea9e62d0f1c6697925c1c5f9b5f80b6",
+      "bytes": 14588
+    },
+    "KXHIGHCHI-26JUL15": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL15&limit=1000",
+      "captured_at": "2026-10-16T03:04:45.452732+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\3bd73a2f2aff1fb4315bdb71cde94997b889a56377a7d2f7079664c49751d3db.body",
+      "body_sha256": "ad0d8cfbfbbde5b6e1a53b3b71ef548ba786d3d31b8f6485883b3bcee0e58677",
+      "bytes": 14625
+    },
+    "KXHIGHCHI-26JUL16": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL16&limit=1000",
+      "captured_at": "2026-10-16T03:04:46.180176+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\aa6565f0877906250560330640b7c6ba54b1e18d745ad52c7eee58f92e7769a4.body",
+      "body_sha256": "3964e85f7a72bf4573325d17070d72b80b1d8af06ba5b65153a0689b0fca4f06",
+      "bytes": 14576
+    },
+    "KXHIGHCHI-26JUL17": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL17&limit=1000",
+      "captured_at": "2026-10-16T03:04:46.907678+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\852efc5933dc690a80693e49fae43f3b0cf715452faeb167b9cbffbabe39535d.body",
+      "body_sha256": "8ebce2be76a093308ad3b94aee0a21fae678d85b8652335290130a9439d5e6b8",
+      "bytes": 14563
+    },
+    "KXHIGHCHI-26JUL18": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL18&limit=1000",
+      "captured_at": "2026-10-16T03:04:47.619148+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\da2915ffe92bf959fb6ae23a04a740ee30c681a36f64c265143dcef46f5902f6.body",
+      "body_sha256": "a9befc21ff63cabaf8fbde072b4f164e6a0cd6b8e0e0b05c0dd24fa63be97a88",
+      "bytes": 14573
+    },
+    "KXHIGHCHI-26JUL19": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL19&limit=1000",
+      "captured_at": "2026-10-16T03:04:48.292188+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\a4388e9c014e857ae3b53621fcaa20fcc285dc0b9ab0872ff733bc7a2a59bd7f.body",
+      "body_sha256": "07ee4493b6b603f1b28f5f96de40ac1fe48aaba9568382c6a1198f823bb0625f",
+      "bytes": 14567
+    },
+    "KXHIGHCHI-26JUL20": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL20&limit=1000",
+      "captured_at": "2026-10-16T03:04:48.990042+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\b0ebade4a1485d39d655f8ebe421dfe1b0fd29733ae999f05cdc8f9b4720b525.body",
+      "body_sha256": "1e1b2b0d058d79cfb3ed247a6a0c7a454c075eea451d09520a5461562afc4c72",
+      "bytes": 14575
+    },
+    "KXHIGHCHI-26JUL21": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL21&limit=1000",
+      "captured_at": "2026-10-16T03:04:49.669150+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\d17cf9570e4552d310d7e6675cb7d926acef8e340d5f1570656fd4f46233703d.body",
+      "body_sha256": "e76e3f09bfe3374979786fc48e469c8a128d65dc5c33da8baf233c2946d743e7",
+      "bytes": 14574
+    },
+    "KXHIGHCHI-26JUL22": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL22&limit=1000",
+      "captured_at": "2026-10-16T03:04:50.383675+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\d18f5ffa8422f44465a129e3cd16e97c0f8c0551c2e4c8f2f0c61f85a3a09e3e.body",
+      "body_sha256": "e4e777b3008a75619a6f7a51e9fdaa45efc03ceb179fefdb87274fde045442f4",
+      "bytes": 14573
+    },
+    "KXHIGHCHI-26JUL23": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL23&limit=1000",
+      "captured_at": "2026-10-16T03:04:51.107705+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\54321593a57271b081a7815ac63c7e18775e913b299341623dec3d4c27beaf85.body",
+      "body_sha256": "4385624abd16e7136f2c56833a0b2f8f43a261ef20ea1cd977854ceddd943027",
+      "bytes": 14572
+    },
+    "KXHIGHCHI-26JUL24": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL24&limit=1000",
+      "captured_at": "2026-10-16T03:04:51.785743+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\8c72e15c5dddc355d051f758da40849deef78421fff3e2c8d7b24cd5e0516450.body",
+      "body_sha256": "a670d522e0b699bed673eaf219234c0fccbe0ff42ce26980f467f2e471faceee",
+      "bytes": 14561
+    },
+    "KXHIGHCHI-26JUL25": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL25&limit=1000",
+      "captured_at": "2026-10-16T03:04:52.475456+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\4b4b0a288daa4c03bd2c3cc11dea3bd524beca8870d228ae30fce66227b3f1dc.body",
+      "body_sha256": "382a6b94db129f545ec0f169c289cd4dd4077162eabf248b90b182b454d85645",
+      "bytes": 14572
+    },
+    "KXHIGHCHI-26JUL26": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL26&limit=1000",
+      "captured_at": "2026-10-16T03:04:53.162773+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\15d5c1418ed1b7ae468f7523a9afbf2ebf49660ce8ad39c2cc8ae0a3f82e8572.body",
+      "body_sha256": "cece70804821dac766a51908ecf254e18024a716daa2199b22ac183871533d6a",
+      "bytes": 14573
+    },
+    "KXHIGHCHI-26JUL27": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL27&limit=1000",
+      "captured_at": "2026-10-16T03:04:53.894408+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\d854d8225e548972a5739e2340e20f28784ea11712339f4a88e437ee090280b7.body",
+      "body_sha256": "50f5d1e8d0411498932c419f87d24237142d2a502a89519552c150a701926013",
+      "bytes": 14573
+    },
+    "KXHIGHCHI-26JUL28": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL28&limit=1000",
+      "captured_at": "2026-10-16T03:04:54.575974+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\d24dfe99c7bbb0b9e0d0d873f45a393013cd87e9f292c70f9e7fcc565db8168d.body",
+      "body_sha256": "98a4952eb06c606320b43a94231261d302d8c205cbe92721d93b6b5af4fe8644",
+      "bytes": 14575
+    },
+    "KXHIGHCHI-26JUL29": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL29&limit=1000",
+      "captured_at": "2026-10-16T03:04:55.290907+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\b2d63b37529a138e2b14a149479d20eb652c495132c0be672bf3d2f2ea79d1d5.body",
+      "body_sha256": "a95f447a88273bbea56c0dbf46f8387c0585a50925df7cf6ed846f1720c8e550",
+      "bytes": 14566
+    },
+    "KXHIGHCHI-26JUL30": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL30&limit=1000",
+      "captured_at": "2026-10-16T03:04:55.968203+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\638e27f33684181b5234d40087ebfd54c0fbc06e0c9b2991be2414f5e795231f.body",
+      "body_sha256": "22079f0143d4e444a35db448832706dcadf963b8207e8f94a025d9986ce73f51",
+      "bytes": 14572
+    },
+    "KXHIGHCHI-26JUL31": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26JUL31&limit=1000",
+      "captured_at": "2026-10-16T03:04:56.640238+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\250a3c4bcd3f4ae11db39e701997a00ed1d130a79767cda7eea5f2ea92c16844.body",
+      "body_sha256": "6cf6e78516c2e8bf3823e84d20cdc427929ac306a25bd2f8037a9004c2dec167",
+      "bytes": 14609
+    },
+    "KXHIGHCHI-26AUG01": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG01&limit=1000",
+      "captured_at": "2026-10-16T03:04:57.321985+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\6778e76efd403878e1d6fe52779c434a79d2d36ebcd8014c5452045e319f4fa2.body",
+      "body_sha256": "2579b03a0c5aad114f2cf0a0b700afd6ae7ed5cb4d023dbc08a1d592b6747ea7",
+      "bytes": 14604
+    },
+    "KXHIGHCHI-26AUG02": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG02&limit=1000",
+      "captured_at": "2026-10-16T03:04:58.011698+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\832df5379243e2941d4855e68e25849b364a4db07e3d9199588fb7e1b4b80a23.body",
+      "body_sha256": "a1842f0cbbc0a0ab951d174c4162266d0907be598be6ef42b663816f38c2fd80",
+      "bytes": 14596
+    },
+    "KXHIGHCHI-26AUG03": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG03&limit=1000",
+      "captured_at": "2026-10-16T03:04:58.712665+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\af5548f6befe2dd9cf7e5c41d300fb00504573c77a0e30f3a84decf4ece0cd22.body",
+      "body_sha256": "ec996df36614f75d631e2db837bd26c0c8be6c7eae2dbd961ba7c4be137c110f",
+      "bytes": 14615
+    },
+    "KXHIGHCHI-26AUG04": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG04&limit=1000",
+      "captured_at": "2026-10-16T03:04:59.381448+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\805c580641dce30dc29932b368bc700ee3bf317c00b4fa16681495820ac0fd12.body",
+      "body_sha256": "1e42664a5ff4269f73ce08eafc5444b0f8d3e1d0c713aa2fbcf9f86e6ff8cd0b",
+      "bytes": 14614
+    },
+    "KXHIGHCHI-26AUG05": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG05&limit=1000",
+      "captured_at": "2026-10-16T03:05:00.058300+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f242160910f888897c81e9d724681ec75ae9e33b98035bf081ae20fcbeddc5ff.body",
+      "body_sha256": "b5caa19da657d879084f12d071aaa44d765f3eafa088c3ba602ce8ce3e192f26",
+      "bytes": 14616
+    },
+    "KXHIGHCHI-26AUG06": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG06&limit=1000",
+      "captured_at": "2026-10-16T03:05:00.766792+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\7fbba7b1b870bf2574d1b4d83c40948192f1768b4fe2da93dba689bce5bd173d.body",
+      "body_sha256": "9310894c5e1a404377691f7c003d9b72ebf7e14f6456c0638cfde5795fa7b2e9",
+      "bytes": 14615
+    },
+    "KXHIGHCHI-26AUG07": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG07&limit=1000",
+      "captured_at": "2026-10-16T03:05:01.464623+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\8c29b58b71ea03090b1f255b26bdd850b60e8ccd44fe1506adc2afc0b30e01fd.body",
+      "body_sha256": "d30a9ef8a419937bef9c6fca69c9d900bcbfc20e105f067a44be9874994164cf",
+      "bytes": 14613
+    },
+    "KXHIGHCHI-26AUG08": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG08&limit=1000",
+      "captured_at": "2026-10-16T03:05:02.139759+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\b882aa73ebbc497013a829c80a77ac8973a1b61503e45ee5b38b3a01795d66af.body",
+      "body_sha256": "9a43f9725fc60e3c62541a069b3084056c9d300ad240f475f1cb94af69cb5278",
+      "bytes": 14614
+    },
+    "KXHIGHCHI-26AUG09": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG09&limit=1000",
+      "captured_at": "2026-10-16T03:05:02.832954+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\2c712dce2515c2e4b46667a73a4335f73b38612d1d4ec7de653f6d119ba80697.body",
+      "body_sha256": "5d764157a64aa82e2f08500639503fc1f13152812dc592627ade309409de3f95",
+      "bytes": 14609
+    },
+    "KXHIGHCHI-26AUG10": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG10&limit=1000",
+      "captured_at": "2026-10-16T03:05:03.537845+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\17fae3f2362a036c3fff3b07b229ef98b4407df810f12f9333211af994848a91.body",
+      "body_sha256": "ff190bb62a9b600432d0ff8389f88071e03fcb56845fb5acc819c068bb657ce8",
+      "bytes": 14623
+    },
+    "KXHIGHCHI-26AUG11": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG11&limit=1000",
+      "captured_at": "2026-10-16T03:05:04.239722+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\9e108577bb051c29c37499a6263944e183f46e1853cec6b6248eed487e218c5f.body",
+      "body_sha256": "7541fbe655348ae9514c80b8993f837156b9abbdb14218030cf615572934bd88",
+      "bytes": 14621
+    },
+    "KXHIGHCHI-26AUG12": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG12&limit=1000",
+      "captured_at": "2026-10-16T03:05:04.922193+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\a32ad867d3f9c2a79b7042d57f9533c71fa4846b0a132c7e2d6aca38e39c7294.body",
+      "body_sha256": "10000d91b7da181ffd0b61cfaf7565fa462b0df8559b9d2c71d75e825a8dbaa1",
+      "bytes": 14622
+    },
+    "KXHIGHCHI-26AUG13": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG13&limit=1000",
+      "captured_at": "2026-10-16T03:05:05.611775+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\115bd93dfe7a6d1fecb2434672d33a747037ab3666f872ead618c2950775ba39.body",
+      "body_sha256": "99b8cfeffd6d307482abef393eac001ff533bae3abf31ab9a788adca6cee3de9",
+      "bytes": 14615
+    },
+    "KXHIGHCHI-26AUG14": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG14&limit=1000",
+      "captured_at": "2026-10-16T03:05:06.283040+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\3bdc202e0d2256aee78ed23207a42ff543a2cb5c0bc58e15510807b67d064988.body",
+      "body_sha256": "40baeaaff21229eb7675f284e8825d3c94fece9371328f3650fdc28346556386",
+      "bytes": 15132
+    },
+    "KXHIGHCHI-26AUG15": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG15&limit=1000",
+      "captured_at": "2026-10-16T03:05:07.012631+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\39a9d343dff5cdf824e208ed14e6a0c78dff4caaa463704566e37b9812cb0b23.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG16": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG16&limit=1000",
+      "captured_at": "2026-10-16T03:05:07.645737+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\5e5635a95c5c214ff237c3954a4b5a3a52b2050d21d7063b71112f0b5064ed47.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG17": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG17&limit=1000",
+      "captured_at": "2026-10-16T03:05:08.273549+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\48d6ec3d34c88af5dba2cc5a88ce154b0b24110de208bb2e8d76116e370287ed.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG18": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG18&limit=1000",
+      "captured_at": "2026-10-16T03:05:08.951893+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\1f868ee2101d7af2f80ac6ffa998d4c10505260fc98b34d2e404487d97ecbecc.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG19": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG19&limit=1000",
+      "captured_at": "2026-10-16T03:05:09.604711+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\eafac0669d0a0b745bf44021568f7652a65307a2fd13a9a208221eefaa7fdb31.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG20": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG20&limit=1000",
+      "captured_at": "2026-10-16T03:05:10.241932+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\54a817d85103f975330d818f6a2ddf898e5f1eaf05b785035788fd6c1f2ac281.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG21": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG21&limit=1000",
+      "captured_at": "2026-10-16T03:05:10.898066+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f1271ead0ff8ba403a1555fe230a99b0a42ddd29879df983de8119eb42b6ffd0.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG22": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG22&limit=1000",
+      "captured_at": "2026-10-16T03:05:11.522759+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\47a0d9663c8c6c6f9599fa19a850000466d12defa3d141f82a1e70e2d2dfa788.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG23": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG23&limit=1000",
+      "captured_at": "2026-10-16T03:05:12.167669+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\7634cd9ca960b19a2157793759489244854ad0f7e9859dd8627f21da1cd75025.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG24": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG24&limit=1000",
+      "captured_at": "2026-10-16T03:05:12.810480+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\260c67e3bf7a5a078a8388a84dee57f1077477c33039addafb74580f916494a8.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG25": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG25&limit=1000",
+      "captured_at": "2026-10-16T03:05:13.477556+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\9e2b7bddccb1f24b12dc69c820d53aae3ca7f5af72420ae6071cc3338a3aab86.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG26": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG26&limit=1000",
+      "captured_at": "2026-10-16T03:05:14.124744+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\52b04bd3ecc5af8a4edf9706d70b9b4036cceb4c4b6a1afead22a61309daf442.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG27": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG27&limit=1000",
+      "captured_at": "2026-10-16T03:05:14.805103+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f5fa7ee609a1b6c1b59bf067ac925e364049e6e7793e3c1feaac2db4c20ac6c9.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG28": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG28&limit=1000",
+      "captured_at": "2026-10-16T03:05:15.468388+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\85eb62c6a0c962519892066c624edd08f3d995fc71dea6b6d5d226a71a4b5d78.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG29": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG29&limit=1000",
+      "captured_at": "2026-10-16T03:05:16.124968+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\3971d8ae0435264e291508bcee49a2aa44eca366f2ae5d3f10c6d280d11a6f5a.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG30": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG30&limit=1000",
+      "captured_at": "2026-10-16T03:05:16.764604+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\2e60d669f06f133fa8d5e26c50548fd4dc7c99a2cebd09c409c4c1c58d0ed988.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHCHI-26AUG31": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHCHI-26AUG31&limit=1000",
+      "captured_at": "2026-10-16T03:05:17.384939+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\3167fbcd535e36ff876ef46f91591397ef982b9bacd3dd5567e6078919290626.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26JUL01": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL01&limit=1000",
+      "captured_at": "2026-10-16T03:05:18.027138+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f77791f278d042e6ca10cb1a0e621884cea73764a290ddba659faa5ce30d8d06.body",
+      "body_sha256": "2612da4617f19531797e0ff7d6ecd9f90ad6d524d5efa3ad29948e82071b4a35",
+      "bytes": 14448
+    },
+    "KXHIGHLAX-26JUL02": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL02&limit=1000",
+      "captured_at": "2026-10-16T03:05:18.716591+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\a40d86eb3b3fc13246432edb6a3f1777ae7542028d65e16778257688e70303dd.body",
+      "body_sha256": "d005d8f2061f8a0657c481ad0d19523a4b81ab880b230d9f85b0c41b80950f5a",
+      "bytes": 14447
+    },
+    "KXHIGHLAX-26JUL03": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL03&limit=1000",
+      "captured_at": "2026-10-16T03:05:19.399278+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\242f9e82f4f7c213bdb4f8834e2c5a79c777ba39c1578e44b55f426514c2caf5.body",
+      "body_sha256": "0270f3c64b0ca7757efda8b50e6998c2ab0ca68df3406e79537d09aadd37e1a4",
+      "bytes": 14448
+    },
+    "KXHIGHLAX-26JUL04": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL04&limit=1000",
+      "captured_at": "2026-10-16T03:05:20.125955+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\0d9f6affb738e48004ee80c965fd09aa95b1073ee436fc5f950ef0d374e3c747.body",
+      "body_sha256": "03d3a9c984f6ad3862e30ff8cfa29b0fb114c1edcdde5f8d8b51c7d5e0ecfff1",
+      "bytes": 14446
+    },
+    "KXHIGHLAX-26JUL05": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL05&limit=1000",
+      "captured_at": "2026-10-16T03:05:20.799016+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\e8bbc4c29a4a157915d59e2a188def97d6b2a2216f663db37a1cd65d54c82233.body",
+      "body_sha256": "abbc559e6bcb3cbdf40b7f03a27194ee73dea29b74e76554ed435d320ba71f56",
+      "bytes": 14442
+    },
+    "KXHIGHLAX-26JUL06": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL06&limit=1000",
+      "captured_at": "2026-10-16T03:05:21.534420+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\1868756b2d7e5ff2195ebccf814475ffda1479559ff40281c087da44de7f003b.body",
+      "body_sha256": "71f0eb8a99410a053936204f7bd04a2fe16c190d26aa3488d7c6dd7f062c3a17",
+      "bytes": 14447
+    },
+    "KXHIGHLAX-26JUL07": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL07&limit=1000",
+      "captured_at": "2026-10-16T03:05:22.220865+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\e0642ee3a7d9b471c64a3160e60721ec536e805910e56c7f9fd18fc840f81e10.body",
+      "body_sha256": "e4671e6879bdee6d0b58dc03eb346dbb46ac52aede5f37ae04902310bab03427",
+      "bytes": 14449
+    },
+    "KXHIGHLAX-26JUL08": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL08&limit=1000",
+      "captured_at": "2026-10-16T03:05:22.898802+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\37d04c4ef3ad12a663a841f64494868e80d766a32158ae11bc4036707de54d28.body",
+      "body_sha256": "1d0419f8f51b5899e8dd7467bee4500ee0cd109dca26a5bc24a5e128dc7fb9a9",
+      "bytes": 14449
+    },
+    "KXHIGHLAX-26JUL09": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL09&limit=1000",
+      "captured_at": "2026-10-16T03:05:23.593003+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\30daca9cc88afad41cb7d48fe2bdc273c16a5ad5999452d7107629b8fb0c1113.body",
+      "body_sha256": "194eb5841e059eb1e9274e602ff3bea2e7936c49f375fa1b9898da647ef6a274",
+      "bytes": 14445
+    },
+    "KXHIGHLAX-26JUL10": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL10&limit=1000",
+      "captured_at": "2026-10-16T03:05:24.342222+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f368494933735698218c39b3ebac3cc8847e51db2acfed9a3b65da200408def0.body",
+      "body_sha256": "6fa8f252dece109e695bcb33717cc25f9756c3785b1bde6e5a40a19f97c4b3ef",
+      "bytes": 14456
+    },
+    "KXHIGHLAX-26JUL11": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL11&limit=1000",
+      "captured_at": "2026-10-16T03:05:25.010989+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\82dbc941c4195a4847fa48fd8a1a6c567a65961f2c78c39cba4177fbcef24c65.body",
+      "body_sha256": "8ef899193a2790ca2d67a66ea6345d602e59de7d884855cfe20a2343ba821f74",
+      "bytes": 14458
+    },
+    "KXHIGHLAX-26JUL12": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL12&limit=1000",
+      "captured_at": "2026-10-16T03:05:25.719661+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\7d30d19d861e6dbc933037a455a5f59d3ed634d6330a18bfa4dac826af5c57aa.body",
+      "body_sha256": "a36ba22bd78103ff3dc3e1150f52886060a8aa057e75aee1728f8d12f2a3efc4",
+      "bytes": 14455
+    },
+    "KXHIGHLAX-26JUL13": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL13&limit=1000",
+      "captured_at": "2026-10-16T03:05:26.415657+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\8d98ff7ebbcc69f6e33c0ee791a8b5f0ec12e48946a04be14c8d8b2fcebf7983.body",
+      "body_sha256": "7b7b85ffd49ac15e5e51edabd031b89cf226d6db198f8b9e4adb100701b5d068",
+      "bytes": 14455
+    },
+    "KXHIGHLAX-26JUL14": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL14&limit=1000",
+      "captured_at": "2026-10-16T03:05:27.094384+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\9059302c874e155303f698fead279dae364dc2d4be57d299fe590dd8e669d453.body",
+      "body_sha256": "d0640249cb64c56f529341a8bb8a52a635f17df7a365668345f7e5a6c8d0c325",
+      "bytes": 14454
+    },
+    "KXHIGHLAX-26JUL15": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL15&limit=1000",
+      "captured_at": "2026-10-16T03:05:27.773515+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\1ff0d961562e4067b34e872030641f462d9fe0d1e4ba223f184b8ac92995ab2d.body",
+      "body_sha256": "16722aacddde85cc5ae4265faa7e126a7e622deb1f9f5ef89ff949447727535d",
+      "bytes": 14484
+    },
+    "KXHIGHLAX-26JUL16": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL16&limit=1000",
+      "captured_at": "2026-10-16T03:05:28.482108+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\ce31f28a2105672a4d19db5587494932fe72d9b1133d1a08eb2b89cd86a5a0c8.body",
+      "body_sha256": "bd624a946bd108b59674fe7c5afd1f7139f3a0dadfe291453582d8643e92f2a0",
+      "bytes": 14456
+    },
+    "KXHIGHLAX-26JUL17": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL17&limit=1000",
+      "captured_at": "2026-10-16T03:05:29.181468+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\cf55b96b892f6ac7d327bff8c51a1f98a1a482acd411f3e8cc852d9e049ffe05.body",
+      "body_sha256": "6bf934adac3d928e491a6dd152760ea66d5d974219e92b4b1b0250e0c6d90bd6",
+      "bytes": 14453
+    },
+    "KXHIGHLAX-26JUL18": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL18&limit=1000",
+      "captured_at": "2026-10-16T03:05:29.873438+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\7ab9cc73986a5963de0160c39cb1dd16f85970b94ac01752a7ca5f363b010a6e.body",
+      "body_sha256": "91df181c25a900b3ba91ac4f547ce8769c8b1aa295238c183b7afa4630b1b14c",
+      "bytes": 14455
+    },
+    "KXHIGHLAX-26JUL19": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL19&limit=1000",
+      "captured_at": "2026-10-16T03:05:30.574174+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\661eb34d3006411371f5ba8a0d803d4e7b8b4147b46f2571438fb36a4777df60.body",
+      "body_sha256": "47439c4ae9f2c6abd6f7b65c845719766ed7003175ef9ecdc6a1d5a7dfe4f832",
+      "bytes": 14448
+    },
+    "KXHIGHLAX-26JUL20": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL20&limit=1000",
+      "captured_at": "2026-10-16T03:05:31.270370+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\3bf0ab158764759b516a8acbc8011e2eb3ac3d64250a4adfe5b445c817e248c6.body",
+      "body_sha256": "a7c955d4378f2122325739886120d5ce4593d17ac78aa52217e3b0bb83b15da4",
+      "bytes": 14453
+    },
+    "KXHIGHLAX-26JUL21": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL21&limit=1000",
+      "captured_at": "2026-10-16T03:05:31.955799+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\c180aba5f52506df4e5257951b63687be6ca38faa02f6b1840441ef913debf89.body",
+      "body_sha256": "142c27056a2601f0dceaa4c5ac05eeb83741a074c49e62ad6ea707473652d672",
+      "bytes": 14453
+    },
+    "KXHIGHLAX-26JUL22": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL22&limit=1000",
+      "captured_at": "2026-10-16T03:05:32.644328+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\be8dcd307a2523900e4b10ad433bea7519172814a0a5994a24dd13061ec1fb96.body",
+      "body_sha256": "cced4b9cee98bd6509c272697105768f859a2762e7e6ffd96e30369c3c6f9d64",
+      "bytes": 14458
+    },
+    "KXHIGHLAX-26JUL23": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL23&limit=1000",
+      "captured_at": "2026-10-16T03:05:33.362608+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\e5c6b3fa1279485b7792fae55e658d52420d7f3accea11fba545dd9a25c87b84.body",
+      "body_sha256": "d7d2b0b95fef34bf81436388c11612a57936b5eaf1c892e1b6b67d5535a31a13",
+      "bytes": 14457
+    },
+    "KXHIGHLAX-26JUL24": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL24&limit=1000",
+      "captured_at": "2026-10-16T03:05:34.064182+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\184c2afd737739b1f6de672e46b957e94aac5dd9e752282143b7b4c8651a2c3b.body",
+      "body_sha256": "65e40470444d70363f5c898577fbb405284be7aee154c5819ed99682a835a6b0",
+      "bytes": 14457
+    },
+    "KXHIGHLAX-26JUL25": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL25&limit=1000",
+      "captured_at": "2026-10-16T03:05:34.755359+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\884149b49fcce1313b8456b59c25e1fcd750294fa6a4988ddffd44df4d872586.body",
+      "body_sha256": "92e6863074f7e1d3ac3c3fc9af9feaae2b044c3ae7ed497f3dd96a62ee7db6e1",
+      "bytes": 14444
+    },
+    "KXHIGHLAX-26JUL26": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL26&limit=1000",
+      "captured_at": "2026-10-16T03:05:35.443764+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\37ef30f978a29991b11b4e03a883d2fd7ecdf7835b9c829cd5fe5094d329204b.body",
+      "body_sha256": "e70d549ccf41ffbbec6c470388f61621e2efc1faf3a8cf6e2ed85aeb6c94c014",
+      "bytes": 14457
+    },
+    "KXHIGHLAX-26JUL27": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL27&limit=1000",
+      "captured_at": "2026-10-16T03:05:36.186849+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\2b27bdbd156105d518f54cca9a34ce23b448e646e0ead098d2e74c244613ee48.body",
+      "body_sha256": "ca77de04cf9cada4645cfcd64e1e31ec0ada00c9514ef851d43d0eea4aec8c65",
+      "bytes": 14450
+    },
+    "KXHIGHLAX-26JUL28": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL28&limit=1000",
+      "captured_at": "2026-10-16T03:05:36.865586+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\acc965010bb63a8ce880884cda25dbc3c295add4428bec9b06c437280b0522ae.body",
+      "body_sha256": "6780ebd6cabdf814b585768e5b6ee41b23dbef91a6572e3919a0808ba1f9212f",
+      "bytes": 14454
+    },
+    "KXHIGHLAX-26JUL29": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL29&limit=1000",
+      "captured_at": "2026-10-16T03:05:37.556606+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\712de673f00dacf32d74a0e55317801a7e617c5ef43b5d0a5ececb15a9404319.body",
+      "body_sha256": "bc31c7315ff6e8dcecd513263ad9d426b778ea6ff7e8dfb04c5f39540173146c",
+      "bytes": 14453
+    },
+    "KXHIGHLAX-26JUL30": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL30&limit=1000",
+      "captured_at": "2026-10-16T03:05:38.240449+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\2de48c900a332a96d115d668a44fcdff5965b329a1144ffdcccfeacfd3176f61.body",
+      "body_sha256": "3cef46081b763fbc6e4a1d19a6f11b73c2d1367c5e20a2819d75726fa2820191",
+      "bytes": 14451
+    },
+    "KXHIGHLAX-26JUL31": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26JUL31&limit=1000",
+      "captured_at": "2026-10-16T03:05:38.944784+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\bfe80d2eec0ba67bde919d55f6cb93b602c3a05034be12f054025b4d80b93d1c.body",
+      "body_sha256": "3574a4988b857a36c0a451587ab83af47ecd6c3893c7d10d7088102b9ca4626d",
+      "bytes": 14494
+    },
+    "KXHIGHLAX-26AUG01": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG01&limit=1000",
+      "captured_at": "2026-10-16T03:05:39.641609+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\04cf17e03153231c9ae08a5d65344d53be444b42ed80748ef7eaecf0fa90d01d.body",
+      "body_sha256": "b64eb21665f92581e1fa404946cd689d44296fc9d5a64e23760b0c70a67903b6",
+      "bytes": 14499
+    },
+    "KXHIGHLAX-26AUG02": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG02&limit=1000",
+      "captured_at": "2026-10-16T03:05:40.338481+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\4568de1b6ae32ea5abf8e48fcd72d613864ac0f72caa3f4cc6219cf829be6105.body",
+      "body_sha256": "103f255159263300f41e5c777992e34435501a6ccc59f469da6039c1fdf1daf9",
+      "bytes": 14498
+    },
+    "KXHIGHLAX-26AUG03": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG03&limit=1000",
+      "captured_at": "2026-10-16T03:05:41.053143+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\e215f418da0230ef98ec9f28b486065e4bffb4e34dbd9e498ccf89a0603e5f2d.body",
+      "body_sha256": "a6562236cf1d0c15ede7cb2098ae35a6ebd5d37b54fc3ffb7f15d2d1620240e5",
+      "bytes": 14496
+    },
+    "KXHIGHLAX-26AUG04": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG04&limit=1000",
+      "captured_at": "2026-10-16T03:05:41.730808+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\b19431d5e4887d77891cc41cae5ac519ca3d9b0b88f1a3369d306d3c7d344cd0.body",
+      "body_sha256": "548a5989cabfcb24b966d80235af9750ab3dfd51b3d4dca45303bb1e016df8b5",
+      "bytes": 14473
+    },
+    "KXHIGHLAX-26AUG05": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG05&limit=1000",
+      "captured_at": "2026-10-16T03:05:42.411902+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\d506186545bb12324ca5110a9c97476d4e27f1cd65f74260eb0bcb181119af02.body",
+      "body_sha256": "c5adae9b546fc001a08d0f6919bc99c64e4c5c00c7212af8fce4e76b7de972ed",
+      "bytes": 14489
+    },
+    "KXHIGHLAX-26AUG06": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG06&limit=1000",
+      "captured_at": "2026-10-16T03:05:43.095028+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\857a9676c592b8258a87a50ebf4d1d9c7ae5d38a3d1d0d3ebef7ffc2881e981a.body",
+      "body_sha256": "21e8b38b15043a8301453436eef305ffae692daba67c874be911fc5492bb0788",
+      "bytes": 14539
+    },
+    "KXHIGHLAX-26AUG07": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG07&limit=1000",
+      "captured_at": "2026-10-16T03:05:43.800676+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\80f4239eb285d7fad4737072d47558dd09449e5eae8d6437a87d37a68d76fec9.body",
+      "body_sha256": "6d4257629c912b46157a367912101414450c909a764e21c6671d4ac4a6f37b2b",
+      "bytes": 14497
+    },
+    "KXHIGHLAX-26AUG08": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG08&limit=1000",
+      "captured_at": "2026-10-16T03:05:44.499553+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\dfbcd50dd88dfb66494249b845ec10d715c03ef0dbee952812cfb70725db7b1c.body",
+      "body_sha256": "2a668c8d78322c1c7d51830dd4de7b02f6f94b1ac8b46fd9d882019b45f2b55d",
+      "bytes": 14495
+    },
+    "KXHIGHLAX-26AUG09": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG09&limit=1000",
+      "captured_at": "2026-10-16T03:05:45.204028+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f9e7f12dc86f26c26b4b61638896ecb4ae1c0bc226a83815444de105657f46e8.body",
+      "body_sha256": "4c50e6d6c4195c3abce28658b5ca7ac7c8be6cec8a542c1d229ad49b37d0e794",
+      "bytes": 14498
+    },
+    "KXHIGHLAX-26AUG10": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG10&limit=1000",
+      "captured_at": "2026-10-16T03:05:45.882890+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\8f14363518ae83e06c6a0263d1c8567e3ce34ed5219c05d707dd07291c1cde93.body",
+      "body_sha256": "e6be64f56e67558f61589ac2e461e301851c14df1c82e1c50604648a45dea9e7",
+      "bytes": 14503
+    },
+    "KXHIGHLAX-26AUG11": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG11&limit=1000",
+      "captured_at": "2026-10-16T03:05:46.575786+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f81b7e33740e7dfeac82858fb154f6d93ca4c7014de2b4eb11d129ea5f3236ec.body",
+      "body_sha256": "14f0e3fa9279753f4067ef350a91d8521414b9a58b199b7a3203516932a59241",
+      "bytes": 14496
+    },
+    "KXHIGHLAX-26AUG12": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG12&limit=1000",
+      "captured_at": "2026-10-16T03:05:47.269705+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\10b6c2c484aa351b136c8fa8b2c4eae6c625b3f427f7fb0e0a95f485a92c6091.body",
+      "body_sha256": "314020404059f7d9bcc56d2d1dc25720539907573a71d65f812b62cff853cf80",
+      "bytes": 14501
+    },
+    "KXHIGHLAX-26AUG13": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG13&limit=1000",
+      "captured_at": "2026-10-16T03:05:47.966049+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\b3cc2b0d6a1b7362c7fa42f40166128a3b27d8fa2864638f11fafb641855bd81.body",
+      "body_sha256": "21792da7af91bfab51300f158ebf63ff26bdbac29fc80d9e7983a4c8a48e4273",
+      "bytes": 14501
+    },
+    "KXHIGHLAX-26AUG14": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG14&limit=1000",
+      "captured_at": "2026-10-16T03:05:48.643873+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\9a1ba3acf65497a16de006a447b5165127841dc2e0d9a4bcb6d1141ebdbfdcc0.body",
+      "body_sha256": "cdf8fdd3ae913389e9cc5f702307ec6d02b9a422c0aea43fbae04867c4798a22",
+      "bytes": 15181
+    },
+    "KXHIGHLAX-26AUG15": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG15&limit=1000",
+      "captured_at": "2026-10-16T03:05:49.319062+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\1fb88df97cb804e3a275e646ff7568e118f3b924e6829478cb9f061c4dc1517c.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG16": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG16&limit=1000",
+      "captured_at": "2026-10-16T03:05:49.955225+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\7254f7b69b4e77505f37751f5c460962e7beffd679fd69f9ca44fbe6d7049c34.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG17": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG17&limit=1000",
+      "captured_at": "2026-10-16T03:05:50.588817+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\ee76d8636e6c7b3bd314db2e6ab37eb8fdff531a7d72148713a69fdf439a7b26.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG18": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG18&limit=1000",
+      "captured_at": "2026-10-16T03:05:51.238873+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\31bcd37cfa41de88a928cab4a7524e819f1eb5cdb6952d678a793e592632eb97.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG19": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG19&limit=1000",
+      "captured_at": "2026-10-16T03:05:51.888074+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\a287fc0413cab14e166214f09e7309052a1ceff6dd45f3cd20e4d285a0d297c3.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG20": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG20&limit=1000",
+      "captured_at": "2026-10-16T03:05:52.522130+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\f4d92890bd801043413f434487e5809830f6b7e06b1a2a3c11946f582b7dd8af.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG21": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG21&limit=1000",
+      "captured_at": "2026-10-16T03:05:53.167795+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\cafe0b136915aeabe946ebf9df3120eae38b31f4cf270d6642b77e95d683c5cb.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG22": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG22&limit=1000",
+      "captured_at": "2026-10-16T03:05:53.883839+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\d084b243ec3d1b42e7deb98863adac4fd053cc371586e51beae7d4a26df3a9c9.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG23": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG23&limit=1000",
+      "captured_at": "2026-10-16T03:05:54.534036+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\6ee61ddd54ea991407ecd48f4027af270bd7a64f71fb76779f93aeb2bf7e1e13.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG24": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG24&limit=1000",
+      "captured_at": "2026-10-16T03:05:55.175244+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\998be93a2c5d89751f6e86d742f2e6ab1ab924ecacc7f679cd84fcfeb62b3fa6.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG25": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG25&limit=1000",
+      "captured_at": "2026-10-16T03:05:55.807434+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\97ece78fdcca509b9ab3a830360365913cb94a4a3d71797336c6816ab30871b8.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG26": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG26&limit=1000",
+      "captured_at": "2026-10-16T03:05:56.475156+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\413560b9c74d171b00f9bafbc40ad6d7283b072215af4702adcfebb78c5f822c.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG27": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG27&limit=1000",
+      "captured_at": "2026-10-16T03:05:57.106929+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\28bed9caee88db40e88286f6a2493aee8f6a9490d27dd4ac0f83e3500dcf0345.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG28": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG28&limit=1000",
+      "captured_at": "2026-10-16T03:05:57.751043+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\1fd9a0ca616edf2d9c6859aada29df7032c1a851d94ab3a81eb78aa4f16bd4de.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG29": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG29&limit=1000",
+      "captured_at": "2026-10-16T03:05:58.409311+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\1e432f7742df40ed082e24e2cc08ddcdf9a30189402a79873407691449681429.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG30": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG30&limit=1000",
+      "captured_at": "2026-10-16T03:05:59.066381+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\ade3e1dbd87658d8f5d73fb47ab1372660f649d6837e3140823283f680c627bc.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    },
+    "KXHIGHLAX-26AUG31": {
+      "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?event_ticker=KXHIGHLAX-26AUG31&limit=1000",
+      "captured_at": "2026-10-16T03:05:59.714938+00:00",
+      "authenticated": false,
+      "method": "GET",
+      "status": 200,
+      "body_path": "C:\\Users\\matth\\OneDrive\\Documents\\ChatGPT\\AI Agent Ecosystem\\kalshi-research-work\\research\\weather_bound_20261016\\cache\\6ae79d372a9741e9390f90a7eb3098c1539e61fe821649f02d0e8e0ee12fae65.body",
+      "body_sha256": "50699ea1db13415ea46ec367dcfa58decd9660083271c5dc061561f38337fbac",
+      "bytes": 27
+    }
+  },
+  "new_requests": 189,
+  "access_blocks": [],
+  "actual_orders": 0,
+  "actual_fills": 0
+}
