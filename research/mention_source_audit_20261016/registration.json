@@ -1,0 +1,21 @@
+{
+  "id": "mention_no_source_feasibility_v1",
+  "registered_at": "2026-10-16T03:23:15.716046+00:00",
+  "source": "https://github.com/DanMcInerney/kalshi-analysis",
+  "scope": "Source/code and official public data feasibility only. No performance conclusions or order authority. Do not run third-party code.",
+  "hypothesis": "NO-side mention miscalibration may survive buying at actual ask plus costs, but assumed maker fill share is not evidence.",
+  "planned_source_requests": [
+    "GitHub immutable source identity and strategy files",
+    "official Kalshi series metadata for category Mentions"
+  ],
+  "max_new_requests": 12,
+  "max_response_bytes": 10000000,
+  "stop_access_status": [
+    401,
+    403,
+    429
+  ],
+  "orders": false,
+  "profitability_proven": false,
+  "next_gate": "Freeze independent event/date/contract selection and entry rules before requesting new historical prices/outcomes. Check full rules and historical publication/fees/actual depth availability; no midpoint or 50-percent-fill profitability substitution."
+}
