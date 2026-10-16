@@ -1,0 +1,3772 @@
+{
+  "schema": "v15_delayed_ioc_preliminary_v1",
+  "registration_sha256": "aeddde10492d8935c591dec9ac9259f51cfaae6f83a76f210c7feeec81a250ab",
+  "complete_registered_window": false,
+  "source_fault": {
+    "reason": "ValueError: invalid_accounting_amount",
+    "record": 3765095
+  },
+  "decision_window": [
+    1784430024.8318582,
+    1784430024.9999125
+  ],
+  "counts": {
+    "records": 3765095,
+    "unavailable_grid_views": 656,
+    "decision_midpoint_out_of_range": 1188,
+    "decision_spread_out_of_range": 2499,
+    "decision_insufficient_microprice_edge": 92,
+    "decision_balanced_book": 140,
+    "decision_v15_gross_edge_below_five": 154,
+    "decision_depth_out_of_range": 266,
+    "decision_signal": 59
+  },
+  "feed_counts": {
+    "maximum_availability_fence_ns": 0,
+    "zero_truncations_rebuilt_from_raw": 90660
+  },
+  "audit_counts": {
+    "records": 3765094,
+    "first_observed_channels": 19,
+    "unverified_channel_rows": 3271287,
+    "universe": 1,
+    "inferred_epoch_restarts": 19,
+    "raw_snapshots": 185060,
+    "fully_reconstructed_rows": 493806,
+    "raw_deltas": 308746
+  },
+  "preliminary_attempts": [
+    {
+      "ticker": "KXATPEXACTMATCH-26JUL19CERTRU-CER21",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 20.0,
+        "ask": 27.0,
+        "bid_depth": 13.0,
+        "ask_depth": 5.0,
+        "ticker_receipt_at": 1784429947.431466,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429947.431466,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 22,
+          "fair_value_cents": "25.05555555555555555555555556",
+          "gross_edge_cents": "5.055555555555555555555555556",
+          "stressed_edge_cents": "3.055555555555555555555555556",
+          "yes_mid": "47/200",
+          "microprice_yes": "451/1800",
+          "imbalance": "4/9",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 20,
+          "fair_value_cents": "25.05555555555555555555555556",
+          "gross_edge_cents": "5.055555555555555555555555556",
+          "stressed_edge_cents": "3.055555555555555555555555556",
+          "yes_mid": "47/200",
+          "microprice_yes": "451/1800",
+          "imbalance": "4/9",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 22
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 20
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19BAEKEC-KEC2",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 46.0,
+        "ask": 54.0,
+        "bid_depth": 160.0,
+        "ask_depth": 59.0,
+        "ticker_receipt_at": 1784430024.9695346,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430024.9695346,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 48,
+          "fair_value_cents": "51.84474885844748858447488584",
+          "gross_edge_cents": "5.844748858447488584474885845",
+          "stressed_edge_cents": "3.844748858447488584474885845",
+          "yes_mid": "1/2",
+          "microprice_yes": "5677/10950",
+          "imbalance": "101/219",
+          "spread_cents": 8,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 46,
+          "fair_value_cents": "51.84474885844748858447488584",
+          "gross_edge_cents": "5.844748858447488584474885845",
+          "stressed_edge_cents": "3.844748858447488584474885845",
+          "yes_mid": "1/2",
+          "microprice_yes": "5677/10950",
+          "imbalance": "101/219",
+          "spread_cents": 8,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 48
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 46
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19CHODEJ-DEJ2",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 46.0,
+        "ask": 55.0,
+        "bid_depth": 350.0,
+        "ask_depth": 500.0,
+        "ticker_receipt_at": 1784430002.7466915,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430002.7466915,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 47,
+          "fair_value_cents": "50.29411764705882352941176471",
+          "gross_edge_cents": "5.294117647058823529411764706",
+          "stressed_edge_cents": "3.294117647058823529411764706",
+          "yes_mid": "101/200",
+          "microprice_yes": "169/340",
+          "imbalance": "-3/17",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 45,
+          "fair_value_cents": "50.29411764705882352941176471",
+          "gross_edge_cents": "5.294117647058823529411764706",
+          "stressed_edge_cents": "3.294117647058823529411764706",
+          "yes_mid": "101/200",
+          "microprice_yes": "169/340",
+          "imbalance": "-3/17",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 47
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 45
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXATPGSPREAD-26JUL19VANFAR-FAR2",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 47.0,
+        "ask": 56.0,
+        "bid_depth": 500.0,
+        "ask_depth": 1704.0,
+        "ticker_receipt_at": 1784430004.183371,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430004.183371,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 46,
+          "fair_value_cents": "50.95825771324863883847549909",
+          "gross_edge_cents": "6.958257713248638838475499093",
+          "stressed_edge_cents": "4.958257713248638838475499093",
+          "yes_mid": "103/200",
+          "microprice_yes": "13511/27550",
+          "imbalance": "-301/551",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 44,
+          "fair_value_cents": "50.95825771324863883847549909",
+          "gross_edge_cents": "6.958257713248638838475499093",
+          "stressed_edge_cents": "4.958257713248638838475499093",
+          "yes_mid": "103/200",
+          "microprice_yes": "13511/27550",
+          "imbalance": "-301/551",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 46
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 44
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19CHODEJ-23",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 45.0,
+        "ask": 54.0,
+        "bid_depth": 500.0,
+        "ask_depth": 335.0,
+        "ticker_receipt_at": 1784430003.090055,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430003.090055,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 47,
+          "fair_value_cents": "50.38922155688622754491017964",
+          "gross_edge_cents": "5.389221556886227544910179641",
+          "stressed_edge_cents": "3.389221556886227544910179641",
+          "yes_mid": "99/200",
+          "microprice_yes": "1683/3340",
+          "imbalance": "33/167",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 45,
+          "fair_value_cents": "50.38922155688622754491017964",
+          "gross_edge_cents": "5.389221556886227544910179641",
+          "stressed_edge_cents": "3.389221556886227544910179641",
+          "yes_mid": "99/200",
+          "microprice_yes": "1683/3340",
+          "imbalance": "33/167",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 47
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 45
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19DROUGO-23",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 46.0,
+        "ask": 54.0,
+        "bid_depth": 100.0,
+        "ask_depth": 335.0,
+        "ticker_receipt_at": 1784430003.2547252,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430003.2547252,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 48,
+          "fair_value_cents": "52.16091954022988505747126437",
+          "gross_edge_cents": "6.160919540229885057471264368",
+          "stressed_edge_cents": "4.160919540229885057471264368",
+          "yes_mid": "1/2",
+          "microprice_yes": "2081/4350",
+          "imbalance": "-47/87",
+          "spread_cents": 8,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 46,
+          "fair_value_cents": "52.16091954022988505747126437",
+          "gross_edge_cents": "6.160919540229885057471264368",
+          "stressed_edge_cents": "4.160919540229885057471264368",
+          "yes_mid": "1/2",
+          "microprice_yes": "2081/4350",
+          "imbalance": "-47/87",
+          "spread_cents": 8,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 48
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 46
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXATPGTOTAL-26JUL19VANFAR-24",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 45.0,
+        "ask": 52.0,
+        "bid_depth": 100.0,
+        "ask_depth": 38.0,
+        "ticker_receipt_at": 1784430007.8580403,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430007.8580403,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 47,
+          "fair_value_cents": "50.07246376811594202898550725",
+          "gross_edge_cents": "5.072463768115942028985507246",
+          "stressed_edge_cents": "3.072463768115942028985507246",
+          "yes_mid": "97/200",
+          "microprice_yes": "691/1380",
+          "imbalance": "31/69",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 45,
+          "fair_value_cents": "50.07246376811594202898550725",
+          "gross_edge_cents": "5.072463768115942028985507246",
+          "stressed_edge_cents": "3.072463768115942028985507246",
+          "yes_mid": "97/200",
+          "microprice_yes": "691/1380",
+          "imbalance": "31/69",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": {
+          "strategy_id": "queue_toxicity_maker_v10_shadow",
+          "outcome": "yes",
+          "price_cents": 47,
+          "fair_value_cents": "13879/276",
+          "net_edge_floor_cents": "907/276",
+          "yes_mid": "97/200",
+          "anchor_yes_mid": "93/200",
+          "trend_cents": "2",
+          "microprice_yes": "691/1380",
+          "imbalance": "31/69",
+          "spread_cents": 7
+        }
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 47
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 45
+        },
+        "frozen_v10": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 47
+        }
+      }
+    },
+    {
+      "ticker": "KXATPSETWINNER-26JUL19CERTRU-1-CER",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 56.0,
+        "ask": 63.0,
+        "bid_depth": 22.0,
+        "ask_depth": 64.0,
+        "ticker_receipt_at": 1784430016.603525,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430016.603525,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 39,
+          "fair_value_cents": "42.20930232558139534883720930",
+          "gross_edge_cents": "5.209302325581395348837209302",
+          "stressed_edge_cents": "3.209302325581395348837209302",
+          "yes_mid": "119/200",
+          "microprice_yes": "497/860",
+          "imbalance": "-21/43",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 37,
+          "fair_value_cents": "42.20930232558139534883720930",
+          "gross_edge_cents": "5.209302325581395348837209302",
+          "stressed_edge_cents": "3.209302325581395348837209302",
+          "yes_mid": "119/200",
+          "microprice_yes": "497/860",
+          "imbalance": "-21/43",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 39
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 37
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXATPSETWINNER-26JUL19CERTRU-1-TRU",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 37.0,
+        "ask": 44.0,
+        "bid_depth": 64.0,
+        "ask_depth": 22.0,
+        "ticker_receipt_at": 1784430006.5595376,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430006.5595376,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 39,
+          "fair_value_cents": "42.20930232558139534883720930",
+          "gross_edge_cents": "5.209302325581395348837209302",
+          "stressed_edge_cents": "3.209302325581395348837209302",
+          "yes_mid": "81/200",
+          "microprice_yes": "363/860",
+          "imbalance": "21/43",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 37,
+          "fair_value_cents": "42.20930232558139534883720930",
+          "gross_edge_cents": "5.209302325581395348837209302",
+          "stressed_edge_cents": "3.209302325581395348837209302",
+          "yes_mid": "81/200",
+          "microprice_yes": "363/860",
+          "imbalance": "21/43",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 39
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 37
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXATPSETWINNER-26JUL19CERTRU-2-CER",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 56.0,
+        "ask": 63.0,
+        "bid_depth": 22.0,
+        "ask_depth": 64.0,
+        "ticker_receipt_at": 1784430006.7711112,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430006.7711112,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 39,
+          "fair_value_cents": "42.20930232558139534883720930",
+          "gross_edge_cents": "5.209302325581395348837209302",
+          "stressed_edge_cents": "3.209302325581395348837209302",
+          "yes_mid": "119/200",
+          "microprice_yes": "497/860",
+          "imbalance": "-21/43",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 37,
+          "fair_value_cents": "42.20930232558139534883720930",
+          "gross_edge_cents": "5.209302325581395348837209302",
+          "stressed_edge_cents": "3.209302325581395348837209302",
+          "yes_mid": "119/200",
+          "microprice_yes": "497/860",
+          "imbalance": "-21/43",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 39
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 37
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXATPSETWINNER-26JUL19CERTRU-2-TRU",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 37.0,
+        "ask": 44.0,
+        "bid_depth": 64.0,
+        "ask_depth": 22.0,
+        "ticker_receipt_at": 1784430006.6355968,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430006.6355968,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 39,
+          "fair_value_cents": "42.20930232558139534883720930",
+          "gross_edge_cents": "5.209302325581395348837209302",
+          "stressed_edge_cents": "3.209302325581395348837209302",
+          "yes_mid": "81/200",
+          "microprice_yes": "363/860",
+          "imbalance": "21/43",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 37,
+          "fair_value_cents": "42.20930232558139534883720930",
+          "gross_edge_cents": "5.209302325581395348837209302",
+          "stressed_edge_cents": "3.209302325581395348837209302",
+          "yes_mid": "81/200",
+          "microprice_yes": "363/860",
+          "imbalance": "21/43",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 39
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 37
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL190400MISEAC-1-EAC",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 33.0,
+        "ask": 44.0,
+        "bid_depth": 415.0,
+        "ask_depth": 256.0,
+        "ticker_receipt_at": 1784429989.3320532,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429989.3320532,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 35,
+          "fair_value_cents": "39.80327868852459016393442623",
+          "gross_edge_cents": "6.803278688524590163934426230",
+          "stressed_edge_cents": "4.803278688524590163934426230",
+          "yes_mid": "77/200",
+          "microprice_yes": "607/1525",
+          "imbalance": "159/671",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 33,
+          "fair_value_cents": "39.80327868852459016393442623",
+          "gross_edge_cents": "6.803278688524590163934426230",
+          "stressed_edge_cents": "4.803278688524590163934426230",
+          "yes_mid": "77/200",
+          "microprice_yes": "607/1525",
+          "imbalance": "159/671",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 35
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 33
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL191500GHBSTA-2-GH",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 49.0,
+        "ask": 60.0,
+        "bid_depth": 2602.0,
+        "ask_depth": 800.0,
+        "ticker_receipt_at": 1784429950.798778,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429950.798778,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 51,
+          "fair_value_cents": "57.41328630217519106407995297",
+          "gross_edge_cents": "8.413286302175191064079952969",
+          "stressed_edge_cents": "6.413286302175191064079952969",
+          "yes_mid": "109/200",
+          "microprice_yes": "4883/8505",
+          "imbalance": "901/1701",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 49,
+          "fair_value_cents": "57.41328630217519106407995297",
+          "gross_edge_cents": "8.413286302175191064079952969",
+          "stressed_edge_cents": "6.413286302175191064079952969",
+          "yes_mid": "109/200",
+          "microprice_yes": "4883/8505",
+          "imbalance": "901/1701",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 51
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 49
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL2006301WINARC-1-ARC",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 37.0,
+        "ask": 49.0,
+        "bid_depth": 2600.0,
+        "ask_depth": 800.0,
+        "ticker_receipt_at": 1784430013.465308,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430013.465308,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 39,
+          "fair_value_cents": "46.17647058823529411764705882",
+          "gross_edge_cents": "9.176470588235294117647058824",
+          "stressed_edge_cents": "7.176470588235294117647058824",
+          "yes_mid": "43/100",
+          "microprice_yes": "157/340",
+          "imbalance": "9/17",
+          "spread_cents": 12,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 37,
+          "fair_value_cents": "46.17647058823529411764705882",
+          "gross_edge_cents": "9.176470588235294117647058824",
+          "stressed_edge_cents": "7.176470588235294117647058824",
+          "yes_mid": "43/100",
+          "microprice_yes": "157/340",
+          "imbalance": "9/17",
+          "spread_cents": 12,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 39
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 37
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL210600M80NIP-1-M80",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 46.0,
+        "ask": 58.0,
+        "bid_depth": 2504.0,
+        "ask_depth": 3502.0,
+        "ticker_receipt_at": 1784430018.6673806,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430018.6673806,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 44,
+          "fair_value_cents": "48.99700299700299700299700300",
+          "gross_edge_cents": "6.997002997002997002997002997",
+          "stressed_edge_cents": "4.997002997002997002997002997",
+          "yes_mid": "13/25",
+          "microprice_yes": "25527/50050",
+          "imbalance": "-499/3003",
+          "spread_cents": 12,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 42,
+          "fair_value_cents": "48.99700299700299700299700300",
+          "gross_edge_cents": "6.997002997002997002997002997",
+          "stressed_edge_cents": "4.997002997002997002997002997",
+          "yes_mid": "13/25",
+          "microprice_yes": "25527/50050",
+          "imbalance": "-499/3003",
+          "spread_cents": 12,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 44
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 42
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL210600M80NIP-1-NIP",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 42.0,
+        "ask": 54.0,
+        "bid_depth": 2500.0,
+        "ask_depth": 3502.0,
+        "ticker_receipt_at": 1784430015.509053,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430015.509053,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 48,
+          "fair_value_cents": "53.00166611129623458847050983",
+          "gross_edge_cents": "7.001666111296234588470509830",
+          "stressed_edge_cents": "5.001666111296234588470509830",
+          "yes_mid": "12/25",
+          "microprice_yes": "70521/150050",
+          "imbalance": "-501/3001",
+          "spread_cents": 12,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 46,
+          "fair_value_cents": "53.00166611129623458847050983",
+          "gross_edge_cents": "7.001666111296234588470509830",
+          "stressed_edge_cents": "5.001666111296234588470509830",
+          "yes_mid": "12/25",
+          "microprice_yes": "70521/150050",
+          "imbalance": "-501/3001",
+          "spread_cents": 12,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 48
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 46
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL210600M80NIP-2-NIP",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 50.0,
+        "ask": 61.0,
+        "bid_depth": 2507.0,
+        "ask_depth": 3499.0,
+        "ticker_receipt_at": 1784430024.990451,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430024.990451,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 41,
+          "fair_value_cents": "45.40842490842490842490842491",
+          "gross_edge_cents": "6.408424908424908424908424908",
+          "stressed_edge_cents": "4.408424908424908424908424908",
+          "yes_mid": "111/200",
+          "microprice_yes": "29807/54600",
+          "imbalance": "-496/3003",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 39,
+          "fair_value_cents": "45.40842490842490842490842491",
+          "gross_edge_cents": "6.408424908424908424908424908",
+          "stressed_edge_cents": "4.408424908424908424908424908",
+          "yes_mid": "111/200",
+          "microprice_yes": "29807/54600",
+          "imbalance": "-496/3003",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 41
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 39
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXCS2MAP-26JUL211100NTRMOUZ-1-MOUZ",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 67.0,
+        "ask": 76.0,
+        "bid_depth": 500.0,
+        "ask_depth": 284.0,
+        "ticker_receipt_at": 1784430013.5610907,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430013.5610907,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 69,
+          "fair_value_cents": "72.73979591836734693877551020",
+          "gross_edge_cents": "5.739795918367346938775510204",
+          "stressed_edge_cents": "3.739795918367346938775510204",
+          "yes_mid": "143/200",
+          "microprice_yes": "14257/19600",
+          "imbalance": "27/98",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 67,
+          "fair_value_cents": "72.73979591836734693877551020",
+          "gross_edge_cents": "5.739795918367346938775510204",
+          "stressed_edge_cents": "3.739795918367346938775510204",
+          "yes_mid": "143/200",
+          "microprice_yes": "14257/19600",
+          "imbalance": "27/98",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": {
+          "strategy_id": "queue_toxicity_maker_v10_shadow",
+          "outcome": "yes",
+          "price_cents": 69,
+          "fair_value_cents": "28369/392",
+          "net_edge_floor_cents": "1321/392",
+          "yes_mid": "143/200",
+          "anchor_yes_mid": "71/100",
+          "trend_cents": "1/2",
+          "microprice_yes": "14257/19600",
+          "imbalance": "27/98",
+          "spread_cents": 9
+        }
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 69
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 67
+        },
+        "frozen_v10": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 69
+        }
+      }
+    },
+    {
+      "ticker": "KXITFWMATCH-26JUL19RABBOJ-BOJ",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 70.0,
+        "ask": 79.0,
+        "bid_depth": 495.0,
+        "ask_depth": 800.0,
+        "ticker_receipt_at": 1784429989.141023,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429989.141023,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 23,
+          "fair_value_cents": "26.55984555984555984555984556",
+          "gross_edge_cents": "5.559845559845559845559845560",
+          "stressed_edge_cents": "3.559845559845559845559845560",
+          "yes_mid": "149/200",
+          "microprice_yes": "19021/25900",
+          "imbalance": "-61/259",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 21,
+          "fair_value_cents": "26.55984555984555984555984556",
+          "gross_edge_cents": "5.559845559845559845559845560",
+          "stressed_edge_cents": "3.559845559845559845559845560",
+          "yes_mid": "149/200",
+          "microprice_yes": "19021/25900",
+          "imbalance": "-61/259",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": {
+          "strategy_id": "queue_toxicity_maker_v10_shadow",
+          "outcome": "no",
+          "price_cents": 23,
+          "fair_value_cents": "13613/518",
+          "net_edge_floor_cents": "1699/518",
+          "yes_mid": "149/200",
+          "anchor_yes_mid": "3/4",
+          "trend_cents": "-1/2",
+          "microprice_yes": "19021/25900",
+          "imbalance": "-61/259",
+          "spread_cents": 9
+        }
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 23
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 21
+        },
+        "frozen_v10": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 23
+        }
+      }
+    },
+    {
+      "ticker": "KXLOLMAP-26JUL220500EDGLGD-2-LGD",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 38.0,
+        "ask": 49.0,
+        "bid_depth": 26.0,
+        "ask_depth": 19.0,
+        "ticker_receipt_at": 1784429951.923011,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429951.923011,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 40,
+          "fair_value_cents": "44.35555555555555555555555556",
+          "gross_edge_cents": "6.355555555555555555555555556",
+          "stressed_edge_cents": "4.355555555555555555555555556",
+          "yes_mid": "87/200",
+          "microprice_yes": "499/1125",
+          "imbalance": "7/45",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 38,
+          "fair_value_cents": "44.35555555555555555555555556",
+          "gross_edge_cents": "6.355555555555555555555555556",
+          "stressed_edge_cents": "4.355555555555555555555555556",
+          "yes_mid": "87/200",
+          "microprice_yes": "499/1125",
+          "imbalance": "7/45",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 40
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 38
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL182008LADNYY-LAD",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 36.0,
+        "ask": 43.0,
+        "bid_depth": 176.0,
+        "ask_depth": 44.0,
+        "ticker_receipt_at": 1784429951.968474,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429951.968474,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 38,
+          "fair_value_cents": "41.6",
+          "gross_edge_cents": "5.6",
+          "stressed_edge_cents": "3.6",
+          "yes_mid": "79/200",
+          "microprice_yes": "52/125",
+          "imbalance": "3/5",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 36,
+          "fair_value_cents": "41.6",
+          "gross_edge_cents": "5.6",
+          "stressed_edge_cents": "3.6",
+          "yes_mid": "79/200",
+          "microprice_yes": "52/125",
+          "imbalance": "3/5",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 38
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 36
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191920LADNYY-LAD",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 37.0,
+        "ask": 46.0,
+        "bid_depth": 39.0,
+        "ask_depth": 27.0,
+        "ticker_receipt_at": 1784430024.0079644,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430024.0079644,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 39,
+          "fair_value_cents": "42.31818181818181818181818182",
+          "gross_edge_cents": "5.318181818181818181818181818",
+          "stressed_edge_cents": "3.318181818181818181818181818",
+          "yes_mid": "83/200",
+          "microprice_yes": "931/2200",
+          "imbalance": "2/11",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 37,
+          "fair_value_cents": "42.31818181818181818181818182",
+          "gross_edge_cents": "5.318181818181818181818181818",
+          "stressed_edge_cents": "3.318181818181818181818181818",
+          "yes_mid": "83/200",
+          "microprice_yes": "931/2200",
+          "imbalance": "2/11",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 39
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 37
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191920LADNYY-NYY",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 38.0,
+        "ask": 47.0,
+        "bid_depth": 39.0,
+        "ask_depth": 28.0,
+        "ticker_receipt_at": 1784430024.0206628,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430024.0206628,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 40,
+          "fair_value_cents": "43.23880597014925373134328358",
+          "gross_edge_cents": "5.238805970149253731343283582",
+          "stressed_edge_cents": "3.238805970149253731343283582",
+          "yes_mid": "17/40",
+          "microprice_yes": "2897/6700",
+          "imbalance": "11/67",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 38,
+          "fair_value_cents": "43.23880597014925373134328358",
+          "gross_edge_cents": "5.238805970149253731343283582",
+          "stressed_edge_cents": "3.238805970149253731343283582",
+          "yes_mid": "17/40",
+          "microprice_yes": "2897/6700",
+          "imbalance": "11/67",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 40
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 38
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191510CINCOL-CIN3",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 23.0,
+        "ask": 33.0,
+        "bid_depth": 73.0,
+        "ask_depth": 44.0,
+        "ticker_receipt_at": 1784429960.8723848,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429960.8723848,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 25,
+          "fair_value_cents": "29.23931623931623931623931624",
+          "gross_edge_cents": "6.239316239316239316239316239",
+          "stressed_edge_cents": "4.239316239316239316239316239",
+          "yes_mid": "7/25",
+          "microprice_yes": "3421/11700",
+          "imbalance": "29/117",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 23,
+          "fair_value_cents": "29.23931623931623931623931624",
+          "gross_edge_cents": "6.239316239316239316239316239",
+          "stressed_edge_cents": "4.239316239316239316239316239",
+          "yes_mid": "7/25",
+          "microprice_yes": "3421/11700",
+          "imbalance": "29/117",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": {
+          "strategy_id": "queue_toxicity_maker_v10_shadow",
+          "outcome": "yes",
+          "price_cents": 25,
+          "fair_value_cents": "13511/468",
+          "net_edge_floor_cents": "1811/468",
+          "yes_mid": "7/25",
+          "anchor_yes_mid": "11/40",
+          "trend_cents": "1/2",
+          "microprice_yes": "3421/11700",
+          "imbalance": "29/117",
+          "spread_cents": 10
+        }
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 25
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 23
+        },
+        "frozen_v10": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 25
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191920LADNYY-5",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 47.0,
+        "ask": 59.0,
+        "bid_depth": 31.0,
+        "ask_depth": 76.0,
+        "ticker_receipt_at": 1784429952.0069876,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429952.0069876,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 43,
+          "fair_value_cents": "49.52336448598130841121495327",
+          "gross_edge_cents": "8.523364485981308411214953271",
+          "stressed_edge_cents": "6.523364485981308411214953271",
+          "yes_mid": "53/100",
+          "microprice_yes": "5401/10700",
+          "imbalance": "-45/107",
+          "spread_cents": 12,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 41,
+          "fair_value_cents": "49.52336448598130841121495327",
+          "gross_edge_cents": "8.523364485981308411214953271",
+          "stressed_edge_cents": "6.523364485981308411214953271",
+          "yes_mid": "53/100",
+          "microprice_yes": "5401/10700",
+          "imbalance": "-45/107",
+          "spread_cents": 12,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 43
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 41
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182205WSHATH-ATHCCORTES26-2",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 37.0,
+        "ask": 48.0,
+        "bid_depth": 50.0,
+        "ask_depth": 100.0,
+        "ticker_receipt_at": 1784430019.540679,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430019.540679,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 54,
+          "fair_value_cents": "59.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "17/40",
+          "microprice_yes": "61/150",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 52,
+          "fair_value_cents": "59.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "17/40",
+          "microprice_yes": "61/150",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 54
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 52
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182205WSHATH-ATHJKURODAGRAUER44-2",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 50.0,
+        "ask": 60.0,
+        "bid_depth": 50.0,
+        "ask_depth": 100.0,
+        "ticker_receipt_at": 1784430013.1703694,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430013.1703694,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 42,
+          "fair_value_cents": "46.66666666666666666666666667",
+          "gross_edge_cents": "6.666666666666666666666666667",
+          "stressed_edge_cents": "4.666666666666666666666666667",
+          "yes_mid": "11/20",
+          "microprice_yes": "8/15",
+          "imbalance": "-1/3",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 40,
+          "fair_value_cents": "46.66666666666666666666666667",
+          "gross_edge_cents": "6.666666666666666666666666667",
+          "stressed_edge_cents": "4.666666666666666666666666667",
+          "yes_mid": "11/20",
+          "microprice_yes": "8/15",
+          "imbalance": "-1/3",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": {
+          "strategy_id": "queue_toxicity_maker_v10_shadow",
+          "outcome": "no",
+          "price_cents": 43,
+          "fair_value_cents": "139/3",
+          "net_edge_floor_cents": "10/3",
+          "yes_mid": "11/20",
+          "anchor_yes_mid": "14/25",
+          "trend_cents": "-1",
+          "microprice_yes": "8/15",
+          "imbalance": "-1/3",
+          "spread_cents": 10
+        }
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 42
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 40
+        },
+        "frozen_v10": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 43
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182205WSHATH-WSHDLILE4-1",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 52.0,
+        "ask": 62.0,
+        "bid_depth": 50.0,
+        "ask_depth": 100.0,
+        "ticker_receipt_at": 1784430019.3585968,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430019.3585968,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 40,
+          "fair_value_cents": "44.66666666666666666666666667",
+          "gross_edge_cents": "6.666666666666666666666666667",
+          "stressed_edge_cents": "4.666666666666666666666666667",
+          "yes_mid": "57/100",
+          "microprice_yes": "83/150",
+          "imbalance": "-1/3",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 38,
+          "fair_value_cents": "44.66666666666666666666666667",
+          "gross_edge_cents": "6.666666666666666666666666667",
+          "stressed_edge_cents": "4.666666666666666666666666667",
+          "yes_mid": "57/100",
+          "microprice_yes": "83/150",
+          "imbalance": "-1/3",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 40
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 38
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182205WSHATH-WSHJVIVAS90-1",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 40.0,
+        "ask": 50.0,
+        "bid_depth": 50.0,
+        "ask_depth": 100.0,
+        "ticker_receipt_at": 1784430015.9283483,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430015.9283483,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 52,
+          "fair_value_cents": "56.66666666666666666666666667",
+          "gross_edge_cents": "6.666666666666666666666666667",
+          "stressed_edge_cents": "4.666666666666666666666666667",
+          "yes_mid": "9/20",
+          "microprice_yes": "13/30",
+          "imbalance": "-1/3",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 50,
+          "fair_value_cents": "56.66666666666666666666666667",
+          "gross_edge_cents": "6.666666666666666666666666667",
+          "stressed_edge_cents": "4.666666666666666666666666667",
+          "yes_mid": "9/20",
+          "microprice_yes": "13/30",
+          "imbalance": "-1/3",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 52
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 50
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182205WSHATH-WSHLGARCA2-1",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 44.0,
+        "ask": 55.0,
+        "bid_depth": 50.0,
+        "ask_depth": 100.0,
+        "ticker_receipt_at": 1784430015.9493814,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430015.9493814,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 47,
+          "fair_value_cents": "52.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "99/200",
+          "microprice_yes": "143/300",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 45,
+          "fair_value_cents": "52.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "99/200",
+          "microprice_yes": "143/300",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 47
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 45
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182207DETLAA-DETDDINGLER13-1",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 51.0,
+        "ask": 62.0,
+        "bid_depth": 50.0,
+        "ask_depth": 100.0,
+        "ticker_receipt_at": 1784429983.082113,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429983.082113,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 40,
+          "fair_value_cents": "45.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "113/200",
+          "microprice_yes": "41/75",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 38,
+          "fair_value_cents": "45.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "113/200",
+          "microprice_yes": "41/75",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 40
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 38
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182207DETLAA-DETKMCGONIGLE85-3",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 47.0,
+        "ask": 59.0,
+        "bid_depth": 50.0,
+        "ask_depth": 39.0,
+        "ticker_receipt_at": 1784430013.0762393,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430013.0762393,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 49,
+          "fair_value_cents": "53.74157303370786516853932584",
+          "gross_edge_cents": "6.741573033707865168539325843",
+          "stressed_edge_cents": "4.741573033707865168539325843",
+          "yes_mid": "53/100",
+          "microprice_yes": "4783/8900",
+          "imbalance": "11/89",
+          "spread_cents": 12,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 47,
+          "fair_value_cents": "53.74157303370786516853932584",
+          "gross_edge_cents": "6.741573033707865168539325843",
+          "stressed_edge_cents": "4.741573033707865168539325843",
+          "yes_mid": "53/100",
+          "microprice_yes": "4783/8900",
+          "imbalance": "11/89",
+          "spread_cents": 12,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 49
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 47
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182207DETLAA-DETMVIERLING8-1",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 36.0,
+        "ask": 46.0,
+        "bid_depth": 50.0,
+        "ask_depth": 100.0,
+        "ticker_receipt_at": 1784430022.7579193,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430022.7579193,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 56,
+          "fair_value_cents": "60.66666666666666666666666667",
+          "gross_edge_cents": "6.666666666666666666666666667",
+          "stressed_edge_cents": "4.666666666666666666666666667",
+          "yes_mid": "41/100",
+          "microprice_yes": "59/150",
+          "imbalance": "-1/3",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 54,
+          "fair_value_cents": "60.66666666666666666666666667",
+          "gross_edge_cents": "6.666666666666666666666666667",
+          "stressed_edge_cents": "4.666666666666666666666666667",
+          "yes_mid": "41/100",
+          "microprice_yes": "59/150",
+          "imbalance": "-1/3",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 56
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 54
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182207DETLAA-DETRGREENE31-1",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 44.0,
+        "ask": 55.0,
+        "bid_depth": 50.0,
+        "ask_depth": 38.0,
+        "ticker_receipt_at": 1784429983.0947325,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429983.0947325,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 46,
+          "fair_value_cents": "50.25",
+          "gross_edge_cents": "6.25",
+          "stressed_edge_cents": "4.25",
+          "yes_mid": "99/200",
+          "microprice_yes": "201/400",
+          "imbalance": "3/22",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 44,
+          "fair_value_cents": "50.25",
+          "gross_edge_cents": "6.25",
+          "stressed_edge_cents": "4.25",
+          "yes_mid": "99/200",
+          "microprice_yes": "201/400",
+          "imbalance": "3/22",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 46
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 44
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182207DETLAA-DETSTORKELSON20-2",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 39.0,
+        "ask": 50.0,
+        "bid_depth": 50.0,
+        "ask_depth": 38.0,
+        "ticker_receipt_at": 1784429983.0446458,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429983.0446458,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 41,
+          "fair_value_cents": "45.25",
+          "gross_edge_cents": "6.25",
+          "stressed_edge_cents": "4.25",
+          "yes_mid": "89/200",
+          "microprice_yes": "181/400",
+          "imbalance": "3/22",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 39,
+          "fair_value_cents": "45.25",
+          "gross_edge_cents": "6.25",
+          "stressed_edge_cents": "4.25",
+          "yes_mid": "89/200",
+          "microprice_yes": "181/400",
+          "imbalance": "3/22",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 41
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 39
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182207DETLAA-LAAJSOLER12-1",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 35.0,
+        "ask": 45.0,
+        "bid_depth": 50.0,
+        "ask_depth": 100.0,
+        "ticker_receipt_at": 1784429983.0549486,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784429983.0549486,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 57,
+          "fair_value_cents": "61.66666666666666666666666667",
+          "gross_edge_cents": "6.666666666666666666666666667",
+          "stressed_edge_cents": "4.666666666666666666666666667",
+          "yes_mid": "2/5",
+          "microprice_yes": "23/60",
+          "imbalance": "-1/3",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 55,
+          "fair_value_cents": "61.66666666666666666666666667",
+          "gross_edge_cents": "6.666666666666666666666666667",
+          "stressed_edge_cents": "4.666666666666666666666666667",
+          "yes_mid": "2/5",
+          "microprice_yes": "23/60",
+          "imbalance": "-1/3",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 57
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 55
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBHIT-26JUL182207DETLAA-LAANSCHANUEL18-2",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 37.0,
+        "ask": 48.0,
+        "bid_depth": 50.0,
+        "ask_depth": 100.0,
+        "ticker_receipt_at": 1784430011.3365507,
+        "channel_receipt_at": 1784430024.9990432,
+        "available_at": 1784430011.3365507,
+        "epoch_key": [
+          0,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 54,
+          "fair_value_cents": "59.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "17/40",
+          "microprice_yes": "61/150",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 52,
+          "fair_value_cents": "59.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "17/40",
+          "microprice_yes": "61/150",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 54
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 52
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF3-26JUL191335TEXATL-ATL",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 28.0,
+        "ask": 39.0,
+        "bid_depth": 250.0,
+        "ask_depth": 500.0,
+        "ticker_receipt_at": 1784429983.3288918,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784429983.3288918,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 63,
+          "fair_value_cents": "68.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "67/200",
+          "microprice_yes": "19/60",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 61,
+          "fair_value_cents": "68.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "67/200",
+          "microprice_yes": "19/60",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 63
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 61
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF3-26JUL191335TEXATL-TIE",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 18.0,
+        "ask": 29.0,
+        "bid_depth": 252.0,
+        "ask_depth": 500.0,
+        "ticker_receipt_at": 1784429979.2276316,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784429979.2276316,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 73,
+          "fair_value_cents": "78.31382978723404255319148936",
+          "gross_edge_cents": "7.313829787234042553191489362",
+          "stressed_edge_cents": "5.313829787234042553191489362",
+          "yes_mid": "47/200",
+          "microprice_yes": "4077/18800",
+          "imbalance": "-31/94",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 71,
+          "fair_value_cents": "78.31382978723404255319148936",
+          "gross_edge_cents": "7.313829787234042553191489362",
+          "stressed_edge_cents": "5.313829787234042553191489362",
+          "yes_mid": "47/200",
+          "microprice_yes": "4077/18800",
+          "imbalance": "-31/94",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 73
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 71
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF3-26JUL191420MINCHC-MIN",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 26.0,
+        "ask": 37.0,
+        "bid_depth": 250.0,
+        "ask_depth": 500.0,
+        "ticker_receipt_at": 1784429986.7883317,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784429986.7883317,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 65,
+          "fair_value_cents": "70.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "63/200",
+          "microprice_yes": "89/300",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 63,
+          "fair_value_cents": "70.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "63/200",
+          "microprice_yes": "89/300",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 65
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 63
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF3-26JUL191420MINCHC-TIE",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 21.0,
+        "ask": 32.0,
+        "bid_depth": 250.0,
+        "ask_depth": 500.0,
+        "ticker_receipt_at": 1784429972.843324,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784429972.843324,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 70,
+          "fair_value_cents": "75.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "53/200",
+          "microprice_yes": "37/150",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 68,
+          "fair_value_cents": "75.33333333333333333333333333",
+          "gross_edge_cents": "7.333333333333333333333333333",
+          "stressed_edge_cents": "5.333333333333333333333333333",
+          "yes_mid": "53/200",
+          "microprice_yes": "37/150",
+          "imbalance": "-1/3",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 70
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 68
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191335TEXATL-ATL",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 30.0,
+        "ask": 41.0,
+        "bid_depth": 258.0,
+        "ask_depth": 500.0,
+        "ticker_receipt_at": 1784429985.3022535,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784429985.3022535,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 61,
+          "fair_value_cents": "66.25593667546174142480211082",
+          "gross_edge_cents": "7.255936675461741424802110818",
+          "stressed_edge_cents": "5.255936675461741424802110818",
+          "yes_mid": "71/200",
+          "microprice_yes": "12789/37900",
+          "imbalance": "-121/379",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 59,
+          "fair_value_cents": "66.25593667546174142480211082",
+          "gross_edge_cents": "7.255936675461741424802110818",
+          "stressed_edge_cents": "5.255936675461741424802110818",
+          "yes_mid": "71/200",
+          "microprice_yes": "12789/37900",
+          "imbalance": "-121/379",
+          "spread_cents": 11,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 61
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 59
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191335TEXATL-TEX",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 44.0,
+        "ask": 53.0,
+        "bid_depth": 258.0,
+        "ask_depth": 500.0,
+        "ticker_receipt_at": 1784430002.4735677,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784430002.4735677,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 49,
+          "fair_value_cents": "52.93667546174142480211081794",
+          "gross_edge_cents": "5.936675461741424802110817942",
+          "stressed_edge_cents": "3.936675461741424802110817942",
+          "yes_mid": "97/200",
+          "microprice_yes": "17837/37900",
+          "imbalance": "-121/379",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 47,
+          "fair_value_cents": "52.93667546174142480211081794",
+          "gross_edge_cents": "5.936675461741424802110817942",
+          "stressed_edge_cents": "3.936675461741424802110817942",
+          "yes_mid": "97/200",
+          "microprice_yes": "17837/37900",
+          "imbalance": "-121/379",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 49
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 47
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF5-26JUL191420MINCHC-MIN",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 30.0,
+        "ask": 37.0,
+        "bid_depth": 267.0,
+        "ask_depth": 800.0,
+        "ticker_receipt_at": 1784429993.2077157,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784429993.2077157,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 65,
+          "fair_value_cents": "68.24835988753514526710402999",
+          "gross_edge_cents": "5.248359887535145267104029991",
+          "stressed_edge_cents": "3.248359887535145267104029991",
+          "yes_mid": "67/200",
+          "microprice_yes": "33879/106700",
+          "imbalance": "-533/1067",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 63,
+          "fair_value_cents": "68.24835988753514526710402999",
+          "gross_edge_cents": "5.248359887535145267104029991",
+          "stressed_edge_cents": "3.248359887535145267104029991",
+          "yes_mid": "67/200",
+          "microprice_yes": "33879/106700",
+          "imbalance": "-533/1067",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 65
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 63
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF5SPREAD-26JUL191420MINCHC-CHC2",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 30.0,
+        "ask": 39.0,
+        "bid_depth": 375.0,
+        "ask_depth": 1250.0,
+        "ticker_receipt_at": 1784430011.6750782,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784430011.6750782,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 63,
+          "fair_value_cents": "67.92307692307692307692307692",
+          "gross_edge_cents": "6.923076923076923076923076923",
+          "stressed_edge_cents": "4.923076923076923076923076923",
+          "yes_mid": "69/200",
+          "microprice_yes": "417/1300",
+          "imbalance": "-7/13",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 61,
+          "fair_value_cents": "67.92307692307692307692307692",
+          "gross_edge_cents": "6.923076923076923076923076923",
+          "stressed_edge_cents": "4.923076923076923076923076923",
+          "yes_mid": "69/200",
+          "microprice_yes": "417/1300",
+          "imbalance": "-7/13",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 63
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 61
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBF5TOTAL-26JUL191420MINCHC-5",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 41.0,
+        "ask": 48.0,
+        "bid_depth": 166.0,
+        "ask_depth": 550.0,
+        "ticker_receipt_at": 1784430021.560785,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784430021.560785,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 54,
+          "fair_value_cents": "57.37709497206703910614525140",
+          "gross_edge_cents": "5.377094972067039106145251397",
+          "stressed_edge_cents": "3.377094972067039106145251397",
+          "yes_mid": "89/200",
+          "microprice_yes": "15259/35800",
+          "imbalance": "-96/179",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 52,
+          "fair_value_cents": "57.37709497206703910614525140",
+          "gross_edge_cents": "5.377094972067039106145251397",
+          "stressed_edge_cents": "3.377094972067039106145251397",
+          "yes_mid": "89/200",
+          "microprice_yes": "15259/35800",
+          "imbalance": "-96/179",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 54
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 52
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL191335TEXATL-TEX4",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 57.0,
+        "ask": 64.0,
+        "bid_depth": 24.0,
+        "ask_depth": 76.0,
+        "ticker_receipt_at": 1784429990.686679,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784429990.686679,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 38,
+          "fair_value_cents": "41.32",
+          "gross_edge_cents": "5.32",
+          "stressed_edge_cents": "3.32",
+          "yes_mid": "121/200",
+          "microprice_yes": "1467/2500",
+          "imbalance": "-13/25",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 36,
+          "fair_value_cents": "41.32",
+          "gross_edge_cents": "5.32",
+          "stressed_edge_cents": "3.32",
+          "yes_mid": "121/200",
+          "microprice_yes": "1467/2500",
+          "imbalance": "-13/25",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 38
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 36
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL191420MINCHC-CHC4",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 53.0,
+        "ask": 62.0,
+        "bid_depth": 100.0,
+        "ask_depth": 200.0,
+        "ticker_receipt_at": 1784429983.27077,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784429983.27077,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 40,
+          "fair_value_cents": "44",
+          "gross_edge_cents": "6",
+          "stressed_edge_cents": "4",
+          "yes_mid": "23/40",
+          "microprice_yes": "14/25",
+          "imbalance": "-1/3",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 38,
+          "fair_value_cents": "44",
+          "gross_edge_cents": "6",
+          "stressed_edge_cents": "4",
+          "yes_mid": "23/40",
+          "microprice_yes": "14/25",
+          "imbalance": "-1/3",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 40
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 38
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXMLBTEAMTOTAL-26JUL191420MINCHC-MIN3",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 58.0,
+        "ask": 65.0,
+        "bid_depth": 23.0,
+        "ask_depth": 79.0,
+        "ticker_receipt_at": 1784429984.4400463,
+        "channel_receipt_at": 1784430024.9999125,
+        "available_at": 1784429984.4400463,
+        "epoch_key": [
+          18,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 37,
+          "fair_value_cents": "40.42156862745098039215686275",
+          "gross_edge_cents": "5.421568627450980392156862745",
+          "stressed_edge_cents": "3.421568627450980392156862745",
+          "yes_mid": "123/200",
+          "microprice_yes": "6077/10200",
+          "imbalance": "-28/51",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 35,
+          "fair_value_cents": "40.42156862745098039215686275",
+          "gross_edge_cents": "5.421568627450980392156862745",
+          "stressed_edge_cents": "3.421568627450980392156862745",
+          "yes_mid": "123/200",
+          "microprice_yes": "6077/10200",
+          "imbalance": "-28/51",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 37
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 35
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXNBASUMMERSPREAD-26JUL19BKNOKC-BKN7",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 34.0,
+        "ask": 42.0,
+        "bid_depth": 32.0,
+        "ask_depth": 67.0,
+        "ticker_receipt_at": 1784430011.512023,
+        "channel_receipt_at": 1784430024.996192,
+        "available_at": 1784430011.512023,
+        "epoch_key": [
+          17,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 60,
+          "fair_value_cents": "63.41414141414141414141414141",
+          "gross_edge_cents": "5.414141414141414141414141414",
+          "stressed_edge_cents": "3.414141414141414141414141414",
+          "yes_mid": "19/50",
+          "microprice_yes": "1811/4950",
+          "imbalance": "-35/99",
+          "spread_cents": 8,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 58,
+          "fair_value_cents": "63.41414141414141414141414141",
+          "gross_edge_cents": "5.414141414141414141414141414",
+          "stressed_edge_cents": "3.414141414141414141414141414",
+          "yes_mid": "19/50",
+          "microprice_yes": "1811/4950",
+          "imbalance": "-35/99",
+          "spread_cents": 8,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 60
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 58
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXNEXTTEAMNBA-26JKUMINGA0-LAL",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 70.0,
+        "ask": 79.0,
+        "bid_depth": 24.98,
+        "ask_depth": 42.0,
+        "ticker_receipt_at": 1784430002.3022866,
+        "channel_receipt_at": 1784430024.996192,
+        "available_at": 1784430002.3022866,
+        "epoch_key": [
+          17,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 23,
+          "fair_value_cents": "26.64347566437742609734249030",
+          "gross_edge_cents": "5.643475664377426097342490296",
+          "stressed_edge_cents": "3.643475664377426097342490296",
+          "yes_mid": "149/200",
+          "microprice_yes": "245671/334900",
+          "imbalance": "-851/3349",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 21,
+          "fair_value_cents": "26.64347566437742609734249030",
+          "gross_edge_cents": "5.643475664377426097342490296",
+          "stressed_edge_cents": "3.643475664377426097342490296",
+          "yes_mid": "149/200",
+          "microprice_yes": "245671/334900",
+          "imbalance": "-851/3349",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 23
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 21
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXNEXTTEAMNBA-26ZWIL-NOP",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 64.0,
+        "ask": 71.0,
+        "bid_depth": 72.17,
+        "ask_depth": 25.0,
+        "ticker_receipt_at": 1784429957.2769768,
+        "channel_receipt_at": 1784430024.996192,
+        "available_at": 1784429957.2769768,
+        "epoch_key": [
+          17,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 66,
+          "fair_value_cents": "69.19903262323762478131110425",
+          "gross_edge_cents": "5.199032623237624781311104250",
+          "stressed_edge_cents": "3.199032623237624781311104250",
+          "yes_mid": "27/40",
+          "microprice_yes": "672407/971700",
+          "imbalance": "4717/9717",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 64,
+          "fair_value_cents": "69.19903262323762478131110425",
+          "gross_edge_cents": "5.199032623237624781311104250",
+          "stressed_edge_cents": "3.199032623237624781311104250",
+          "yes_mid": "27/40",
+          "microprice_yes": "672407/971700",
+          "imbalance": "4717/9717",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 66
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 64
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXNPBGAME-26JUL200300SAITOH-SAI",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 45.0,
+        "ask": 55.0,
+        "bid_depth": 245.0,
+        "ask_depth": 98.0,
+        "ticker_receipt_at": 1784430005.5065608,
+        "channel_receipt_at": 1784430024.996192,
+        "available_at": 1784430005.5065608,
+        "epoch_key": [
+          17,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 47,
+          "fair_value_cents": "52.14285714285714285714285714",
+          "gross_edge_cents": "7.142857142857142857142857143",
+          "stressed_edge_cents": "5.142857142857142857142857143",
+          "yes_mid": "1/2",
+          "microprice_yes": "73/140",
+          "imbalance": "3/7",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 45,
+          "fair_value_cents": "52.14285714285714285714285714",
+          "gross_edge_cents": "7.142857142857142857142857143",
+          "stressed_edge_cents": "5.142857142857142857142857143",
+          "yes_mid": "1/2",
+          "microprice_yes": "73/140",
+          "imbalance": "3/7",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 47
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 45
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXPGATOP20-COPC26-JBYR",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 53.0,
+        "ask": 60.0,
+        "bid_depth": 1000.0,
+        "ask_depth": 3489.0,
+        "ticker_receipt_at": 1784429988.0168867,
+        "channel_receipt_at": 1784430024.996192,
+        "available_at": 1784429988.0168867,
+        "epoch_key": [
+          17,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 42,
+          "fair_value_cents": "45.44063265760748496324348407",
+          "gross_edge_cents": "5.440632657607484963243484072",
+          "stressed_edge_cents": "3.440632657607484963243484072",
+          "yes_mid": "113/200",
+          "microprice_yes": "244917/448900",
+          "imbalance": "-2489/4489",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 40,
+          "fair_value_cents": "45.44063265760748496324348407",
+          "gross_edge_cents": "5.440632657607484963243484072",
+          "stressed_edge_cents": "3.440632657607484963243484072",
+          "yes_mid": "113/200",
+          "microprice_yes": "244917/448900",
+          "imbalance": "-2489/4489",
+          "spread_cents": 7,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 42
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 40
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXPGATOP5-COPC26-DFRI",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 15.0,
+        "ask": 25.0,
+        "bid_depth": 3000.0,
+        "ask_depth": 2055.0,
+        "ticker_receipt_at": 1784429957.5222888,
+        "channel_receipt_at": 1784430024.996192,
+        "available_at": 1784429957.5222888,
+        "epoch_key": [
+          17,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 17,
+          "fair_value_cents": "20.93471810089020771513353116",
+          "gross_edge_cents": "5.934718100890207715133531157",
+          "stressed_edge_cents": "3.934718100890207715133531157",
+          "yes_mid": "1/5",
+          "microprice_yes": "1411/6740",
+          "imbalance": "63/337",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 15,
+          "fair_value_cents": "20.93471810089020771513353116",
+          "gross_edge_cents": "5.934718100890207715133531157",
+          "stressed_edge_cents": "3.934718100890207715133531157",
+          "yes_mid": "1/5",
+          "microprice_yes": "1411/6740",
+          "imbalance": "63/337",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 17
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 15
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXPGATOP5-COPC26-GSAR",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 32.0,
+        "ask": 42.0,
+        "bid_depth": 2000.0,
+        "ask_depth": 2679.0,
+        "ticker_receipt_at": 1784429957.5228486,
+        "channel_receipt_at": 1784430024.996192,
+        "available_at": 1784429957.5228486,
+        "epoch_key": [
+          17,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 60,
+          "fair_value_cents": "63.72558238939944432571062193",
+          "gross_edge_cents": "5.725582389399444325710621928",
+          "stressed_edge_cents": "3.725582389399444325710621928",
+          "yes_mid": "37/100",
+          "microprice_yes": "42432/116975",
+          "imbalance": "-679/4679",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 58,
+          "fair_value_cents": "63.72558238939944432571062193",
+          "gross_edge_cents": "5.725582389399444325710621928",
+          "stressed_edge_cents": "3.725582389399444325710621928",
+          "yes_mid": "37/100",
+          "microprice_yes": "42432/116975",
+          "imbalance": "-679/4679",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 60
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 58
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXPGATOP5-COPC26-MASC",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 18.0,
+        "ask": 28.0,
+        "bid_depth": 3000.0,
+        "ask_depth": 2143.0,
+        "ticker_receipt_at": 1784429957.524882,
+        "channel_receipt_at": 1784430024.996192,
+        "available_at": 1784429957.524882,
+        "epoch_key": [
+          17,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 20,
+          "fair_value_cents": "23.83317130079720007777561734",
+          "gross_edge_cents": "5.833171300797200077775617344",
+          "stressed_edge_cents": "3.833171300797200077775617344",
+          "yes_mid": "23/100",
+          "microprice_yes": "61287/257150",
+          "imbalance": "857/5143",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 18,
+          "fair_value_cents": "23.83317130079720007777561734",
+          "gross_edge_cents": "5.833171300797200077775617344",
+          "stressed_edge_cents": "3.833171300797200077775617344",
+          "yes_mid": "23/100",
+          "microprice_yes": "61287/257150",
+          "imbalance": "857/5143",
+          "spread_cents": 10,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 20
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 18
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXPGATOP5-COPC26-MMCG",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 49.0,
+        "ask": 58.0,
+        "bid_depth": 1000.0,
+        "ask_depth": 2342.0,
+        "ticker_receipt_at": 1784429957.5251756,
+        "channel_receipt_at": 1784430024.996192,
+        "available_at": 1784429957.5251756,
+        "epoch_key": [
+          17,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 44,
+          "fair_value_cents": "48.30700179533213644524236984",
+          "gross_edge_cents": "6.307001795332136445242369838",
+          "stressed_edge_cents": "4.307001795332136445242369838",
+          "yes_mid": "107/200",
+          "microprice_yes": "28793/55700",
+          "imbalance": "-671/1671",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "no",
+          "price_cents": 42,
+          "fair_value_cents": "48.30700179533213644524236984",
+          "gross_edge_cents": "6.307001795332136445242369838",
+          "stressed_edge_cents": "4.307001795332136445242369838",
+          "yes_mid": "107/200",
+          "microprice_yes": "28793/55700",
+          "imbalance": "-671/1671",
+          "spread_cents": 9,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 44
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "no",
+          "limit": 42
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    },
+    {
+      "ticker": "KXPGATOP5-COPC26-SMAZ",
+      "decision_at": 1784430025,
+      "decision_view": {
+        "bid": 34.0,
+        "ask": 42.0,
+        "bid_depth": 2000.0,
+        "ask_depth": 1000.0,
+        "ticker_receipt_at": 1784429957.5263934,
+        "channel_receipt_at": 1784430024.996192,
+        "available_at": 1784429957.5263934,
+        "epoch_key": [
+          17,
+          1,
+          1
+        ]
+      },
+      "signal_details": {
+        "v15_ioc": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 36,
+          "fair_value_cents": "39.33333333333333333333333333",
+          "gross_edge_cents": "5.333333333333333333333333333",
+          "stressed_edge_cents": "3.333333333333333333333333333",
+          "yes_mid": "19/50",
+          "microprice_yes": "59/150",
+          "imbalance": "1/3",
+          "spread_cents": 8,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v12": {
+          "strategy_id": "microprice_value_maker_v12_shadow",
+          "outcome": "yes",
+          "price_cents": 34,
+          "fair_value_cents": "39.33333333333333333333333333",
+          "gross_edge_cents": "5.333333333333333333333333333",
+          "stressed_edge_cents": "3.333333333333333333333333333",
+          "yes_mid": "19/50",
+          "microprice_yes": "59/150",
+          "imbalance": "1/3",
+          "spread_cents": 8,
+          "quote_location": "selected_outcome_best_bid"
+        },
+        "frozen_v10": null
+      },
+      "paths": {
+        "v15_ioc": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 36
+        },
+        "frozen_v12": {
+          "state": "entry_unobserved_capture_end",
+          "side": "yes",
+          "limit": 34
+        },
+        "frozen_v10": {
+          "state": "benchmark_no_trade"
+        }
+      }
+    }
+  ],
+  "actual_orders": 0,
+  "actual_fills": 0,
+  "execution_enabled": false,
+  "profitability_proven": false
+}

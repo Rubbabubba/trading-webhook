@@ -1,0 +1,12 @@
+{
+  "recorded_at": "2026-10-16T02:05:13.823452+00:00",
+  "initial_output": "preliminary-v1-accounting-guard-abort.json",
+  "reason": "Native amount parser rejects displayed quantity above1000000; adapter propagated rejection as whole replay fault rather than unsupported decision book.",
+  "correction": "Catch only exact native invalid_accounting_amount for candidate classification; do not clip or increase depth limits or alter signal/cost/timing rules.",
+  "initial_source_records": 3765095,
+  "initial_preliminary_tickers": 59,
+  "initial_conditional_entries": 0,
+  "source_window_complete": false,
+  "no_parameter_optimization": true,
+  "registration_unchanged": true
+}

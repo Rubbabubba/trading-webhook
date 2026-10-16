@@ -14,7 +14,12 @@ HORIZONS = (5, 30, 300)
 
 
 def decision(history, frame):
-    base, reason = v12(history, frame)
+    try:
+        base, reason = v12(history, frame)
+    except ValueError as error:
+        if str(error) != 'invalid_accounting_amount':
+            raise
+        return None, 'unsupported_native_accounting_amount'
     if not base or Decimal(base['gross_edge_cents']) < 5:
         return None, reason if not base else 'v15_gross_edge_below_five'
     benchmark, _ = v10(history, frame)

@@ -23,6 +23,13 @@ def test_frozen_decision_and_same_observation_benchmarks():
     assert f == frame()
 
 
+def test_native_depth_limit_is_not_clipped_or_relaxed():
+    f = frame()
+    f['orderbook_fp']['yes_dollars'][0][1] = '1000001'
+    assert decision([], f) == (None, 'unsupported_native_accounting_amount')
+    assert f['orderbook_fp']['yes_dollars'][0][1] == '1000001'
+
+
 def test_marketability_requires_slippage_inside_original_limit():
     p = dict(limit=42, state='awaiting_entry')
     step(p, 'entry', 1001, 1001, view())
