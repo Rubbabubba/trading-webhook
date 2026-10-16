@@ -11,6 +11,7 @@ import sqlite3
 import time
 
 from .kalshi_demo_market_data import DemoMarkets
+from .kalshi_rule_vintage_archive import init as init_rule_archive, status as rule_archive_status
 from .kalshi_external_sleeves import (
     confirm_structural_candidate, favorite_longshot_observations,
     favorite_maker_observations,
@@ -744,6 +745,7 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
         WEATHER_ENSEMBLE_ID: weather_records,
     })
     packet["favorite_longshot_gate"] = flb
+    packet["rule_vintage_archive"] = rule_archive_status(db)
     packet['structural_execution_probe']=structural_probe_status(db)
     packet["favorite_maker_gate"] = favorite_maker
     packet["weather_ensemble_gate"] = weather
@@ -810,6 +812,8 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
 def run(data_root, cycles=None, interval_seconds=60):
     root = Path(data_root).resolve(); root.mkdir(parents=True, exist_ok=True)
     db = open_db(root / "research_sleeves.sqlite3"); client = DemoMarkets(); cycle = 0
+    init_rule_archive(db)
+    client.rule_archive_db = db
     try:
         while cycles is None or cycle < cycles:
             generation = None; markets = []; coverage = {}; error = None

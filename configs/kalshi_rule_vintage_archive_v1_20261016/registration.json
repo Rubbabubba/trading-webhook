@@ -1,0 +1,12 @@
+{
+  "schema":"kalshi_rule_vintage_archive_v1",
+  "execution_enabled":false,
+  "purpose":"Forward-only immutable contract-rule field versions and separate metadata/book request receipt clocks; supports later rule-aware research, not trading or historical backfill.",
+  "source":"Existing unauthenticated DemoMarkets.quote market GET plus book GET; no additional request, source, credential, schedule or model call.",
+  "metadata_fields":["ticker","event_ticker","market_type","exchange_index","rules_primary","rules_secondary","open_time","close_time","expected_expiration_time","expiration_time","latest_expiration_time","occurrence_datetime","early_close_condition","can_close_early","settlement_timer_seconds","strike_type","floor_strike","cap_strike","functional_strike","custom_strike"],
+  "availability":"First local metadata response receipt only. Server updated_time, publication time, historical rule version, completeness between observations and unseen revisions are not inferred.",
+  "integrity":"SHA256 canonical JSON field projection, append-only versions and quote receipts, immutable protocol. A version hash does not prove a publisher's historical byte object. Missing fields are retained as null, not invented.",
+  "limits":{"maximum_versions":100000,"maximum_receipts":1000000,"maximum_version_bytes":65536},
+  "failure":"Expose invalid clocks, identity mismatch, protocol drift or capacity in archive status. Retain all earlier evidence. No pruning/reset/backfill or execution authority. Archive failure never changes a frozen signal or retries an order.",
+  "verification":"Synthetic deduplication/change/restart/protocol/clock/capacity tests plus fresh deployed nonzero archive rows and exact worker revision. No claim of profitability or complete source-publication ingestion."
+}

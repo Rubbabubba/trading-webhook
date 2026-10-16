@@ -18,6 +18,7 @@ from .kalshi_binary_broker import BinaryDemoBroker
 from .kalshi_binary_journal import BinaryJournal
 from .kalshi_demo_broker import DemoClient, check_exchange
 from .kalshi_demo_market_data import DemoMarkets
+from .kalshi_rule_vintage_archive import init as init_rule_archive, status as rule_archive_status
 from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame
 from .kalshi_depth_replenishment import init as init_depth_recorder, capture as capture_depth, status as depth_status
 from .kalshi_public_trade_liquidity import init as init_trade_probe, poll as poll_trade_probe, status as trade_probe_status
@@ -1625,6 +1626,7 @@ def write_status(path, state, journal, **values):
     current_evidence['high_edge_two_tick_shadow'] = high_edge_status(state.db)
     current_evidence['selected_candidate_release_review'] = review_selected_candidate(state.db, now=time.time())
     current_evidence['timely_shadow_measurement'] = timely_measurement_status(state.db)
+    current_evidence['rule_vintage_archive'] = rule_archive_status(state.db)
     current_evidence["v12_quote_holdout"] = evaluate_v12_holdout(state.db)
     latest_v12 = state.db.execute(
         "SELECT detail,observed_at,ticker FROM v12_shadow_signals ORDER BY id DESC LIMIT 1"
@@ -1704,6 +1706,8 @@ def run(data_root, *, cycles=None):
                             capital_limit_cents=CAPITAL_LIMIT_CENTS, daily_loss_cents=DAILY_LOSS_CENTS)
     client = DemoClient(os.environ["KALSHI_DEMO_API_KEY_ID"], os.environ["KALSHI_DEMO_PRIVATE_KEY_PATH"])
     markets = DemoMarkets(); broker = BinaryDemoBroker(journal, client)
+    init_rule_archive(state.db)
+    markets.rule_archive_db = state.db
     cohort = state.load("cohort", []); cohort_at = state.load("cohort_at", 0)
     if state.load("cohort_selector") != COHORT_SELECTOR:
         # Keep the last validated cohort serving while the first full-universe

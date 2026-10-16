@@ -578,6 +578,8 @@ def faults(status, *, now):
     if status.get("strategy_execution_enabled") is not False:
         result.append("retired_strategy_execution_enabled")
     evidence = status.get("evidence", {})
+    if evidence.get('rule_vintage_archive',{}).get('state')=='fault':
+        result.append('rule_vintage_archive_fault')
     shadow = evidence.get("v10_shadow", {})
     if shadow.get("strategy_id") != EXPECTED_V10:
         result.append("v10_strategy_changed")
@@ -832,6 +834,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "trade_side_capture": (status.get('evidence') or {}).get('trade_side_capture'),
         "high_edge_two_tick_shadow": (status.get('evidence') or {}).get('high_edge_two_tick_shadow'),
         "timely_shadow_measurement": (status.get('evidence') or {}).get('timely_shadow_measurement'),
+        "rule_vintage_archive": (status.get('evidence') or {}).get('rule_vintage_archive'),
         "selected_candidate_release_review": compact_candidate_review((status.get('evidence') or {}).get('selected_candidate_release_review')),
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),
         "v10_gate": gate,

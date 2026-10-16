@@ -3,6 +3,7 @@ from datetime import datetime,timezone
 import json
 import math
 import time
+import sqlite3
 from urllib.parse import urlencode,quote
 from urllib.request import Request,build_opener
 from urllib.error import HTTPError
@@ -50,8 +51,18 @@ class DemoMarkets:
     def get_series(self,series_ticker):
         return self._read('/series/'+quote(series_ticker,safe=''))
     def quote(self,payload):
-        market,_,_=self.get(payload['ticker']);m=market['market']
+        market,market_start,market_end=self.get(payload['ticker']);m=market['market']
         if m.get('ticker')!=payload['ticker'] or m.get('status')!='active' or m.get('market_type')!='binary':
             raise ValueError('demo_market_not_active_binary')
         data,start,end=self.get(payload['ticker'],book=True,params={'depth':20})
-        return dict(data,environment='demo',ticker=payload['ticker'],started_at=start,observed_at=end,market=m)
+        result=dict(data,environment='demo',ticker=payload['ticker'],started_at=start,observed_at=end,market=m,
+                    market_started_at=market_start,market_observed_at=market_end)
+        archive=getattr(self,'rule_archive_db',None)
+        if archive is not None:
+            from .kalshi_rule_vintage_archive import capture,record_fault
+            try:capture(archive,result)
+            except (ValueError,TypeError,sqlite3.Error) as exc:
+                self.rule_archive_error=type(exc).__name__+':'+str(exc)
+                try:record_fault(archive,self.rule_archive_error)
+                except sqlite3.Error:pass
+        return result
