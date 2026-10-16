@@ -1,0 +1,428 @@
+{
+  "registration_sha256": "4b11a83e931224addfd4f1e5f03fde96c6ca7058305a53edabb12dcf34a51347",
+  "discovery": [
+    {
+      "series": "KXDWTSMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXDWTSMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:52.872743+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXDJTWOMENS",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXDJTWOMENS&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:53.551922+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXWBCMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXWBCMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:54.184504+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXEARNINGSMENTIONMRVL",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONMRVL&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:54.834435+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXCOOPERMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXCOOPERMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:55.472786+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXCROCKETTMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXCROCKETTMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:56.132347+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXEARNINGSMENTIONWING",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONWING&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:56.761803+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXNEWSOMMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXNEWSOMMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:57.406687+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXDROZMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXDROZMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:58.048818+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXEARNINGSMENTIONHOOD",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONHOOD&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:58.674528+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXMIRANMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXMIRANMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:59.323499+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXBARRMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXBARRMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:26:59.961306+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXMTPMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXMTPMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:00.592712+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXZUCKMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXZUCKMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:01.235081+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXEARNINGSMENTIONM",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONM&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:01.882449+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXTRUMPSAYCOMPANY",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXTRUMPSAYCOMPANY&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:02.542873+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXEARNINGSMENTIONNKE",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONNKE&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:03.186012+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXTRUMPMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXTRUMPMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:03.830540+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXGOVERNORMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXGOVERNORMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:04.516879+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXKXDJTHANNITY",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXKXDJTHANNITY&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:05.150562+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXMSFTMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXMSFTMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:05.796579+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXGUTFELDMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXGUTFELDMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:06.431924+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXEARNINGSMENTIONPLTR",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONPLTR&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:07.087181+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXABNBMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXABNBMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:07.745013+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXSHAQMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXSHAQMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:08.404320+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXAOCMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXAOCMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:09.065166+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXHARTMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXHARTMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:09.703006+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXHILTONMENTION",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXHILTONMENTION&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:10.324300+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXEARNINGSMENTIONETOR",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONETOR&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:10.980649+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    },
+    {
+      "series": "KXEARNINGSMENTIONHD",
+      "pages": [
+        {
+          "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONHD&mve_filter=exclude&limit=1000",
+          "captured_at": "2026-10-16T03:27:11.609560+00:00",
+          "method": "GET",
+          "authenticated": false,
+          "status": 400,
+          "error": "HTTPError"
+        }
+      ],
+      "incomplete": true
+    }
+  ],
+  "raw_market_rows": 0,
+  "selected": [],
+  "selected_before_candles": true
+}

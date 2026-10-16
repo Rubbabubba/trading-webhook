@@ -1,0 +1,8 @@
+{
+  "url": "https://external-api.kalshi.com/trade-api/v2/historical/markets?series_ticker=KXEARNINGSMENTIONETOR&mve_filter=exclude&limit=1000",
+  "captured_at": "2026-10-16T03:27:10.980649+00:00",
+  "method": "GET",
+  "authenticated": false,
+  "status": 400,
+  "error": "HTTPError"
+}

@@ -1,0 +1,10 @@
+{
+  "id": "mention_metadata_query_repair_v1",
+  "registered_at": "2026-10-16T03:27:28.280523+00:00",
+  "fault": "All30 historical list requests returned400; not zero markets. Official endpoint documents mutually exclusive filters. Initial collector unnecessarily combined series_ticker with mve_filter.",
+  "repair": "Remove mve_filter from exact same frozen30series discovery queries. Keep one-contract selection/date/price/cost rules unchanged. Preserve all rejected receipts and original empty incomplete manifest. Stop on next400 and retain error body.",
+  "global_total_request_cap": 180,
+  "original_requests": 30,
+  "max_new_requests": 150,
+  "profitability_proven": false
+}
