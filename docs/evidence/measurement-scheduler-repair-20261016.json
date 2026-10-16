@@ -1,0 +1,46 @@
+{
+  "schema": "kalshi_measurement_scheduler_repair_v1",
+  "recorded_at": "2026-10-16T01:52:31.994990+00:00",
+  "purpose": "Reduce known runner scheduling conflict around unchanged prospective markout windows",
+  "baseline": {
+    "worker_revision": "683c4fd89a3647066974d06a420079c000e52dc6",
+    "timely_v12_signals": 8,
+    "complete_signals": 0,
+    "marks": 6,
+    "expected_marks": 24,
+    "read_only": true,
+    "causal_limit": "Missing horizons and optional reads confirmed; individual missed-horizon causal latency not attributed"
+  },
+  "policy": {
+    "optional_research_reserve_seconds": 65,
+    "reason": "Largest collector four reads at eight-second timeout plus two-second rate waits, then allowance for two-read measurement quote and loop wait",
+    "priority": "Owned fill evidence first, then earliest deadline across V15 and timely sidecar",
+    "defer": [
+      "flat discovery",
+      "new candidate scan including new entries",
+      "each optional collector separately"
+    ],
+    "preserve": [
+      "broker snapshots and independent reconciliation",
+      "working order and position handling",
+      "signal rules and five-second measurement lateness",
+      "all old observations and loss baselines",
+      "all execution and promotion gates"
+    ]
+  },
+  "tests": {
+    "passed": 58,
+    "synthetic_only": true,
+    "includes": "Two actual worker-loop tests with simulated network plus bounded deadline, restart, capture and frozen strategy regressions"
+  },
+  "limitations": [
+    "Network latency and broker reconciliation can still cause misses",
+    "No retroactive marks",
+    "No guarantee of complete prospective measurements",
+    "No profitability or fillability proof",
+    "Requires genuine future signals for operational effect"
+  ],
+  "execution_enabled": false,
+  "production_execution_enabled": false,
+  "promotion_ready": false
+}

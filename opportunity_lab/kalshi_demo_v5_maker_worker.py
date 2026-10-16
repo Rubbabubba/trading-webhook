@@ -20,6 +20,7 @@ from .kalshi_demo_broker import DemoClient, check_exchange
 from .kalshi_demo_market_data import DemoMarkets
 from .kalshi_rule_vintage_archive import init as init_rule_archive, status as rule_archive_status
 from .kalshi_continuing_capture import Recorder as ContinuingCapture, priority_pending as capture_priority_pending, unavailable_status as capture_unavailable_status
+from .kalshi_measurement_scheduler import allow_optional as measurement_optional, due_ticker as measurement_due
 from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame
 from .kalshi_depth_replenishment import init as init_depth_recorder, capture as capture_depth, status as depth_status
 from .kalshi_public_trade_liquidity import init as init_trade_probe, poll as poll_trade_probe, status as trade_probe_status
@@ -31,11 +32,11 @@ from .kalshi_scan_trade_capture import init as init_scan_trade_capture, poll as 
 from .kalshi_postquote_capture import init as init_postquote_capture, poll as poll_postquote_capture, status as postquote_capture_status
 from .kalshi_postquote_diagnostic import init as init_postquote_diagnostic, status as postquote_diagnostic_status
 from .kalshi_trade_side_capture import init as init_trade_side, status as trade_side_status
-from .kalshi_high_edge_shadow import init as init_high_edge, observe as observe_high_edge, status as high_edge_status, pending_ticker as high_edge_pending
+from .kalshi_high_edge_shadow import init as init_high_edge, observe as observe_high_edge, status as high_edge_status
 from .kalshi_v15_release_review import review as review_selected_candidate
 from .kalshi_timely_shadow_measurement import (
     init as init_timely_measurement, observe as observe_timely_measurement,
-    status as timely_measurement_status, pending_ticker as timely_measurement_pending,
+    status as timely_measurement_status,
 )
 from .kalshi_activity_trade_capture import init as init_activity_trade_capture, poll as poll_activity_trade_capture, status as activity_trade_capture_status
 from .kalshi_deterministic_monitor import run_check as run_deterministic_monitor
@@ -1627,6 +1628,7 @@ def write_status(path, state, journal, **values):
     current_evidence['high_edge_two_tick_shadow'] = high_edge_status(state.db)
     current_evidence['selected_candidate_release_review'] = review_selected_candidate(state.db, now=time.time())
     current_evidence['timely_shadow_measurement'] = timely_measurement_status(state.db)
+    current_evidence['measurement_scheduler'] = state.load('measurement_scheduler', {})
     current_evidence['rule_vintage_archive'] = rule_archive_status(state.db)
     continuing=getattr(state,'continuing_capture',None)
     if continuing is not None:
@@ -1777,9 +1779,10 @@ def run(data_root, *, cycles=None):
                         "start_balance_cents": activation,
                         "production_execution_enabled": False,
                     })
-                cohort, cohort_at = refresh_cohort(
-                    state, markets, cohort, cohort_at, now=time.time()
-                )
+                if position or active or measurement_optional(state, 'discovery'):
+                    cohort, cohort_at = refresh_cohort(
+                        state, markets, cohort, cohort_at, now=time.time()
+                    )
                 if active:
                     cid = active["payload"]["client_order_id"]
                     queue = client.request("GET", "/portfolio/orders/" + active["broker_id"] + "/queue_position")
@@ -1847,8 +1850,8 @@ def run(data_root, *, cycles=None):
                         price = limit_price_cents(frame, position["outcome"], "sell")
                         submit(state, journal, broker, markets, market, position["outcome"], "sell", price)
                 else:
-                    pending = (pending_markout_ticker(state) or high_edge_pending(state.db,time.time())
-                               or timely_measurement_pending(state.db,time.time()))
+                    pending = (pending_markout_ticker(state)
+                               or measurement_due(state.db, time.time()))
                     if pending:
                         quote = markets.quote({"ticker": pending}); frame = one_contract_frame(quote, book_id=str(quote["observed_at"]))
                         pending_event = state.db.execute(
@@ -1864,7 +1867,7 @@ def run(data_root, *, cycles=None):
                         observe_frame(state, pending, frame,
                                       pending_event[0] if pending_event else pending)
                         record_due_markouts(state, pending, frame)
-                    else:
+                    elif measurement_optional(state, 'new_scan'):
                         if (time.time() - float(state.load("factory_trial_last_scan", 0))
                                 >= FACTORY_TRIAL_SCAN_INTERVAL_SECONDS):
                             state.save("factory_trial_last_scan", time.time())
@@ -1977,20 +1980,25 @@ def run(data_root, *, cycles=None):
                         snapshot["balance"]["balance"],
                     )
                 if snapshot is not None and not end_accounting['positions']:
-                    poll_activity_trade_capture(state.db, markets, time.time())
-                    poll_postquote_capture(state.db, markets, time.time())
-                    if research_frame is not None:
+                    if measurement_optional(state, 'activity'):
+                        poll_activity_trade_capture(state.db, markets, time.time())
+                    if measurement_optional(state, 'postquote'):
+                        poll_postquote_capture(state.db, markets, time.time())
+                    if research_frame is not None and measurement_optional(state, 'scan_trades'):
                         try:
                             poll_scan_trade_capture(state.db, markets, research_frame,
                                                     event_id(market), time.time())
                         except (ValueError, TypeError, ArithmeticError):
                             state.save('scan_trade_capture_error', 'invalid_or_stale_scan_frame')
-                    poll_trade_probe(state.db,markets,time.time())
-                    poll_targeted_trade_probe(state.db,markets,time.time())
-                    depth_now = time.time()
-                    poll_depth_trade_probe(state.db,markets,depth_now,
-                                           signal_candidate=targeted_trade_candidate(state.db,depth_now))
-                    if state.continuing_capture is not None:
+                    if measurement_optional(state, 'global_trades'):
+                        poll_trade_probe(state.db,markets,time.time())
+                    if measurement_optional(state, 'targeted_trades'):
+                        poll_targeted_trade_probe(state.db,markets,time.time())
+                    if measurement_optional(state, 'depth_trades'):
+                        depth_now = time.time()
+                        poll_depth_trade_probe(state.db,markets,depth_now,
+                                               signal_candidate=targeted_trade_candidate(state.db,depth_now))
+                    if state.continuing_capture is not None and measurement_optional(state, 'continuing_capture'):
                         try:
                             capped=(state.db.execute('SELECT count(*) FROM scan_trade_v4_polls').fetchone()[0]>=4096
                                     or state.db.execute('SELECT count(*) FROM scan_trade_v4_trades').fetchone()[0]>=20000)
