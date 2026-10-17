@@ -497,6 +497,18 @@ def resolve_one_weather(db, client, now):
             # without inventing a temperature when the API leaves it blank.
             resolution = score_resolution(row, value, contract_results=results)
         except (KeyError, TypeError, ValueError, StopIteration) as exc:
+            if str(exc) in {"missing_frozen_probability", "invalid_frozen_probability"}:
+                # Original observation remains immutable evidence of missing data.
+                # Never fabricate a market probability or count this as a score.
+                excluded = {"resolved_at": now.isoformat(), "unscored_reason": str(exc),
+                            "settlement_evidence": markets,
+                            "outcome_source": "kalshi_finalized_contract_results",
+                            "hypothetical_only": True}
+                db.execute("UPDATE weather_observations SET resolution=? WHERE observation_id=?",
+                           (json.dumps(excluded, sort_keys=True), observation_id))
+                progress["unscored"] += 1
+                progress["probability_exclusions"] = progress.get("probability_exclusions", 0) + 1
+                continue
             progress["waiting"] += 1
             progress["last_scoring_error"] = str(exc)
             continue

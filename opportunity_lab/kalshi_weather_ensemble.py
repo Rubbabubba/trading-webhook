@@ -130,7 +130,7 @@ def parse_temperature_bucket(market: dict) -> tuple[float, float] | None:
     """Return inclusive integer-temperature bounds as half-open float edges."""
     text = " ".join(str(market.get(key) or "") for key in (
         "yes_sub_title", "title", "subtitle", "rules_primary",
-    )).replace("°", "")
+    )).replace("Â°", "")
     number = r"(-?\d+(?:\.\d+)?)"
     between = re.search(number + r"\s*(?:to|through|-)\s*" + number, text, re.I)
     below = re.search(number + r"\s*(?:or\s+)?(?:below|lower|less)", text, re.I)
@@ -333,10 +333,21 @@ def score_resolution(observation: dict, expiration_value: float | None, *,
     structure = observation.get("event_structure", "bucket_ladder")
     if structure == "bucket_ladder" and sum(outcomes) != 1:
         raise ValueError("nonunique_winning_bucket")
-    model = [float(row["consensus_probability"]) for row in contracts]
-    market = [float(row.get("normalized_market_probability")
-                    if structure == "bucket_ladder"
-                    else row["market_mid_probability"]) for row in contracts]
+    def probability(row, key):
+        value = row.get(key)
+        if value is None:
+            raise ValueError("missing_frozen_probability")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("invalid_frozen_probability") from None
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("invalid_frozen_probability")
+        return value
+    model = [probability(row, "consensus_probability") for row in contracts]
+    market = [probability(row, "normalized_market_probability"
+                          if structure == "bucket_ladder"
+                          else "market_mid_probability") for row in contracts]
     brier = lambda values: sum((probability - outcome) ** 2
                                for probability, outcome in zip(values, outcomes)) / len(outcomes)
     def ladder_rps(values):
