@@ -11,13 +11,30 @@ import threading
 import time
 
 from .kalshi_demo_stream_archive import Archive
+from .kalshi_demo_stream_source import Books, SourceFault
 
 URL = 'wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2'
 SESSION_SECONDS = 300
 RECONNECT_SECONDS = 60
 SUBSCRIPTION_SECONDS = 10
-PROTOCOL = 'demo_continuous_stream_v1_20261018'
-REGISTRATION = Path(__file__).resolve().parents[1] / 'configs/kalshi_demo_continuous_stream_20261018/registration.json'
+PROTOCOL = 'demo_continuous_stream_availability_v2_20261018'
+ARCHIVE_PROTOCOL = 'demo_stream_archive_availability_v2_20261018'
+ARCHIVE_NAME = 'stream-source-v2.sqlite3'
+STATUS_NAME = 'stream-source-v2-status.json'
+REGISTRATION = Path(__file__).resolve().parents[1] / 'configs/kalshi_demo_continuous_stream_20261018/availability-v2.json'
+
+
+def compact_status(value):
+    if not isinstance(value,dict):return None
+    fields=('protocol','state','registration_sha256','observed_at','records','compressed_bytes',
+            'latest_received_at','acknowledged_channels','target_count','snapshots','deltas',
+            'public_trades','trades_with_prior_book','source_fault_code','error_class',
+            'execution_enabled','fill_assumed','profitability_proven')
+    result={key:value[key] for key in fields if key in value}
+    result['unavailable_symbol_count']=len(value.get('unavailable_symbols',[]))
+    result['usable_symbol_count']=len(value.get('usable_symbols',[]))
+    result['full_status_reference']=STATUS_NAME
+    return result
 
 
 def targets(path):
@@ -62,6 +79,8 @@ async def session(archive, tickers, stop, publish, *, connect=connector,
     """One connection epoch; public data only. Exceptions never reach maker."""
     acknowledged = set()
     counts = {'snapshots': 0, 'deltas': 0, 'public_trades': 0, 'trades_with_prior_book': 0}
+    unavailable = set()
+    usable_symbols = set()
     async with connect(URL, additional_headers=headers(), open_timeout=10,
                        close_timeout=2, ping_interval=20, ping_timeout=10,
                        max_size=262144, max_queue=32, compression=None) as ws:
@@ -86,13 +105,23 @@ async def session(archive, tickers, stop, publish, *, connect=connector,
                     acknowledged.add(result['channel'])
                 elif kind == 'orderbook_snapshot':
                     counts['snapshots'] += 1
+                    unavailable.discard(result['ticker'])
                 elif kind == 'orderbook_delta':
                     counts['deltas'] += 1
                 elif kind == 'trade':
                     counts['public_trades'] += 1
                     counts['trades_with_prior_book'] += bool(result['book_available'])
+                elif kind == 'market_unavailable':
+                    unavailable.add(result['ticker'])
+                if kind in {'orderbook_snapshot','orderbook_delta','market_unavailable'}:
+                    if result['usable']:usable_symbols.add(result['ticker'])
+                    else:usable_symbols.discard(result['ticker'])
                 publish({'state': 'collecting' if len(acknowledged) == 2 else 'subscribing',
-                         'acknowledged_channels': len(acknowledged), **counts})
+                         'acknowledged_channels': len(acknowledged),
+                         'unavailable_symbols': sorted(unavailable),
+                         'usable_symbols': sorted(usable_symbols),
+                         'source_coverage': 'partial' if unavailable else 'selected_targets_only',
+                         'counter_scope': 'records_cumulative; book/trade_counts_current_epoch', **counts})
         except BaseException:
             archive.end(wall(), 'source_or_storage_fault')
             raise
@@ -124,7 +153,7 @@ class Service:
                               fill_assumed=False, profitability_proven=False)
             value = dict(self.value)
         # Atomic local status is also available if REST is down or maker cannot publish.
-        path = self.root / 'stream-source-v1-status.json'
+        path = self.root / STATUS_NAME
         if value['state'] == self.last_disk_state and time.monotonic() - self.last_disk_at < 1:
             return
         temporary = path.with_suffix('.tmp')
@@ -154,11 +183,13 @@ class Service:
                     or spec['session_seconds'] != SESSION_SECONDS):
                 raise ValueError('stream_registration_mismatch')
             self.publish({'registration_sha256': hashlib.sha256(REGISTRATION.read_bytes()).hexdigest()})
-            archive = Archive(self.root / 'stream-source-v1.sqlite3')
+            archive = Archive(self.root / ARCHIVE_NAME, protocol=ARCHIVE_PROTOCOL,
+                              decoder_factory=lambda tickers:Books(tickers,allow_unavailable=True))
             while not self.stop_event.is_set():
                 try:
                     tickers = targets(self.root / 'worker.sqlite3')
-                    self.publish({'state': 'connecting', 'target_count': len(tickers)})
+                    self.publish({'state': 'connecting', 'target_count': len(tickers),
+                                  'error_class':None,'source_fault_code':None})
                     def progress(values):
                         self.publish({**archive.status(), **values})
                     asyncio.run(session(archive, tickers, self.stop_event, progress))
@@ -168,7 +199,8 @@ class Service:
                     capacity = isinstance(exc, (ValueError, sqlite3.OperationalError)) and any(
                         word in str(exc) for word in ('capacity', 'low_disk', 'database or disk is full'))
                     self.publish({'state': 'capacity_stop' if capacity else 'source_or_transport_fault',
-                                  'error_class': type(exc).__name__, **archive.status()})
+                                  'error_class': type(exc).__name__, **archive.status(),
+                                  'source_fault_code': str(exc) if isinstance(exc,SourceFault) and re.fullmatch(r'[a-z_]{1,80}',str(exc)) else None})
                     if capacity:
                         break
                 self.stop_event.wait(RECONNECT_SECONDS)

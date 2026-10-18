@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import time
+from .kalshi_demo_stream_worker import compact_status as compact_stream_status
 
 
 CHECK_INTERVAL_SECONDS = 60
@@ -842,7 +843,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "timely_shadow_measurement": (status.get('evidence') or {}).get('timely_shadow_measurement'),
         "rule_vintage_archive": (status.get('evidence') or {}).get('rule_vintage_archive'),
         "continuing_capture": (status.get('evidence') or {}).get('continuing_capture'),
-        "demo_stream_source": (status.get('evidence') or {}).get('demo_stream_source'),
+        "demo_stream_source": compact_stream_status((status.get('evidence') or {}).get('demo_stream_source')),
         "market_read_health": (status.get('evidence') or {}).get('market_read_health'),
         "selected_candidate_release_review": compact_candidate_review((status.get('evidence') or {}).get('selected_candidate_release_review')),
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),

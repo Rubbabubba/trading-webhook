@@ -25,9 +25,10 @@ def levels(rows):
     return result
 
 class Books:
-    def __init__(self,tickers):
+    def __init__(self,tickers,*,allow_unavailable=False):
         if not 1<=len(tickers)<=8 or len(set(tickers))!=len(tickers):raise SourceFault("target_capacity")
         self.targets=set(tickers);self.channels={};self.sequence={};self.books={};self.last_received=None;self.poisoned=False
+        self.allow_unavailable=allow_unavailable
     def apply(self,payload,received_at):
         if self.poisoned:raise SourceFault("connection_invalid_after_fault")
         try:return self._apply(payload,received_at)
@@ -54,6 +55,10 @@ class Books:
         self.sequence[sid]=seq
         ticker=msg.get("market_ticker")
         if ticker not in self.targets:raise SourceFault("outside_targets")
+        if (self.allow_unavailable and kind=='orderbook_snapshot'
+                and set(msg)=={'market_ticker','market_id'} and msg['market_id'] in (None,'')):
+            self.books.pop(ticker,None)
+            return dict(kind='market_unavailable',ticker=ticker,usable=False,actual_fill_proven=False)
         if kind=="trade":
             yes,no,size=[number(msg[k]) for k in ("yes_price_dollars","no_price_dollars","count_fp")]
             if not 0<=yes<=1 or yes+no!=1 or not 0<size<=1000000000 or msg.get("taker_side") not in {"yes","no"}:raise SourceFault("invalid_trade_economics")

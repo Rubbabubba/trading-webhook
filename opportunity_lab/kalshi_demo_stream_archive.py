@@ -32,11 +32,12 @@ def clock(at):
         raise ValueError('archive_invalid_clock')
 
 class Archive:
-    def __init__(self, path, *, free_bytes=None):
+    def __init__(self, path, *, free_bytes=None, protocol=PROTOCOL, decoder_factory=Books):
         self.path = Path(path)
         self.free_bytes = free_bytes or (lambda: shutil.disk_usage(self.path.parent).free)
         self.connection = None
         self.decoder = None
+        self.protocol, self.decoder_factory = protocol, decoder_factory
         self._capacity(0)
         self.db = sqlite3.connect(str(self.path))
         self.db.execute('PRAGMA synchronous=FULL')
@@ -53,8 +54,8 @@ class Archive:
         CREATE TRIGGER IF NOT EXISTS messages_immutable_delete BEFORE DELETE ON messages BEGIN SELECT RAISE(ABORT,'archive_immutable'); END;
         ''')
         with self.db:
-            self.db.execute('INSERT OR IGNORE INTO protocol VALUES(1,?)', (PROTOCOL,))
-            if self.db.execute('SELECT name FROM protocol WHERE id=1').fetchone()[0] != PROTOCOL:
+            self.db.execute('INSERT OR IGNORE INTO protocol VALUES(1,?)', (self.protocol,))
+            if self.db.execute('SELECT name FROM protocol WHERE id=1').fetchone()[0] != self.protocol:
                 raise ValueError('archive_protocol_changed')
             # No new connection inherits a crashed connection's book or sequence.
             self.db.execute("UPDATE connections SET reason='process_interrupted' WHERE ended IS NULL AND reason IS NULL")
@@ -77,7 +78,7 @@ class Archive:
         clock(at)
         if self.connection is not None:
             raise ValueError('archive_connection_active')
-        decoder = Books(targets)
+        decoder = self.decoder_factory(targets)
         self._capacity(0)
         # Bound empty or repeatedly failed sessions too.
         if self.db.execute('SELECT count(*) FROM connections').fetchone()[0] >= 1024:
@@ -148,7 +149,7 @@ class Archive:
     def status(self):
         records, compressed, latest = self._records, self._compressed, self._latest
         interrupted = self.db.execute("SELECT count(*) FROM connections WHERE reason='process_interrupted'").fetchone()[0]
-        return dict(protocol=PROTOCOL, records=records, compressed_bytes=compressed, latest_received_at=latest, interrupted_connections=interrupted, active=self.connection is not None, execution_enabled=False, fill_assumed=False, profitability_proven=False)
+        return dict(protocol=self.protocol, records=records, compressed_bytes=compressed, latest_received_at=latest, interrupted_connections=interrupted, active=self.connection is not None, execution_enabled=False, fill_assumed=False, profitability_proven=False)
 
     def close(self):
         if self.connection is not None:

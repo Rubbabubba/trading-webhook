@@ -130,10 +130,10 @@ def test_background_lifecycle_closes_archive_and_publishes_no_authority(tmp_path
     service = worker.Service(tmp_path).start()
     service.thread.join(5)
     assert service.close()
-    value = json.loads((tmp_path/'stream-source-v1-status.json').read_text())
+    value = json.loads((tmp_path/worker.STATUS_NAME).read_text())
     assert value['state'] == 'stopped' and value['execution_enabled'] is False
     assert value['fill_assumed'] is False and value['profitability_proven'] is False
-    with sqlite3.connect(tmp_path/'stream-source-v1.sqlite3') as db:
+    with sqlite3.connect(tmp_path/worker.ARCHIVE_NAME) as db:
         assert db.execute('select reason from connections').fetchone()[0] == 'shutdown'
 
 
@@ -146,7 +146,7 @@ def test_source_error_text_does_not_escape_to_status(tmp_path, monkeypatch):
     service = worker.Service(tmp_path).start()
     service.thread.join(5)
     assert service.close()
-    assert 'PRIVATE_SECRET_RESPONSE' not in (tmp_path/'stream-source-v1-status.json').read_text()
+    assert 'PRIVATE_SECRET_RESPONSE' not in (tmp_path/worker.STATUS_NAME).read_text()
     assert service.status()['error_class'] == 'RuntimeError'
 
 
@@ -158,3 +158,15 @@ def test_cache_capacity_accounting_survives_reopen(tmp_path):
     assert b.status()['records']==before['records']==1
     assert b.status()['compressed_bytes']==before['compressed_bytes']
     b.verify();b.close()
+
+
+def test_compact_receipt_preserves_identity_faults_and_source_counts():
+    raw={'protocol':worker.PROTOCOL,'state':'collecting','registration_sha256':'a'*64,
+         'records':50,'execution_enabled':False,'fill_assumed':False,'profitability_proven':False,
+         'unavailable_symbols':['A'],'usable_symbols':['B','C'],'extra_raw':'x'*10000}
+    compact=worker.compact_status(raw)
+    assert len(json.dumps(compact))<700
+    assert compact['unavailable_symbol_count']==1 and compact['usable_symbol_count']==2
+    assert compact['registration_sha256']==raw['registration_sha256']
+    assert compact['execution_enabled'] is False and compact['full_status_reference']==worker.STATUS_NAME
+    assert 'extra_raw' not in compact
