@@ -1421,6 +1421,19 @@ def scan_market_candidate(state, journal, markets, market):
             # An optional shadow scan must not starve reconciliation or independent
             # collectors. No frame, signal, markout or execution is fabricated.
             state.record(market['ticker'], {'action':'scan_source_unavailable','reason':reason})
+            stream=getattr(markets,'stream_source',None)
+            observed=stream.unavailable_observation(market['ticker'],time.time()) if stream is not None else None
+            if observed is not None:
+                seen=state.load('sampling_stream_unavailable_seen',{})
+                if seen.get(market['ticker'])!=observed['source_id']:
+                    # Count each signed source observation once, never every retry.
+                    record_sampling_book_health(state,market['ticker'],usable=False,
+                                                now=time.time(),reason='missing_book')
+                    window=state.load('sampling_window',{}).get('tickers',[])
+                    seen={key:value for key,value in seen.items() if key in window}
+                    seen[market['ticker']]=observed['source_id']
+                    state.save('sampling_stream_unavailable_seen',seen)
+                    state.record(market['ticker'],{'action':'stream_unavailable_book_check',**observed})
             return None, None
         if reason not in {"missing_book", "demo_market_not_active_binary"}:
             raise
@@ -1790,6 +1803,7 @@ def run(data_root, *, cycles=None):
     scan = int(state.load("scan", 0)); cycle = 0
     # Root worker lock is already held; duplicate processes cannot open the stream archive.
     state.stream_service = DemoStreamService(root).start() if cycles is None else None
+    markets.stream_source=state.stream_service
     try:
         release_legacy_uncertainty_stop(state, journal)
         check_exchange(client)

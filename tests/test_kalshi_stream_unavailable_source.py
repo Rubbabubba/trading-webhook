@@ -46,3 +46,17 @@ def test_v2_archive_and_independent_audit_preserve_raw_unavailable_record(tmp_pa
     assert result['unavailable_source_records']==1 and result['reconstructed_states']==2
     assert result['records']==4 and result['owned_fills']==0
     a.close()
+
+
+def test_v3_missing_ladders_with_valid_id_are_unavailable_without_empty_price_substitution():
+    b=Books(['A','B'],allow_unavailable=True,allow_missing_book=True);b.apply(ACK,1000)
+    b.apply(snapshot('A',1),1000);b.apply(snapshot('B',2),1000)
+    p=snapshot('A',3);del p['msg']['yes_dollars_fp'];del p['msg']['no_dollars_fp']
+    assert b.apply(p,1000)['kind']=='market_unavailable'
+    assert 'A' not in b.books and 'B' in b.books and not b.poisoned
+
+
+def test_v2_semantics_still_reject_valid_id_without_ladders():
+    b=Books(['A'],allow_unavailable=True);b.apply(ACK,1000)
+    p=snapshot('A',1);del p['msg']['yes_dollars_fp'];del p['msg']['no_dollars_fp']
+    with pytest.raises(SourceFault):b.apply(p,1000)

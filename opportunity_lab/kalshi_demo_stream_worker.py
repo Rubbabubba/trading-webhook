@@ -17,23 +17,27 @@ URL = 'wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2'
 SESSION_SECONDS = 300
 RECONNECT_SECONDS = 60
 SUBSCRIPTION_SECONDS = 10
-PROTOCOL = 'demo_continuous_stream_availability_v2_20261018'
-ARCHIVE_PROTOCOL = 'demo_stream_archive_availability_v2_20261018'
-ARCHIVE_NAME = 'stream-source-v2.sqlite3'
-STATUS_NAME = 'stream-source-v2-status.json'
-REGISTRATION = Path(__file__).resolve().parents[1] / 'configs/kalshi_demo_continuous_stream_20261018/availability-v2.json'
+PROTOCOL = 'demo_continuous_stream_availability_v3_20261018'
+ARCHIVE_PROTOCOL = 'demo_stream_archive_availability_v3_20261018'
+ARCHIVE_NAME = 'stream-source-v3.sqlite3'
+STATUS_NAME = 'stream-source-v3-status.json'
+REGISTRATION = Path(__file__).resolve().parents[1] / 'configs/kalshi_demo_continuous_stream_20261018/availability-v3.json'
 
 
 def compact_status(value):
     if not isinstance(value,dict):return None
     fields=('protocol','state','registration_sha256','observed_at','records','compressed_bytes',
             'latest_received_at','acknowledged_channels','target_count','snapshots','deltas',
-            'public_trades','trades_with_prior_book','source_fault_code','error_class',
+            'public_trades','trades_with_prior_book','source_fault_code','error_class','comparison_error_class',
             'execution_enabled','fill_assumed','profitability_proven')
     result={key:value[key] for key in fields if key in value}
     result['unavailable_symbol_count']=len(value.get('unavailable_symbols',[]))
     result['usable_symbol_count']=len(value.get('usable_symbols',[]))
     result['full_status_reference']=STATUS_NAME
+    comparison=value.get('formula_comparison')
+    if isinstance(comparison,dict):
+        result['formula_comparison']={key:comparison.get(key) for key in (
+            'protocol','state','accepted_inputs','signals','complete_signals','complete_events','execution_enabled')}
     return result
 
 
@@ -75,11 +79,12 @@ def connector(*args, **kwargs):
 
 
 async def session(archive, tickers, stop, publish, *, connect=connector,
-                  headers=signed_headers, wall=time.time, mono=time.monotonic):
+                  headers=signed_headers, wall=time.time, mono=time.monotonic,on_book=None):
     """One connection epoch; public data only. Exceptions never reach maker."""
     acknowledged = set()
     counts = {'snapshots': 0, 'deltas': 0, 'public_trades': 0, 'trades_with_prior_book': 0}
     unavailable = set()
+    unavailable_observations = {}
     usable_symbols = set()
     async with connect(URL, additional_headers=headers(), open_timeout=10,
                        close_timeout=2, ping_interval=20, ping_timeout=10,
@@ -99,13 +104,15 @@ async def session(archive, tickers, stop, publish, *, connect=connector,
                 at = wall()
                 if not isinstance(raw, str) or len(raw.encode()) > 262144:
                     raise ValueError('stream_invalid_message_size')
-                result = archive.append(json.loads(raw), at)
+                payload=json.loads(raw)
+                result = archive.append(payload, at)
                 kind = result['kind']
                 if kind == 'subscribed':
                     acknowledged.add(result['channel'])
                 elif kind == 'orderbook_snapshot':
                     counts['snapshots'] += 1
                     unavailable.discard(result['ticker'])
+                    unavailable_observations.pop(result['ticker'],None)
                 elif kind == 'orderbook_delta':
                     counts['deltas'] += 1
                 elif kind == 'trade':
@@ -113,12 +120,21 @@ async def session(archive, tickers, stop, publish, *, connect=connector,
                     counts['trades_with_prior_book'] += bool(result['book_available'])
                 elif kind == 'market_unavailable':
                     unavailable.add(result['ticker'])
+                    fingerprint=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+                    unavailable_observations[result['ticker']]={'observed_at':at,
+                        'source_id':hashlib.sha256((archive.connection+fingerprint).encode()).hexdigest()}
                 if kind in {'orderbook_snapshot','orderbook_delta','market_unavailable'}:
                     if result['usable']:usable_symbols.add(result['ticker'])
                     else:usable_symbols.discard(result['ticker'])
+                    if on_book is not None:
+                        try:
+                            on_book(archive,result,at)
+                            publish({'comparison_error_class':None})
+                        except Exception as exc:publish({'comparison_error_class':type(exc).__name__})
                 publish({'state': 'collecting' if len(acknowledged) == 2 else 'subscribing',
                          'acknowledged_channels': len(acknowledged),
                          'unavailable_symbols': sorted(unavailable),
+                         'unavailable_observations': dict(unavailable_observations),
                          'usable_symbols': sorted(usable_symbols),
                          'source_coverage': 'partial' if unavailable else 'selected_targets_only',
                          'counter_scope': 'records_cumulative; book/trade_counts_current_epoch', **counts})
@@ -146,6 +162,14 @@ class Service:
     def status(self):
         with self.lock:
             return dict(self.value)
+
+    def unavailable_observation(self,ticker,now):
+        value=self.status()
+        item=(value.get('unavailable_observations') or {}).get(ticker)
+        if (value.get('state')!='collecting' or value.get('acknowledged_channels')!=2
+                or not isinstance(item,dict) or not 0<=now-item['observed_at']<=SESSION_SECONDS):
+            return None
+        return dict(item)
 
     def publish(self, values):
         with self.lock:
@@ -176,6 +200,7 @@ class Service:
 
     def run(self):
         archive = None
+        comparison = None
         try:
             spec = json.loads(REGISTRATION.read_text())
             if (spec['protocol'] != PROTOCOL or spec['endpoint'] != URL
@@ -184,7 +209,11 @@ class Service:
                 raise ValueError('stream_registration_mismatch')
             self.publish({'registration_sha256': hashlib.sha256(REGISTRATION.read_bytes()).hexdigest()})
             archive = Archive(self.root / ARCHIVE_NAME, protocol=ARCHIVE_PROTOCOL,
-                              decoder_factory=lambda tickers:Books(tickers,allow_unavailable=True))
+                              decoder_factory=lambda tickers:Books(tickers,allow_unavailable=True,allow_missing_book=True))
+            from .kalshi_stream_formula_comparison import Comparison, metadata_for
+            try:comparison=Comparison(self.root/'stream-shadow-comparison-v1.sqlite3')
+            except Exception as exc:
+                self.publish({'formula_comparison':{'state':'initialization_fault','error_class':type(exc).__name__,'execution_enabled':False}})
             while not self.stop_event.is_set():
                 try:
                     tickers = targets(self.root / 'worker.sqlite3')
@@ -192,12 +221,26 @@ class Service:
                                   'error_class':None,'source_fault_code':None})
                     def progress(values):
                         self.publish({**archive.status(), **values})
-                    asyncio.run(session(archive, tickers, self.stop_event, progress))
+                    metadata=metadata_for(self.root/'worker.sqlite3',tickers) if comparison is not None else {}
+                    last_comparison_status=[0]
+                    def on_book(source,result,at):
+                        if comparison is None:return
+                        if comparison.epoch!=source.connection:comparison.begin_epoch(source.connection)
+                        ticker=result['ticker']
+                        if result['kind']=='market_unavailable':comparison.invalidate(ticker)
+                        elif result['usable']:
+                            raw_sha=source.db.execute('SELECT raw_sha FROM messages ORDER BY id DESC LIMIT 1').fetchone()[0]
+                            comparison.observe(ticker,source.decoder.books[ticker],metadata.get(ticker),raw_sha)
+                        if at-last_comparison_status[0]>=5:
+                            self.publish({'formula_comparison':comparison.status()});last_comparison_status[0]=at
+                    asyncio.run(session(archive, tickers, self.stop_event, progress,on_book=on_book))
                     self.publish({**archive.status(), 'state': 'between_epochs'})
                 except Exception as exc:
                     # No raw error bodies, request headers or credentials in status.
-                    capacity = isinstance(exc, (ValueError, sqlite3.OperationalError)) and any(
-                        word in str(exc) for word in ('capacity', 'low_disk', 'database or disk is full'))
+                    capacity = (not isinstance(exc,SourceFault)
+                        and isinstance(exc,(ValueError,sqlite3.OperationalError))
+                        and str(exc) in {'archive_capacity','archive_low_disk',
+                                         'archive_connection_capacity','database or disk is full'})
                     self.publish({'state': 'capacity_stop' if capacity else 'source_or_transport_fault',
                                   'error_class': type(exc).__name__, **archive.status(),
                                   'source_fault_code': str(exc) if isinstance(exc,SourceFault) and re.fullmatch(r'[a-z_]{1,80}',str(exc)) else None})
@@ -207,6 +250,7 @@ class Service:
         except Exception as exc:
             self.publish({'state': 'initialization_fault', 'error_class': type(exc).__name__})
         finally:
+            if comparison is not None:comparison.close()
             if archive is not None:
                 archive.close()
             if self.stop_event.is_set():

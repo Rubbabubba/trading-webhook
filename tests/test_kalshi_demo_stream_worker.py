@@ -121,7 +121,7 @@ def test_targets_use_only_existing_exact_window_with_no_db_mutation(tmp_path):
 
 def test_background_lifecycle_closes_archive_and_publishes_no_authority(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, 'targets', lambda path: ['A'])
-    async def fake_session(a, tickers, stop, publish):
+    async def fake_session(a, tickers, stop, publish,**kwargs):
         a.begin(tickers, 1000)
         a.append(messages()[0], 1000)
         publish({'state': 'subscribing'})
@@ -139,7 +139,7 @@ def test_background_lifecycle_closes_archive_and_publishes_no_authority(tmp_path
 
 def test_source_error_text_does_not_escape_to_status(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, 'targets', lambda path: ['A'])
-    async def fake_session(a, tickers, stop, publish):
+    async def fake_session(a, tickers, stop, publish,**kwargs):
         stop.set()
         raise RuntimeError('PRIVATE_SECRET_RESPONSE')
     monkeypatch.setattr(worker, 'session', fake_session)
@@ -170,3 +170,43 @@ def test_compact_receipt_preserves_identity_faults_and_source_counts():
     assert compact['registration_sha256']==raw['registration_sha256']
     assert compact['execution_enabled'] is False and compact['full_status_reference']==worker.STATUS_NAME
     assert 'extra_raw' not in compact
+
+
+def test_source_level_bound_is_not_misclassified_as_global_storage_exhaustion(tmp_path,monkeypatch):
+    monkeypatch.setattr(worker,'targets',lambda path:['A'])
+    async def bad(a,ts,stop,publish,**kwargs):
+        stop.set()
+        raise SourceFault('book_level_capacity')
+    monkeypatch.setattr(worker,'session',bad)
+    states=[]
+    original=worker.Service.publish
+    def recorded(self,value):
+        states.append(value.get('state'));original(self,value)
+    monkeypatch.setattr(worker.Service,'publish',recorded)
+    service=worker.Service(tmp_path).start();service.thread.join(5)
+    assert service.close()
+    assert 'source_or_transport_fault' in states and 'capacity_stop' not in states
+    assert service.status()['source_fault_code']=='book_level_capacity'
+
+
+def test_unavailable_read_requires_current_acknowledged_epoch_and_unexpired_receipt(tmp_path):
+    service=worker.Service(tmp_path)
+    service.value.update(state='collecting',acknowledged_channels=2,
+                         unavailable_observations={'A':{'observed_at':1000,'source_id':'a'*64}})
+    assert service.unavailable_observation('A',1001)['source_id']=='a'*64
+    assert service.unavailable_observation('A',1301) is None
+    assert service.unavailable_observation('B',1001) is None
+    service.value['state']='between_epochs'
+    assert service.unavailable_observation('A',1001) is None
+
+
+def test_formula_failure_does_not_drop_source_messages_or_disclose_error_body(tmp_path):
+    a=Archive(tmp_path/'source.sqlite3',free_bytes=lambda:10**9)
+    stop=threading.Event();ws=Socket(messages(),stop);status=[]
+    def bad(*args):raise RuntimeError('PRIVATE_ERROR_BODY')
+    asyncio.run(worker.session(a,['A'],stop,status.append,connect=lambda *a,**k:ws,
+        headers=lambda:{},wall=lambda:1000+ws.at/100,mono=lambda:ws.at,on_book=bad))
+    assert a.status()['records']==4 and ws.closed
+    assert {'comparison_error_class':'RuntimeError'} in status
+    assert 'PRIVATE_ERROR_BODY' not in json.dumps(status)
+    a.verify();a.close()

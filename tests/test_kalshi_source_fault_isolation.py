@@ -82,3 +82,28 @@ def test_stream_connector_rejects_production_before_import_or_auth():
     from opportunity_lab.kalshi_demo_stream_worker import connector
     with pytest.raises(ValueError,match='demo_endpoint_required'):
         connector('wss://external-api-ws.kalshi.com/trade-api/ws/v2')
+
+
+def test_sampler_requires_two_distinct_unavailable_source_observations_per_member(tmp_path,monkeypatch):
+    state=worker.MakerState(tmp_path/'worker.sqlite3')
+    monkeypatch.setattr(worker.time,'time',lambda:1020)
+    cohort=[{'ticker':'A','event_ticker':'EA'},{'ticker':'B','event_ticker':'EB'},
+            {'ticker':'C','event_ticker':'EC'},{'ticker':'D','event_ticker':'ED'},
+            {'ticker':'E','event_ticker':'EE'},{'ticker':'F','event_ticker':'EF'},
+            {'ticker':'G','event_ticker':'EG'},{'ticker':'H','event_ticker':'EH'},
+            {'ticker':'I','event_ticker':'EI'}]
+    window=worker.sampling_window(state,cohort,now=1000)
+    epoch=[1]
+    stream=SimpleNamespace(unavailable_observation=lambda ticker,now:
+                           {'source_id':str(epoch[0])+ticker,'observed_at':1010})
+    def quote(_):raise ValueError('demo_market_http_500')
+    markets=SimpleNamespace(quote=quote,stream_source=stream)
+    for _ in range(3):
+        for market in window:assert worker.scan_market_candidate(state,object(),markets,market)==(None,None)
+    assert worker.sampling_window(state,cohort,now=1021)==window
+    assert all(v['consecutive']==1 for v in state.load('sampling_window_book_health')['failures'].values())
+    epoch[0]=2
+    for market in window:worker.scan_market_candidate(state,object(),markets,market)
+    assert worker.sampling_window(state,cohort,now=1022)!=window
+    assert len(cohort)==9 and state.db.execute('select count(*) from history').fetchone()[0]==0
+    state.close()

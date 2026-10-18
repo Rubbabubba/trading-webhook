@@ -18,8 +18,9 @@ def audit(path):
     db.execute('BEGIN')
     try:
         protocol=db.execute('select name from protocol where id=1').fetchone()[0]
-        assert protocol in {'demo_stream_archive_v1_20261016','demo_stream_archive_availability_v2_20261018'}
-        availability=protocol=='demo_stream_archive_availability_v2_20261018'
+        assert protocol in {'demo_stream_archive_v1_20261016','demo_stream_archive_availability_v2_20261018','demo_stream_archive_availability_v3_20261018'}
+        availability=protocol!='demo_stream_archive_v1_20261016'
+        missing_book=protocol=='demo_stream_archive_availability_v3_20261018'
         epochs={identity:(json.loads(targets),started,reason) for identity,targets,started,reason in db.execute('select id,targets,started,reason from connections')}
         previous='0'*64;decoders={};reference={};sequences={};last_receipt={}
         records=states=trades=overlap=unavailable=0;tickers=set();trade_ids={};missing_ids=0
@@ -33,14 +34,14 @@ def audit(path):
             assert identity not in last_receipt or at>=last_receipt[identity]
             last_receipt[identity]=at
             if identity not in decoders:
-                decoders[identity]=Books(epochs[identity][0],allow_unavailable=availability);reference[identity]={};sequences[identity]={}
+                decoders[identity]=Books(epochs[identity][0],allow_unavailable=availability,allow_missing_book=missing_book);reference[identity]={};sequences[identity]={}
             decoder=decoders[identity];decoder.apply(payload,at);records+=1
             if kind=='subscribed':continue
             sid,seq=payload['sid'],payload['seq']
             assert sid not in sequences[identity] or seq==sequences[identity][sid]+1
             sequences[identity][sid]=seq;ticker=msg['market_ticker'];tickers.add(ticker)
             books=reference[identity]
-            if availability and kind=='orderbook_snapshot' and set(msg)=={'market_ticker','market_id'} and msg['market_id'] in (None,''):
+            if availability and kind=='orderbook_snapshot' and set(msg)=={'market_ticker','market_id'} and (missing_book or msg['market_id'] in (None,'')):
                 books.pop(ticker,None);unavailable+=1;continue
             if kind=='trade':
                 yes,no,size=map(Fraction,[msg['yes_price_dollars'],msg['no_price_dollars'],msg['count_fp']])

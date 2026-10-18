@@ -25,10 +25,11 @@ def levels(rows):
     return result
 
 class Books:
-    def __init__(self,tickers,*,allow_unavailable=False):
+    def __init__(self,tickers,*,allow_unavailable=False,allow_missing_book=False):
         if not 1<=len(tickers)<=8 or len(set(tickers))!=len(tickers):raise SourceFault("target_capacity")
         self.targets=set(tickers);self.channels={};self.sequence={};self.books={};self.last_received=None;self.poisoned=False
         self.allow_unavailable=allow_unavailable
+        self.allow_missing_book=allow_missing_book
     def apply(self,payload,received_at):
         if self.poisoned:raise SourceFault("connection_invalid_after_fault")
         try:return self._apply(payload,received_at)
@@ -77,6 +78,9 @@ class Books:
         market_id=msg.get("market_id")
         try:uuid.UUID(market_id)
         except (ValueError,TypeError,AttributeError):raise SourceFault("invalid_market_identity") from None
+        if self.allow_missing_book and kind=='orderbook_snapshot' and set(msg)=={'market_ticker','market_id'}:
+            self.books.pop(ticker,None)
+            return dict(kind='market_unavailable',ticker=ticker,usable=False,actual_fill_proven=False)
         old=self.books.get(ticker)
         if old is not None and old["market_id"]!=market_id:raise SourceFault("market_identity_changed")
         if kind=="orderbook_snapshot":
