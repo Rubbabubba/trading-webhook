@@ -84,6 +84,51 @@ def test_stream_connector_rejects_production_before_import_or_auth():
         connector('wss://external-api-ws.kalshi.com/trade-api/ws/v2')
 
 
+@pytest.mark.parametrize('reason',['missing_book','demo_market_http_500',
+                                    'demo_market_http_502','demo_market_http_503','demo_market_http_504'])
+@pytest.mark.parametrize('expired',[True,False])
+def test_real_working_order_loop_preserves_original_ttl_during_book_outage(tmp_path,monkeypatch,reason,expired):
+    calls=[]
+    state=worker.MakerState(tmp_path/'worker.sqlite3')
+    created=worker.time.time()-worker.QUOTE_TTL_SECONDS-10 if expired else worker.time.time()
+    state.db.execute('INSERT INTO intent_meta VALUES(?,?,?,?,?,?)',('owned','maker_entry','EVENT','A','yes',created))
+    state.db.commit();state.close()
+    monkeypatch.setenv('KALSHI_DEMO_API_KEY_ID','synthetic')
+    monkeypatch.setenv('KALSHI_DEMO_PRIVATE_KEY_PATH','synthetic')
+    def request(*args):
+        assert args==('GET','/portfolio/orders/actual-broker-id/queue_position')
+        calls.append('queue');return {'queue_position':1}
+    monkeypatch.setattr(worker,'DemoClient',lambda *a:SimpleNamespace(request=request))
+    monkeypatch.setattr(worker,'release_legacy_uncertainty_stop',lambda *a:None)
+    monkeypatch.setattr(worker,'check_exchange',lambda *a:None)
+    monkeypatch.setattr(worker,'recover_or_report',lambda *a:True)
+    monkeypatch.setattr(worker,'log_event',lambda *a,**k:None)
+    monkeypatch.setattr(worker,'refresh_cohort',lambda *a,**k:([],0))
+    active={'payload':{'client_order_id':'owned','ticker':'A'},'broker_id':'actual-broker-id','state':'working','filled':0}
+    monkeypatch.setattr(worker,'working_order',lambda *a:active)
+    def refresh(cid):
+        assert cid=='owned';calls.append('refresh');return dict(active)
+    def cancel(cid):
+        assert cid=='owned';calls.append('cancel');return dict(active,state='cancelled')
+    monkeypatch.setattr(worker,'BinaryDemoBroker',lambda *a:SimpleNamespace(refresh=refresh,cancel=cancel))
+    def quote(_):
+        calls.append('book');raise ValueError(reason)
+    monkeypatch.setattr(worker,'DemoMarkets',lambda:SimpleNamespace(quote=quote))
+    monkeypatch.setattr(worker,'ContinuingCapture',lambda *a:SimpleNamespace(close=lambda:None))
+    monkeypatch.setattr(worker,'write_status',lambda *a,**k:calls.append(('status',k)))
+    monkeypatch.setattr(worker,'submit',lambda *a,**k:pytest.fail('Outage must not create any order'))
+    worker.run(tmp_path,cycles=1)
+    assert calls[:3]==['queue','refresh','book']
+    assert calls.count('cancel')==int(expired)
+    assert calls[-1][0]=='status' and calls[-1][1]['phase']=='running'
+    with worker.sqlite3.connect(tmp_path/'worker.sqlite3') as db:
+        actions=[json.loads(row[0]) for row in db.execute('SELECT detail FROM actions')]
+        assert any(x.get('action')=='working_quote_book_unavailable' and x['reason']==reason for x in actions)
+        cancellations=[x for x in actions if x.get('action')=='maker_cancel']
+        assert len(cancellations)==int(expired)
+        if expired:assert cancellations[0]['reason']=='quote_ttl' and cancellations[0]['client_order_id']=='owned'
+
+
 def test_sampler_requires_two_distinct_unavailable_source_observations_per_member(tmp_path,monkeypatch):
     state=worker.MakerState(tmp_path/'worker.sqlite3')
     monkeypatch.setattr(worker.time,'time',lambda:1020)

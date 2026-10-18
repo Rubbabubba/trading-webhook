@@ -1878,8 +1878,15 @@ def run(data_root, *, cycles=None):
                                           active_event[0] if active_event else ticker)
                             cancel_reason = observe_working_quote(state, refreshed, frame)
                         except ValueError as error:
-                            if str(error) != "missing_book":
+                            if str(error) not in {"missing_book", "demo_market_http_500",
+                                                  "demo_market_http_502", "demo_market_http_503",
+                                                  "demo_market_http_504"}:
                                 raise
+                            # Book availability cannot extend the frozen order TTL.
+                            # Refresh above has already reconciled the broker order;
+                            # cancellation below still uses its actual broker identity.
+                            state.record(ticker, {"action": "working_quote_book_unavailable",
+                                                  "reason": str(error)})
                         age = time.time() - state.db.execute(
                             "SELECT created_at FROM intent_meta WHERE client_id=?", (cid,)
                         ).fetchone()[0]
