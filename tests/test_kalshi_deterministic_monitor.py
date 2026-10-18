@@ -169,6 +169,18 @@ def test_compact_packet_reports_deployed_revision_without_credentials(monkeypatc
     assert packet['worker']['production_execution_enabled'] is False
 
 
+def test_source_faults_remain_visible_when_process_and_reconciliation_are_running():
+    status = healthy()
+    status['evidence']['market_read_health'] = {'state':'source_fault','failed_reads':3}
+    status['evidence']['demo_stream_source'] = {'state':'source_or_transport_fault','execution_enabled':False}
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601, v12_registration=V12_REGISTRATION)
+    assert 'demo_orderbook_source_fault' in packet['health']['faults']
+    assert 'demo_stream_source_fault' in packet['health']['faults']
+    assert 'worker_not_running' not in packet['health']['faults']
+    assert packet['market_read_health']['failed_reads']==3
+    assert packet['demo_stream_source']['execution_enabled'] is False
+
+
 def test_compact_packet_reports_completed_market_discovery():
     status = healthy()
     status["evidence"]["market_discovery"] = {

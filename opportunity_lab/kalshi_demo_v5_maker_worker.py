@@ -18,6 +18,7 @@ from .kalshi_binary_broker import BinaryDemoBroker
 from .kalshi_binary_journal import BinaryJournal
 from .kalshi_demo_broker import DemoClient, check_exchange
 from .kalshi_demo_market_data import DemoMarkets
+from .kalshi_demo_stream_worker import Service as DemoStreamService
 from .kalshi_rule_vintage_archive import init as init_rule_archive, status as rule_archive_status
 from .kalshi_continuing_capture import Recorder as ContinuingCapture, priority_pending as capture_priority_pending, unavailable_status as capture_unavailable_status
 from .kalshi_measurement_scheduler import allow_optional as measurement_optional, due_ticker as measurement_due
@@ -1416,6 +1417,11 @@ def scan_market_candidate(state, journal, markets, market):
         return frame, signal
     except ValueError as error:
         reason = str(error)
+        if reason in {'demo_market_http_500', 'demo_market_http_502', 'demo_market_http_503', 'demo_market_http_504'}:
+            # An optional shadow scan must not starve reconciliation or independent
+            # collectors. No frame, signal, markout or execution is fabricated.
+            state.record(market['ticker'], {'action':'scan_source_unavailable','reason':reason})
+            return None, None
         if reason not in {"missing_book", "demo_market_not_active_binary"}:
             raise
         record_sampling_book_health(state, market["ticker"], usable=False, now=time.time(), reason=reason)
@@ -1676,6 +1682,12 @@ def write_status(path, state, journal, **values):
     current_evidence['measurement_scheduler'] = state.load('measurement_scheduler', {})
     current_evidence['sampling_book_health'] = state.load('sampling_window_book_health', {})
     current_evidence['rule_vintage_archive'] = rule_archive_status(state.db)
+    stream = getattr(state, 'stream_service', None)
+    if stream is not None:
+        current_evidence['demo_stream_source'] = stream.status()
+    reader = getattr(state, 'market_reader', None)
+    if reader is not None:
+        current_evidence['market_read_health'] = reader.transport_status()
     continuing=getattr(state,'continuing_capture',None)
     if continuing is not None:
         current_evidence['continuing_capture'] = continuing.status()
@@ -1760,6 +1772,7 @@ def run(data_root, *, cycles=None):
                             capital_limit_cents=CAPITAL_LIMIT_CENTS, daily_loss_cents=DAILY_LOSS_CENTS)
     client = DemoClient(os.environ["KALSHI_DEMO_API_KEY_ID"], os.environ["KALSHI_DEMO_PRIVATE_KEY_PATH"])
     markets = DemoMarkets(); broker = BinaryDemoBroker(journal, client)
+    state.market_reader = markets
     init_rule_archive(state.db)
     markets.rule_archive_db = state.db
     state.continuing_capture=None;state.continuing_capture_error=None
@@ -1775,6 +1788,8 @@ def run(data_root, *, cycles=None):
         cohort_at = 0
         state.save("cohort_selector", COHORT_SELECTOR)
     scan = int(state.load("scan", 0)); cycle = 0
+    # Root worker lock is already held; duplicate processes cannot open the stream archive.
+    state.stream_service = DemoStreamService(root).start() if cycles is None else None
     try:
         release_legacy_uncertainty_stop(state, journal)
         check_exchange(client)
@@ -2065,6 +2080,7 @@ def run(data_root, *, cycles=None):
             cycle += 1
             if cycles is None or cycle < cycles: time.sleep(2)
     finally:
+        if state.stream_service is not None:state.stream_service.close()
         if state.continuing_capture is not None:state.continuing_capture.close()
         journal.close(); state.close(); lock.close()
 

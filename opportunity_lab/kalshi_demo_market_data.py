@@ -12,7 +12,14 @@ from .kalshi_account_monitor import NoRedirect
 
 class DemoMarkets:
     BASE='https://demo-api.kalshi.co/trade-api/v2'
-    def __init__(self):self.next_at=0;self.opener=build_opener(NoRedirect())
+    def __init__(self):
+        self.next_at=0;self.opener=build_opener(NoRedirect())
+        self.book_health={'failed_reads':0,'successful_reads':0,'last_error_at':None,'last_success_at':None,'error_code':None,'last_read_succeeded':None}
+    def transport_status(self):
+        health=dict(self.book_health)
+        health['state']='source_fault' if health['last_read_succeeded'] is False else (
+            'observed' if health['last_read_succeeded'] is True else 'awaiting_book')
+        return dict(health,execution_enabled=False,substitute_quotes_used=False)
     def _read(self,path,params=None):
         time.sleep(max(0,self.next_at-time.monotonic()));start=datetime.now(timezone.utc).timestamp()
         try:
@@ -21,8 +28,14 @@ class DemoMarkets:
             end=datetime.now(timezone.utc).timestamp()
             if not math.isfinite(age) or not 0<=age<=2 or not 0<=end-start<=2:
                 raise ValueError('stale_demo_market_data')
+            if path.endswith('/orderbook'):
+                self.book_health.update(successful_reads=self.book_health['successful_reads']+1,last_success_at=end,last_read_succeeded=True)
             return data,start,end
-        except HTTPError as exc:raise ValueError('demo_market_http_'+str(exc.code)) from None
+        except HTTPError as exc:
+            if path.endswith('/orderbook'):
+                self.book_health.update(failed_reads=self.book_health['failed_reads']+1,
+                    last_error_at=datetime.now(timezone.utc).timestamp(),error_code='http_'+str(exc.code),last_read_succeeded=False)
+            raise ValueError('demo_market_http_'+str(exc.code)) from None
         finally:self.next_at=time.monotonic()+2
     def get(self,ticker=None,*,book=False,params=None):
         if book and ticker is None:raise ValueError('ticker_required')

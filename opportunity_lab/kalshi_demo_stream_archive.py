@@ -59,12 +59,17 @@ class Archive:
             # No new connection inherits a crashed connection's book or sequence.
             self.db.execute("UPDATE connections SET reason='process_interrupted' WHERE ended IS NULL AND reason IS NULL")
         self.verify()
+        self._records, self._compressed, self._latest = self.db.execute(
+            'SELECT count(*),coalesce(sum(length(data)),0),max(received) FROM messages').fetchone()
 
     def _capacity(self, extra):
         if self.free_bytes() < MIN_FREE:
             raise ValueError('archive_low_disk')
         if hasattr(self, 'db'):
-            count, total = self.db.execute('SELECT count(*),coalesce(sum(length(data)),0) FROM messages').fetchone()
+            if hasattr(self, '_records'):
+                count, total = self._records, self._compressed
+            else:
+                count, total = self.db.execute('SELECT count(*),coalesce(sum(length(data)),0) FROM messages').fetchone()
             if count >= MAX_RECORDS or total + extra > MAX_COMPRESSED:
                 raise ValueError('archive_capacity')
 
@@ -109,6 +114,9 @@ class Archive:
             chain = digest(encode([previous,self.connection,at,sha]))
             with self.db:
                 self.db.execute('INSERT INTO messages(connection,received,raw_sha,compressed_sha,previous_sha,chain_sha,data) VALUES(?,?,?,?,?,?,?)', (self.connection,at,sha,digest(packed),previous,chain,packed))
+            self._records += 1
+            self._compressed += len(packed)
+            self._latest = at
             return outcome
         except Exception:
             # Never persist arbitrary exception text, credentials or invalid messages.
@@ -138,7 +146,7 @@ class Archive:
         return previous
 
     def status(self):
-        records, compressed, latest = self.db.execute('SELECT count(*),coalesce(sum(length(data)),0),max(received) FROM messages').fetchone()
+        records, compressed, latest = self._records, self._compressed, self._latest
         interrupted = self.db.execute("SELECT count(*) FROM connections WHERE reason='process_interrupted'").fetchone()[0]
         return dict(protocol=PROTOCOL, records=records, compressed_bytes=compressed, latest_received_at=latest, interrupted_connections=interrupted, active=self.connection is not None, execution_enabled=False, fill_assumed=False, profitability_proven=False)
 

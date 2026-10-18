@@ -582,6 +582,10 @@ def faults(status, *, now):
         result.append('rule_vintage_archive_fault')
     if (evidence.get('continuing_capture') or {}).get('state') in ('blocked','capacity_insufficient_coverage','initialization_blocked'):
         result.append('continuing_capture_blocked')
+    if (evidence.get('market_read_health') or {}).get('state') == 'source_fault':
+        result.append('demo_orderbook_source_fault')
+    if (evidence.get('demo_stream_source') or {}).get('state') in ('initialization_fault','source_or_transport_fault','capacity_stop'):
+        result.append('demo_stream_source_fault')
     shadow = evidence.get("v10_shadow", {})
     if shadow.get("strategy_id") != EXPECTED_V10:
         result.append("v10_strategy_changed")
@@ -838,6 +842,8 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "timely_shadow_measurement": (status.get('evidence') or {}).get('timely_shadow_measurement'),
         "rule_vintage_archive": (status.get('evidence') or {}).get('rule_vintage_archive'),
         "continuing_capture": (status.get('evidence') or {}).get('continuing_capture'),
+        "demo_stream_source": (status.get('evidence') or {}).get('demo_stream_source'),
+        "market_read_health": (status.get('evidence') or {}).get('market_read_health'),
         "selected_candidate_release_review": compact_candidate_review((status.get('evidence') or {}).get('selected_candidate_release_review')),
         "evidence_delta": _delta(current_evidence, checkpoint.get("evidence", {})),
         "v10_gate": gate,
