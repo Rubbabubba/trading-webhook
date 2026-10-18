@@ -100,6 +100,11 @@ async def session(archive, tickers, stop, publish, *, connect=connector,
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=1)
                 except asyncio.TimeoutError:
+                    # Flush the last burst's throttled status even when the market
+                    # goes quiet. This is process health, never a new source tick:
+                    # archive counts and latest_received_at remain unchanged.
+                    publish({'state': 'collecting' if len(acknowledged) == 2 else 'subscribing',
+                             'acknowledged_channels': len(acknowledged)})
                     continue
                 at = wall()
                 if not isinstance(raw, str) or len(raw.encode()) > 262144:

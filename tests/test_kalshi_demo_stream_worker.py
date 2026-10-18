@@ -81,6 +81,15 @@ def test_missing_second_ack_times_out_and_seals_valid_prefix(tmp_path, monkeypat
     a.close()
 
 
+def test_quiet_socket_flushes_status_without_fabricating_source_records(tmp_path):
+    a,stop,ws,status,calls,coro=exercise(tmp_path,messages())
+    asyncio.run(coro)
+    assert status[-1]=={'state':'collecting','acknowledged_channels':2}
+    assert len(status)==5 and a.status()['records']==4
+    assert a.db.execute('SELECT max(received) FROM messages').fetchone()[0]==1000.04
+    a.close()
+
+
 def test_sequence_gap_closes_socket_and_invalidates_connection(tmp_path):
     payloads = messages()[:3]
     payloads.append({**payloads[-1], 'seq': 3})
