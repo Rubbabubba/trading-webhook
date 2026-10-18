@@ -1,0 +1,147 @@
+{
+  "schema": "kalshi_orderbook_source_repair_receipt_v1",
+  "worker_revision": "a85c0201d596190a6d88baab19e157394d68ce73",
+  "deployment": "dep-dbaj025g1s2s73c9plbg",
+  "environment": "demo",
+  "life_os_accepted_at": "2026-10-18T20:47:40.718912+00:00",
+  "synthetic_tests_passed": 249,
+  "source_prefix_records_verified": 48,
+  "fraction_book_states_verified": 38,
+  "unavailable_source_records": 2,
+  "comparison_inputs_independently_verified": 35,
+  "owned_fills": 0,
+  "actual_orders_submitted": 0,
+  "profitability_proven": false,
+  "full_backlog_complete": false,
+  "production_execution_enabled": false,
+  "files": {
+    "capability-completion-boundary.json": {
+      "bytes": 10440,
+      "sha256": "63908d737b0a255207e611fd9668e16c5277afec74b48337acbdc5705fdc8442"
+    },
+    "capability-work-final.json": {
+      "bytes": 55627,
+      "sha256": "9744a300089cd76820ec988da282891637cd81c71cc1595b72c12fc6b7d10630"
+    },
+    "deployment.png": {
+      "bytes": 275506,
+      "sha256": "1fd33879050bb7a6ae3f493e2fd1392e32ca22795abd8cab2fc86669d50ba9dd"
+    },
+    "epoch-renewal.txt": {
+      "bytes": 4682,
+      "sha256": "093d739f216b3dea6afab9bd773dc690452687e5bdf19ff5016b25c4d8432c29"
+    },
+    "final-deployment.png": {
+      "bytes": 278753,
+      "sha256": "6039bcc249ba0189c1c3a1621f589863a9d26a97d221d3af5f157a829bf51270"
+    },
+    "final-life-os-acceptance.txt": {
+      "bytes": 4165,
+      "sha256": "7c490f4681ba46de69021b3a48f5899f305a39fff6565e38e31e28d81357dfe5"
+    },
+    "FINDINGS.md": {
+      "bytes": 6619,
+      "sha256": "1218e17b52e97fcfe44c24825c7c56c9d1d063d9d2c87af38d6f0cf481ca16f1"
+    },
+    "independent-audit-after-deployment-restart.txt": {
+      "bytes": 4529,
+      "sha256": "e781b649dcb660adcc60dd5ea5c21843e6f077c476ccd1a2f019b58b5e113632"
+    },
+    "independent-audit-continuing.txt": {
+      "bytes": 5084,
+      "sha256": "ff4754c9a4a42c0117a362cd3e5e88cddac36985947ededd212dcb82db354046"
+    },
+    "independent-audit-renewed-epoch.txt": {
+      "bytes": 5426,
+      "sha256": "69308d4be6b05df0aae64b650496fa7baff066f488a275d8c2268ae79698984f"
+    },
+    "independent-audit.txt": {
+      "bytes": 6000,
+      "sha256": "7e02143e9cbd898a9eae906723c64242751d345dcb3a162e0fba56d6bc8358af"
+    },
+    "independent-input-audit-release.txt": {
+      "bytes": 3188,
+      "sha256": "d602cf7fb1b3aa43ec544093f88630de75331f0f88a0ce1072b6eaf0fb16cf19"
+    },
+    "independent-input-audit.py": {
+      "bytes": 2272,
+      "sha256": "292c01243e311ba64595afae7e5a1a635e9a3db967812ffa7a653ffbfb6c1725"
+    },
+    "independent-input-audit.txt": {
+      "bytes": 3190,
+      "sha256": "d9ae3245a53b26eda7fc523b559f677f539531f7e43ab1fc3138b89d9e1b2efd"
+    },
+    "life-os-engineering-receipt.png": {
+      "bytes": 165343,
+      "sha256": "55dd98e1110633ea12b3b42843386061e53ab891fbeb4ef2369376191c4d4501"
+    },
+    "life-os-final-receipt.png": {
+      "bytes": 161752,
+      "sha256": "73059100ef9ddefe58095431693a5f61ceb6c40a938d60c0307d6351d4dedda1"
+    },
+    "life-os-final-receipt.txt": {
+      "bytes": 1301,
+      "sha256": "c0ee4ba33abf2a3797732a76cd27d479f8db3fdcf61e88bd34e4eb8a102e63ec"
+    },
+    "release-deployment.png": {
+      "bytes": 275502,
+      "sha256": "274b7ee46a15aefb9ce6e5c423217ed9d358ee1892166baa37e53fe70db91604"
+    },
+    "runtime-continuing.txt": {
+      "bytes": 6053,
+      "sha256": "558e02debac06d6544814b65cc42e11da3ab0b3be0ee165eb3e5aa489a3b80f8"
+    },
+    "runtime-final.txt": {
+      "bytes": 5263,
+      "sha256": "ecb9d292ae1ce823de4b7fa2c4e3405ce230257a90c71289bd18183da8af6f0a"
+    },
+    "runtime-initial.txt": {
+      "bytes": 3407,
+      "sha256": "5e37d9eee248d3c41812115aff5c78b8122f38f8db0fd05480fe9671aad584d6"
+    },
+    "runtime-release-final.txt": {
+      "bytes": 4982,
+      "sha256": "1bcd709a1fae17a306eb18e60f4c63a08374b14c17dadbeb9ea7c92b02e7b996"
+    },
+    "runtime-timeout-final.txt": {
+      "bytes": 3791,
+      "sha256": "eaae8f91ee692f643d8641d4e80b61d9cf4132e2bd004e3beb06abc88b4fc1d6"
+    },
+    "runtime-v2.txt": {
+      "bytes": 3662,
+      "sha256": "f2f443502f3bf6bf2977411aef001a3dc468159dd69d118439ee951b93850743"
+    },
+    "stream-rejection-diagnostic.txt": {
+      "bytes": 4184,
+      "sha256": "44d5dc1c4674091fe5358a444a62f47431478d924a56c0840e3dae0ed3a6b9af"
+    },
+    "tests-final.log": {
+      "bytes": 357,
+      "sha256": "b0ff5bd2b7965bd8834e234f4ea1b34493779e866bdaa37980e1ba00fa3e36fc"
+    },
+    "tests-release-final.log": {
+      "bytes": 357,
+      "sha256": "29e8aadb75f5c6b030e313dbbc44ec1872728ce2be888ad338abb557b31d5965"
+    },
+    "tests-timeout-final.log": {
+      "bytes": 357,
+      "sha256": "0a7c21398921bc21117e34851989766fc9bee10c4b9653190372e4ae1d2d89ba"
+    },
+    "tests-v2.log": {
+      "bytes": 357,
+      "sha256": "2795642685d12841058b0af970dd06b4544a92d9040eb6b0dd0ff3c8c86d5b92"
+    },
+    "tests.log": {
+      "bytes": 276,
+      "sha256": "7b54c26ad9c37d9adbfa4a94139196f1cb6f870a4d63adb3c1db568114df9c10"
+    },
+    "timeout-deployment.png": {
+      "bytes": 275292,
+      "sha256": "eb078fa1b88e29526cbca4f445dc396da4f9fd3e72fc343b27b89c55f261aeec"
+    }
+  },
+  "connection_epochs_verified": 4,
+  "extra_zero_ai_deployment_checks": 1,
+  "life_os_engineering_receipt_saved_at": "2026-10-18T20:48:13.706715+00:00",
+  "local_source_receipts_and_screenshots_retained": true
+}

@@ -1,0 +1,146 @@
+{
+  "worker_revision": "a85c0201d596190a6d88baab19e157394d68ce73",
+  "full_backlog_complete": false,
+  "items": [
+    {
+      "id": "4950ca4b692bd99829e9618e25d401e385fe039f9151004349b5efdf5ebf16c0",
+      "title": "Official-Release Stale Quotes v1",
+      "state": "queued",
+      "requirement": "Add official-release ingestion and rule-aware outcome parsing, synchronized subsecond quote/depth capture, and latency-adjusted hypothetical fill replay. The existing ask-to-settlement primitive cannot condition observations on verified release timing.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "cc570963d3a7c4560c8366fe29d0d47fdae45fb7b8135c92a7d6679b68391560",
+      "title": "Settlement-Latency Capital Efficiency v1",
+      "state": "queued",
+      "requirement": "settlement_duration_portfolio_v1: resolution timestamps, leakage-safe delay estimates, fill simulation, and locked-capital accounting.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "d15829375cca4ec25cf9782c5589d553587836abecb476eeebd42c4ffb9461df",
+      "title": "Nested Threshold Dominance Screen v1",
+      "state": "queued",
+      "requirement": "nested_threshold_pair_replay_v1: rule-validated nesting, synchronized depth, fee modeling, and latency-aware paired-fill simulation.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "0218e4db18d8a4a5532998a6c26b4f790eb8f1a48bf54e12777157e0c96a9814",
+      "title": "Bounded Price-Improvement Fill Probe v1",
+      "state": "queued",
+      "requirement": "Minimal bounded-price Demo probe adapter: inside-spread limit placement, fixed timeout cancellation, price ceiling enforcement and fill-ledger reconciliation.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "8a73e805f2b3b4a05be2a83e5406b873db98e19f9ae1cae8ab73b0d57b4edf00",
+      "title": "Cross-Contract Aggressor Imbalance v1",
+      "state": "queued",
+      "requirement": "Trade-print aggressor classifier plus synchronized exclusive-sibling replay; later require a bounded two-sided Demo execution adapter for actual outcomes.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "12a196b116047a2b46cb87fd144ac1142158e37619adefdcc31c4e98d332e9ad",
+      "title": "Election Poll Vintage Lag Screen v1",
+      "state": "queued",
+      "requirement": "Poll-publication timestamp ingestion joined to Demo quote capture and a versioned, leakage-safe probability model; execution is separately unmet.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "53b33a9cf3546151df6ac15b73cae261ae9ad5805cb901dd8f420f69834126cc",
+      "title": "New-Listing Ask Dislocation Fill Test v1",
+      "state": "queued",
+      "requirement": "Listing-triggered Demo IOC probe with rule-identical reference matching, fixed price ceiling, one-unit cap and fill-ledger reconciliation.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "f60897a29ca3759e43d13749673fc1ef32e3ec36d669778ddfd3303b2958f8a2",
+      "title": "Final-Score Residual Ask Fill Test v1",
+      "state": "queued",
+      "requirement": "Final-score rule-match trigger plus one-unit bounded IOC Demo adapter and fill reconciliation; distinct from listing or inside-spread probes.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "3c08efc7537155dbb68811b7d5d96dabb829031d21bb1a96b00e1da98ff8bfdd",
+      "title": "Transient Ask Markdown Fill Test v1",
+      "state": "queued",
+      "requirement": "Same-contract downward-ask trigger joined to a frozen value ceiling and bounded one-unit IOC Demo adapter with fill reconciliation.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "66bfffd72d976237be7fa2e8577a5ab61c413a2857e43ca705f35b11d718e844",
+      "title": "Post-Depletion Queue-Reset Demo Probe",
+      "state": "queued",
+      "requirement": "Trade-confirmed queue-reset detector plus best-bid-only one-unit Demo placement, 2-second cancel, frozen ceiling and fill reconciliation.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "950a9ba75424a083af24a4c8a7b16a68b2e52434d854b7a24986be391979faf8",
+      "title": "Treasury Auction Result Quote-Lag Screen",
+      "state": "queued",
+      "requirement": "Treasury auction-result ingestion with exact-statistic rule matching and timestamped Demo books; separately require bounded IOC fill reconciliation.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "56017ef28bec01f45bdadc671da96801722cf3a16b149e867d4644800b2aea1d",
+      "title": "NHC Wind-Probability Calibration Screen",
+      "state": "queued",
+      "requirement": "NHC wind-probability vintage ingestion, exact geographic/time/statistic rule matcher and timestamped Demo quote join; execution adapter separately required.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "ff307183571850d7683aea99384b3be49ccc2133609e57593075e6d1172664b9",
+      "title": "Bid-Led Spread Compression Fill Probe",
+      "state": "queued",
+      "requirement": "Bid-led compression detector plus bounded one-unit Demo IOC and reconciliation; unchanged-ask trigger distinguishes this from markdown and queue-reset backlog.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "57473c2a3327f534192e889ebb02165590f4e541d88a20376440164587ecd1d0",
+      "title": "Consensus-Dislocation Executable Ask Probe",
+      "state": "queued",
+      "requirement": "Rule-matched de-vigged consensus/ask join plus bounded one-unit Demo IOC reconciliation; selects external-value dislocations, not quote-compression triggers.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "b508be1458aca4424b95672e84b2da3d497ad0cc51fe7b15c39320289c42b3f1",
+      "title": "Complementary-Ask Discount Demo Fill Probe",
+      "state": "blocked",
+      "requirement": "Complementary same-contract ask-sum detector plus bounded paired Demo IOC reconciliation and orphan-risk stop; not nested-threshold or queue-reset execution.",
+      "completion": "Ordinary uncrossed same-contract complementary asks cannot sum below one before fees; retain algebraic rejection."
+    },
+    {
+      "id": "944f4dcf79be0beecb3b3af5fbccfa6c50c0dd6c5cf55e1def577f56092dd60f",
+      "title": "Executable edge after failed V12 passive trials",
+      "state": "awaiting_observation",
+      "requirement": "Diagnose queue/depth/latency and crossing fees; implement a distinct registered execution hypothesis if evidence supports it.",
+      "completion": "Continuous source and unchanged-formula measurement substrate implemented/deployed; actual execution and independent profitable evidence still required."
+    },
+    {
+      "id": "f0cca67fad13efa918574a96d5ac6651036ea97482c8feb57871e1393d3872d4",
+      "title": "Inspect runner: nested_threshold_spread_quote_v1",
+      "state": "awaiting_observation",
+      "requirement": "Distinguish absent implementation from a working collector with no eligible observations. Diagnose capture and eligibility; repair actual defects.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "59b3fb559b492c6e2306e7e9657dd6a76c152fb84c4324e222a43daa42c5613e",
+      "title": "Inspect runner: ask_to_settlement_v1",
+      "state": "awaiting_observation",
+      "requirement": "Distinguish absent implementation from a working collector with no eligible observations. Diagnose capture and eligibility; repair actual defects.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    },
+    {
+      "id": "340056c4a93314f345be5c4fd257fd972b27c55f9741b896163762399dc95508",
+      "title": "Liquidity Replenishment Timing v1",
+      "state": "collecting",
+      "requirement": "Depth-stream recorder, withdrawal detector, announcement exclusion calendar, and latency-aware paired execution simulator.",
+      "completion": "Durable continuous stream now installed; trade-confirmed withdrawal attribution, calendar and paired execution remain separate requirements."
+    },
+    {
+      "id": "ff0346df8dd69fe8bdd8e196c8f151067b8a18a9974d72f22f146f64556ba3ee",
+      "title": "Resolution Source Disagreement v1",
+      "state": "awaiting_observation",
+      "requirement": "Rule-version archive, source-specific publication ingestion, discrepancy mapping, and quote-to-resolution replay.",
+      "completion": "Generic stream foundation does not certify this strategy-specific requirement complete. Preserve current state and frozen registration."
+    }
+  ]
+}
