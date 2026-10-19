@@ -219,3 +219,20 @@ def test_formula_failure_does_not_drop_source_messages_or_disclose_error_body(tm
     assert {'comparison_error_class':'RuntimeError'} in status
     assert 'PRIVATE_ERROR_BODY' not in json.dumps(status)
     a.verify();a.close()
+
+
+def test_two_collectors_serialize_shared_status_file(tmp_path,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    import time
+    original=Path.replace
+    def slow_replace(path,target):
+        time.sleep(.003)
+        return original(path,target)
+    monkeypatch.setattr(Path,'replace',slow_replace)
+    service=worker.Service(tmp_path)
+    def publish(i):service.publish({'state':'observed_'+str(i)})
+    with ThreadPoolExecutor(max_workers=4) as pool:list(pool.map(publish,range(40)))
+    value=json.loads((tmp_path/worker.STATUS_NAME).read_text())
+    assert value['state'].startswith('observed_')
+    assert not (tmp_path/worker.STATUS_NAME).with_suffix('.tmp').exists()

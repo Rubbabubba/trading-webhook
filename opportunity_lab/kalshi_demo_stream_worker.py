@@ -164,6 +164,7 @@ class Service:
         self.thread = None
         self.outcome_thread = None
         self.lock = threading.Lock()
+        self.publish_lock = threading.Lock()
         self.last_disk_at = 0
         self.last_disk_state = None
         self.value = dict(protocol=PROTOCOL, state='starting', execution_enabled=False,
@@ -182,6 +183,11 @@ class Service:
         return dict(item)
 
     def publish(self, values):
+        # Serialize the snapshot, throttle and atomic replace across collectors.
+        with self.publish_lock:
+            self._publish(values)
+
+    def _publish(self, values):
         with self.lock:
             self.value.update(values, protocol=PROTOCOL, observed_at=time.time(), execution_enabled=False,
                               fill_assumed=False, profitability_proven=False)
