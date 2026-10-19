@@ -544,3 +544,11 @@ def test_v10_evidence_stall_and_recovery_are_detected():
     packet, _, _ = check(recovered, checkpoint, REGISTRATION, now=1790014561)
     assert "v10_evidence_stalled" not in packet["health"]["faults"]
     assert "recovery" in packet["trigger_categories"]
+
+
+def test_new_comparison_missing_outcomes_and_runner_fault_are_visible():
+    status=healthy()
+    status['evidence']['demo_stream_source']={'state':'collecting','comparison_outcomes':{'state':'storage_or_runner_fault','missed':1}}
+    packet,_,_=check(status,{},REGISTRATION,now=1790013601,v12_registration=V12_REGISTRATION)
+    assert 'demo_stream_outcome_runner_fault' in packet['health']['faults']
+    assert 'demo_stream_missing_outcomes' in packet['health']['faults']

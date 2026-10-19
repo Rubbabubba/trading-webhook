@@ -39,6 +39,9 @@ def compact_status(value):
         result['formula_comparison']={key:comparison.get(key) for key in (
             'protocol','state','accepted_inputs','signals','complete_signals','complete_events','execution_enabled',
             'stop_reason','sqlite_page_cap','sqlite_pages')}
+        result['formula_comparison']['outcome_coverage']=comparison.get('outcome_coverage')
+    for key in ('prior_formula_comparison','comparison_outcomes'):
+        if key in value:result[key]=value[key]
     return result
 
 
@@ -159,6 +162,7 @@ class Service:
         self.root = Path(root)
         self.stop_event = threading.Event()
         self.thread = None
+        self.outcome_thread = None
         self.lock = threading.Lock()
         self.last_disk_at = 0
         self.last_disk_state = None
@@ -202,6 +206,8 @@ class Service:
         self.stop_event.set()
         if self.thread is not None:
             self.thread.join(timeout=15)
+        if self.outcome_thread is not None:
+            self.outcome_thread.join(timeout=5)
         return self.thread is None or not self.thread.is_alive()
 
     def run(self):
@@ -216,8 +222,20 @@ class Service:
             self.publish({'registration_sha256': hashlib.sha256(REGISTRATION.read_bytes()).hexdigest()})
             archive = Archive(self.root / ARCHIVE_NAME, protocol=ARCHIVE_PROTOCOL,
                               decoder_factory=lambda tickers:Books(tickers,allow_unavailable=True,allow_missing_book=True))
-            from .kalshi_stream_formula_comparison import Comparison, metadata_for
-            try:comparison=Comparison(self.root/'stream-shadow-comparison-v1.sqlite3')
+            from .kalshi_stream_formula_comparison_v2 import Comparison, metadata_for
+            try:
+                old=self.root/'stream-shadow-comparison-v1.sqlite3'
+                if old.exists():
+                    with sqlite3.connect(old.resolve().as_uri()+'?mode=ro',uri=True) as prior:
+                        self.publish({'prior_formula_comparison':{'protocol':'stream_native_formula_comparison_v1_20261018',
+                            'state':'retained_frozen','accepted_inputs':prior.execute('SELECT count(*) FROM comparison_inputs').fetchone()[0],
+                            'signals':prior.execute('SELECT count(*) FROM high_edge_v15_signals').fetchone()[0]}})
+                path=self.root/'stream-shadow-comparison-v2.sqlite3'
+                comparison=Comparison(path)
+                from .kalshi_comparison_deadlines import run as run_outcomes
+                self.outcome_thread=threading.Thread(target=run_outcomes,args=(path,self.stop_event,self.publish),
+                    name='kalshi-demo-comparison-outcomes',daemon=True)
+                self.outcome_thread.start()
             except Exception as exc:
                 self.publish({'formula_comparison':{'state':'initialization_fault','error_class':type(exc).__name__,'execution_enabled':False}})
             while not self.stop_event.is_set():

@@ -590,6 +590,11 @@ def faults(status, *, now):
     if (((evidence.get('demo_stream_source') or {}).get('formula_comparison') or {}).get('state') in ('initialization_fault','capacity_stop','storage_fault')
             or (evidence.get('demo_stream_source') or {}).get('comparison_error_class')):
         result.append('demo_stream_formula_fault')
+    outcomes=(evidence.get('demo_stream_source') or {}).get('comparison_outcomes') or {}
+    if outcomes.get('state')=='storage_or_runner_fault':
+        result.append('demo_stream_outcome_runner_fault')
+    if outcomes.get('missed',0)>0:
+        result.append('demo_stream_missing_outcomes')
     shadow = evidence.get("v10_shadow", {})
     if shadow.get("strategy_id") != EXPECTED_V10:
         result.append("v10_strategy_changed")
