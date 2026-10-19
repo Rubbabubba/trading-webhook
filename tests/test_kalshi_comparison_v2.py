@@ -93,3 +93,15 @@ def test_missed_window_cannot_be_backfilled_after_clock_reversal(tmp_path):
     now[0]=1005;runner.tick()
     assert not runner.db.execute('SELECT * FROM high_edge_v15_marks').fetchall()
     runner.close();study.close()
+
+
+def test_restart_preserves_two_second_request_spacing(tmp_path):
+    study,runner,now,raw,_,_=setup(tmp_path)
+    def fail(t):raise OSError('failed')
+    runner.reader=fail;now[0]=1005;runner.tick();runner.close()
+    runner=Deadlines(study.path,clock=lambda:now[0],reader=fail,free_bytes=lambda:10**9)
+    now[0]=1005.1;runner.tick()
+    assert runner.db.execute('SELECT count(*) FROM outcome_attempts').fetchone()[0]==1
+    now[0]=1007;runner.tick()
+    assert runner.db.execute('SELECT count(*) FROM outcome_attempts').fetchone()[0]==2
+    runner.close();study.close()

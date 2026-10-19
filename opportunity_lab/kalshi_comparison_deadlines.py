@@ -68,7 +68,8 @@ class Deadlines:
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.execute('PRAGMA max_page_count=4096')
         init(self.db)
-        self.next_at=0
+        prior=self.db.execute('SELECT max(started_at) FROM outcome_attempts').fetchone()[0]
+        self.next_at=prior+2 if prior is not None else 0
 
     def tick(self):
         now=self.clock()
