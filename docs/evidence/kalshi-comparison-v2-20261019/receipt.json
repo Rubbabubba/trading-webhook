@@ -1,0 +1,53 @@
+{
+  "schema": "kalshi_bounded_comparison_v2_deployment_receipt",
+  "deployed_revision": "9f100f4277e133b0cb50d37b787a46c4c335f6f9",
+  "deployment_id": "dep-dbb7pp8473hc73djgeag",
+  "instance": "qj9zf",
+  "protocol": "stream_native_formula_comparison_v2_20261019",
+  "registration_sha256": "700766a192d2c4a51fffac36c1a2e8352dc3735bc6d08a6db279f2369761d6d8",
+  "life_os_accepted": true,
+  "deployed_revision_verified": true,
+  "health": {
+    "faults": [],
+    "new_faults": [],
+    "persistent_faults": [],
+    "recovered": []
+  },
+  "genuine_complete_signals": 1,
+  "genuine_complete_events": 1,
+  "genuine_horizons": [
+    5,
+    30,
+    300
+  ],
+  "lateness_seconds": [
+    0.2987513542175293,
+    0.27750349044799805,
+    0.22391486167907715
+  ],
+  "old_ledger_sha256_unchanged": true,
+  "old_ledger_bytes": 16777216,
+  "distinct_passing_regression_cases": 67,
+  "limits": {
+    "new_max_signals": 100,
+    "new_max_entry_frames": 10000,
+    "new_max_entry_hours": 72,
+    "new_sqlite_bytes": 16777216,
+    "entry_reserve_threshold_bytes": 12582912,
+    "shared_free_disk_floor_bytes": 134217728,
+    "outcome_request_cap": 900,
+    "attempts_per_horizon": 3,
+    "request_spacing_seconds": 2,
+    "timeout_seconds": 2,
+    "maximum_horizon_lateness_seconds": 5
+  },
+  "old_evidence_imported": false,
+  "orders_submitted": 0,
+  "actual_fills": 0,
+  "profitability_proven": false,
+  "application_model_calls": 0,
+  "additional_zero_ai_deployment_checks": 2,
+  "new_schedules": 0,
+  "existing_daily_automation_checkpoint_updated": true,
+  "screenshot": "two bounded browser capture timeouts; no screenshot claimed; DOM/readback and exact runtime receipts retained"
+}

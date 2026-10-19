@@ -1,0 +1,106 @@
+{
+  "at": 1792441356.8741019,
+  "revision": "8aa45cfcaf3013409c7ce588507019bb870cce68",
+  "source": {
+    "state": "collecting",
+    "records": 49397,
+    "formula_comparison": {
+      "protocol": "stream_native_formula_comparison_v2_20261019",
+      "state": "collecting",
+      "accepted_inputs": 7,
+      "signals": 1,
+      "complete_signals": 0,
+      "complete_events": 0,
+      "outcome_coverage": {
+        "complete": 2,
+        "pending": 1,
+        "missed": 0,
+        "complete_signals": 0,
+        "requests": 2,
+        "request_cap": 900,
+        "state": "awaiting_outcomes",
+        "actual_fills": 0,
+        "settlement_outcomes": false,
+        "quote_outcomes_only": true
+      },
+      "native_quote_evidence": {
+        "schema": "kalshi_high_edge_two_tick_v15",
+        "signals": 1,
+        "complete_signals": 0,
+        "independent_events": 0,
+        "state": "collecting",
+        "stressed_quote_net_cents": {
+          "5": 0,
+          "30": 0,
+          "300": 0
+        },
+        "event_cluster_lcb_cents": {
+          "5": null,
+          "30": null,
+          "300": null
+        },
+        "same_observation_benchmarks": {
+          "5": {
+            "challenger": 0,
+            "frozen_v10": 0,
+            "frozen_v12": 0
+          },
+          "30": {
+            "challenger": 0,
+            "frozen_v10": 0,
+            "frozen_v12": 0
+          },
+          "300": {
+            "challenger": 0,
+            "frozen_v10": 0,
+            "frozen_v12": 0
+          }
+        },
+        "execution_enabled": false,
+        "owned_fills": 0,
+        "fill_assumed": false,
+        "promotion_ready": false,
+        "markout_maximum_lateness_seconds": 5
+      },
+      "sqlite_pages": 17,
+      "sqlite_page_cap": 4096,
+      "stop_reason": null,
+      "metadata_independently_current": false,
+      "original_rest_evidence_reused": false,
+      "execution_enabled": false,
+      "fill_assumed": false,
+      "profitability_proven": false,
+      "promotion_ready": false
+    },
+    "comparison_outcomes": {
+      "complete": 2,
+      "pending": 1,
+      "missed": 0,
+      "complete_signals": 0,
+      "requests": 2,
+      "request_cap": 900,
+      "state": "awaiting_outcomes",
+      "actual_fills": 0,
+      "settlement_outcomes": false,
+      "quote_outcomes_only": true
+    },
+    "prior_formula_comparison": {
+      "protocol": "stream_native_formula_comparison_v1_20261018",
+      "state": "retained_frozen",
+      "accepted_inputs": 4073,
+      "signals": 17
+    }
+  },
+  "marks": [
+    [
+      1,
+      5,
+      1792441176.8059568
+    ],
+    [
+      1,
+      30,
+      1792441201.784709
+    ]
+  ]
+}

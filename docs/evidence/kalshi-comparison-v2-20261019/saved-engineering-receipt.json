@@ -1,0 +1,44 @@
+{
+  "id": "944f4dcf79be0beecb3b3af5fbccfa6c50c0dd6c5cf55e1def577f56092dd60f",
+  "created_at": "2026-10-06T19:58:47.279800+00:00",
+  "updated_at": "2026-10-19T20:27:50.572552+00:00",
+  "state": "awaiting_observation",
+  "package": {
+    "contract": {
+      "environment": "demo",
+      "live_authority": false,
+      "new_paid_sources_require_owner_decision": true,
+      "preserve_frozen_trials": true,
+      "preserve_loss_baselines": true,
+      "release_requirements": [
+        "Implement in isolated repository checkout without trading credentials",
+        "Review source provenance, allowed requests, rate limits and data permissions",
+        "Freeze version, hypothesis, fees, fill assumptions and rejection protocol",
+        "Test accounting, partial fills, missing data, outages and immutable registration",
+        "Review diff for live authority, credential access, changed risk or evidence gates",
+        "Commit tested code; deploy existing Demo service only; verify deployed revision",
+        "Observe fresh worker evidence before calling the capability operational"
+      ],
+      "source_text_is_untrusted": true
+    },
+    "entry_exit": "One-contract Demo only under a new frozen protocol; no live orders.",
+    "failure_gate": "Reject missing depth or fee proof, negative crossing edge, and zero-fill protocols at their frozen caps. Never extend V12 caps.",
+    "hypothesis": "A new execution mechanism must preserve positive edge after realistic costs.",
+    "id": "944f4dcf79be0beecb3b3af5fbccfa6c50c0dd6c5cf55e1def577f56092dd60f",
+    "kind": "execution_bottleneck",
+    "priority": 0,
+    "requirement": "Diagnose queue/depth/latency and crossing fees; implement a distinct registered execution hypothesis if evidence supports it.",
+    "test_plan": "Replay future timestamped depth and order lifecycle, then a separately bounded Demo trial only after its registered evidence gate passes.",
+    "title": "Executable edge after failed V12 passive trials"
+  },
+  "verification": {
+    "capability_id": "stream_native_formula_comparison_v2_20261019",
+    "deployed_revision_verified": true,
+    "note": "VERIFIED bounded comparison v2 deployed Demo 9f100f4277e133b0cb50d37b787a46c4c335f6f9, accepted Life OS20:27:24UTC, phase running/faults[]/productionfalse. Separate compressed ledger; unchanged16MiB cap/128MiB shared free floor, admission12MiB/10000inputs/100signals/72hours, one pending305s window. Old v1 remains16777216bytes/4073inputs/17signals/0complete with exact unchangedSHA2561c0d1f1654930d6f1094d7cf708a36796dbcad9cc7ff4c1b9df9fd130c935bd3. Native V10/V12/V15 formulas/costs/gates and source archive limits unchanged. Dedicated bounded Demo GET deadline reader preserves attempts/raw response hashes/HTTP freshness, explicit missed windows and process restoration; max900GETs,3/horizon,2s spacing/timeout. Genuine signal1 KXNBATOTAL-26OCT23HOUSAS-240 completed5/30/300s after deployment restart; lateness0.298751/0.277503/0.223915s, three fresh receipts independently reproduced with Fraction arithmetic. 17newinputs/1completeevent/0missed,3GETs at final packet. Quiet-count display and shared status-file race found and repaired; original fault receipt retained. New ledger110592bytes; old history not imported or reset. These are complete quote outcomes, NOT fills, settlement PnL or executable-profit proof; HTTP freshness is not exchange timestamp verification, cached metadata remains unverified. Full native100/40/LCB and actual execution gates remain. Broader strategy adapters are separate. No orders/models/purchases/schedules/risk/live changes.",
+    "production_profit_verified": false,
+    "receipt_is_engineering_report_not_field_evidence": true,
+    "tests": "67 distinct focused cases passed:66 source/comparison/capacity/monitor cases plus concurrent-publication case; overlapping reruns not added. Genuine source-linked input hashes,3raw response hashes,exact5/30/300windows,unchanged2c arithmetic,request caps,process restoration and old16MiB SHA independently verified. Two extra zero-AI deterministic deployment checks; final49336byte packet acceptedTrue.",
+    "worker_observed_at": "2026-10-19T20:27:23.782016+00:00",
+    "worker_revision": "9f100f4277e133b0cb50d37b787a46c4c335f6f9"
+  }
+}

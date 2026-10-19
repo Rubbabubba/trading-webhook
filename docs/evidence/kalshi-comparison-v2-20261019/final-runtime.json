@@ -1,0 +1,112 @@
+{
+  "at": 1792441644.359728,
+  "accepted": true,
+  "worker": {
+    "environment": "demo",
+    "execution_policy_id": "v9_retired_after_8_losses_20260924",
+    "phase": "running",
+    "production_execution_enabled": false,
+    "revision": "9f100f4277e133b0cb50d37b787a46c4c335f6f9",
+    "status_age_seconds": 43.5,
+    "status_at": "2026-10-19T20:26:40.287694+00:00",
+    "strategy_execution_enabled": false,
+    "strategy_id": "stable_balanced_maker_v9",
+    "v12_demo_trial_enabled": true,
+    "v12_demo_trial_policy_id": "v12_one_contract_demo_trial_20261001",
+    "v12_fillability_trial_enabled": true,
+    "v12_fillability_trial_policy_id": "v12_one_tick_fillability_trial_20261002"
+  },
+  "health": {
+    "faults": [],
+    "new_faults": [],
+    "persistent_faults": [],
+    "recovered": []
+  },
+  "stream": {
+    "acknowledged_channels": 2,
+    "comparison_error_class": null,
+    "comparison_outcomes": {
+      "actual_fills": 0,
+      "complete": 3,
+      "complete_signals": 1,
+      "missed": 0,
+      "pending": 0,
+      "quote_outcomes_only": true,
+      "request_cap": 900,
+      "requests": 3,
+      "settlement_outcomes": false,
+      "state": "observed"
+    },
+    "compressed_bytes": 11321448,
+    "deltas": 2,
+    "error_class": null,
+    "execution_enabled": false,
+    "fill_assumed": false,
+    "formula_comparison": {
+      "accepted_inputs": 17,
+      "complete_events": 1,
+      "complete_signals": 1,
+      "execution_enabled": false,
+      "outcome_coverage": {
+        "actual_fills": 0,
+        "complete": 3,
+        "complete_signals": 1,
+        "missed": 0,
+        "pending": 0,
+        "quote_outcomes_only": true,
+        "request_cap": 900,
+        "requests": 3,
+        "settlement_outcomes": false,
+        "state": "observed"
+      },
+      "protocol": "stream_native_formula_comparison_v2_20261019",
+      "signals": 1,
+      "sqlite_page_cap": 4096,
+      "sqlite_pages": 22,
+      "state": "collecting",
+      "stop_reason": null
+    },
+    "full_status_reference": "stream-source-v3-status.json",
+    "latest_received_at": 1792441599.1572087,
+    "observed_at": 1792441599.7896907,
+    "prior_formula_comparison": {
+      "accepted_inputs": 4073,
+      "protocol": "stream_native_formula_comparison_v1_20261018",
+      "signals": 17,
+      "state": "retained_frozen"
+    },
+    "profitability_proven": false,
+    "protocol": "demo_continuous_stream_availability_v3_20261018",
+    "public_trades": 0,
+    "records": 49431,
+    "registration_sha256": "b22983bd93257b37c55e5acc6f745262379b66040944ac8f5592b8927fdffda8",
+    "snapshots": 8,
+    "source_fault_code": null,
+    "state": "collecting",
+    "target_count": 8,
+    "trades_with_prior_book": 0,
+    "unavailable_symbol_count": 0,
+    "usable_symbol_count": 8
+  },
+  "bytes": 49336,
+  "marks": [
+    [
+      1,
+      5,
+      1792441176.8059568
+    ],
+    [
+      1,
+      30,
+      1792441201.784709
+    ],
+    [
+      1,
+      300,
+      1792441471.7311203
+    ]
+  ],
+  "old_sha256": "1c0d1f1654930d6f1094d7cf708a36796dbcad9cc7ff4c1b9df9fd130c935bd3",
+  "new_bytes": 110592,
+  "registration_sha256": "700766a192d2c4a51fffac36c1a2e8352dc3735bc6d08a6db279f2369761d6d8"
+}

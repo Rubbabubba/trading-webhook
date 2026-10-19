@@ -1,0 +1,83 @@
+{
+  "actual_fills": 0,
+  "at": 1792441474.3896883,
+  "attempts": 3,
+  "complete_signals": 1,
+  "independent_fraction_audit_passed": true,
+  "new_ledger_bytes": 69632,
+  "old_ledger_bytes": 16777216,
+  "old_ledger_sha256": "1c0d1f1654930d6f1094d7cf708a36796dbcad9cc7ff4c1b9df9fd130c935bd3",
+  "profitability_proven": false,
+  "source_linked_inputs": 7,
+  "verified_signals": [
+    {
+      "at": 1792441171.5072055,
+      "complete": true,
+      "event": "KXNBATOTAL-26OCT23HOUSAS",
+      "horizons": [
+        {
+          "horizon": 5,
+          "lateness_seconds": 0.2987513542175293,
+          "response_sha256": "d997b12cb29e154747fc36c0ff5e083e2f22f0859d32640671362605e446ef77",
+          "results": {
+            "challenger": {
+              "gross_cents": "3",
+              "stressed_cents": "1"
+            },
+            "frozen_v10": {
+              "gross_cents": "0",
+              "no_trade": true,
+              "stressed_cents": "0"
+            },
+            "frozen_v12": {
+              "gross_cents": "5",
+              "stressed_cents": "3"
+            }
+          }
+        },
+        {
+          "horizon": 30,
+          "lateness_seconds": 0.27750349044799805,
+          "response_sha256": "d997b12cb29e154747fc36c0ff5e083e2f22f0859d32640671362605e446ef77",
+          "results": {
+            "challenger": {
+              "gross_cents": "3",
+              "stressed_cents": "1"
+            },
+            "frozen_v10": {
+              "gross_cents": "0",
+              "no_trade": true,
+              "stressed_cents": "0"
+            },
+            "frozen_v12": {
+              "gross_cents": "5",
+              "stressed_cents": "3"
+            }
+          }
+        },
+        {
+          "horizon": 300,
+          "lateness_seconds": 0.22391486167907715,
+          "response_sha256": "a0fe94bf042421a7d8b3246f4fe4bb2705a67a263545906be1afa106cfb62d19",
+          "results": {
+            "challenger": {
+              "gross_cents": "3",
+              "stressed_cents": "1"
+            },
+            "frozen_v10": {
+              "gross_cents": "0",
+              "no_trade": true,
+              "stressed_cents": "0"
+            },
+            "frozen_v12": {
+              "gross_cents": "5",
+              "stressed_cents": "3"
+            }
+          }
+        }
+      ],
+      "id": 1,
+      "ticker": "KXNBATOTAL-26OCT23HOUSAS-240"
+    }
+  ]
+}
