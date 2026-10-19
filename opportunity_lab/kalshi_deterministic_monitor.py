@@ -587,7 +587,7 @@ def faults(status, *, now):
         result.append('demo_orderbook_source_fault')
     if (evidence.get('demo_stream_source') or {}).get('state') in ('initialization_fault','source_or_transport_fault','capacity_stop'):
         result.append('demo_stream_source_fault')
-    if (((evidence.get('demo_stream_source') or {}).get('formula_comparison') or {}).get('state') in ('initialization_fault','capacity_stop')
+    if (((evidence.get('demo_stream_source') or {}).get('formula_comparison') or {}).get('state') in ('initialization_fault','capacity_stop','storage_fault')
             or (evidence.get('demo_stream_source') or {}).get('comparison_error_class')):
         result.append('demo_stream_formula_fault')
     shadow = evidence.get("v10_shadow", {})

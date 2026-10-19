@@ -20,6 +20,7 @@ from .kalshi_shadow import price_book
 PROTOCOL='stream_native_formula_comparison_v1_20261018'
 REGISTRATION=Path(__file__).resolve().parents[1]/'configs/kalshi_demo_continuous_stream_20261018/native-comparison-v1.json'
 MAX_FRAMES=10000
+MAX_PAGES=4096
 
 def encoded(value):return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)
 def sha(value):return hashlib.sha256(value.encode()).hexdigest()
@@ -43,7 +44,7 @@ class Comparison:
         if self.free_bytes()<128*1024*1024:raise ValueError('comparison_low_disk')
         self.db=sqlite3.connect(self.path,isolation_level=None)
         self.db.execute('PRAGMA synchronous=FULL')
-        self.db.execute('PRAGMA max_page_count=4096')
+        self.db.execute(f'PRAGMA max_page_count={MAX_PAGES}')
         if self.db.execute('PRAGMA page_size').fetchone()[0]!=4096:raise ValueError('comparison_page_size')
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS comparison_protocol(id INTEGER PRIMARY KEY,detail TEXT NOT NULL);
@@ -63,6 +64,29 @@ class Comparison:
         native_init(self.db,self.clock())
         self.history={};self.last={};self.epoch=None;self.blocked=False
         self.accepted=self.db.execute('SELECT count(*) FROM comparison_inputs').fetchone()[0]
+        self.stop_reason=None
+        self.stop_path=self.path.with_name(self.path.name+'.capacity-stop.json')
+        if self.stop_path.exists():
+            saved=json.loads(self.stop_path.read_text())
+            if saved.get('protocol')!=PROTOCOL or saved.get('sqlite_page_cap')!=MAX_PAGES or saved.get('reason')!='sqlite_page_cap':
+                raise ValueError('comparison_capacity_receipt_mismatch')
+            self._page_cap_stop()
+        # SQLite page allocation is durable even after SQLITE_FULL auto-rolls
+        # back its transaction. Preserve the frozen cap across process boots.
+        if self.db.execute('PRAGMA page_count').fetchone()[0]>=MAX_PAGES:
+            self._page_cap_stop()
+        elif self.accepted>=MAX_FRAMES:
+            self.blocked=True;self.stop_reason='accepted_frame_cap'
+
+    def _page_cap_stop(self):
+        self.blocked=True;self.stop_reason='sqlite_page_cap'
+        # Tiny operational receipt, outside the capped immutable evidence DB.
+        # No new market observation or increase to its 16MiB allowance.
+        if not self.stop_path.exists():
+            raw=encoded({'protocol':PROTOCOL,'reason':'sqlite_page_cap',
+                         'sqlite_page_cap':MAX_PAGES,'accepted_inputs':self.accepted})
+            temporary=self.stop_path.with_name(self.stop_path.name+'.tmp')
+            temporary.write_text(raw);temporary.replace(self.stop_path)
 
     def begin_epoch(self,identity):
         self.epoch=identity;self.history.clear();self.last.clear()
@@ -71,13 +95,21 @@ class Comparison:
         self.history.pop(ticker,None);self.last.pop(ticker,None)
 
     def exclude(self,reason):
-        self.db.execute('INSERT INTO comparison_exclusions VALUES(?,1) ON CONFLICT(reason) DO UPDATE SET n=n+1',(reason,))
+        try:
+            self.db.execute('INSERT INTO comparison_exclusions VALUES(?,1) ON CONFLICT(reason) DO UPDATE SET n=n+1',(reason,))
+        except sqlite3.Error as exc:
+            if getattr(exc,'sqlite_errorcode',None)!=sqlite3.SQLITE_FULL:raise
+            self._page_cap_stop()
         return False
 
     def observe(self,ticker,book,metadata,source_sha):
         if self.blocked:return False
         if self.accepted>=MAX_FRAMES or self.free_bytes()<128*1024*1024:
-            self.blocked=True;return self.exclude('comparison_capacity_or_low_disk')
+            self.blocked=True
+            self.stop_reason='accepted_frame_cap' if self.accepted>=MAX_FRAMES else 'shared_free_disk_floor'
+            return False
+        if self.db.execute('PRAGMA page_count').fetchone()[0]>=MAX_PAGES:
+            self._page_cap_stop();return False
         at=book['received_at']
         if self.epoch is None:return self.exclude('epoch_missing')
         if not 0<=self.clock()-at<=2 or not 0<=at-book['sending_ts_ms']/1000<=2:
@@ -111,9 +143,16 @@ class Comparison:
                 (self.epoch,at,ticker,metadata['event_ticker'],source_sha,sha(raw),raw))
             self.db.execute('COMMIT')
         except (ValueError,TypeError,ArithmeticError):
-            self.db.execute('ROLLBACK');return self.exclude('native_formula_input_rejected')
-        except sqlite3.Error:
-            self.db.execute('ROLLBACK');self.blocked=True;raise
+            if self.db.in_transaction:self.db.execute('ROLLBACK')
+            return self.exclude('native_formula_input_rejected')
+        except sqlite3.Error as exc:
+            # SQLITE_FULL can already have rolled back the entire transaction.
+            # A second ROLLBACK masks the actual capacity condition.
+            if self.db.in_transaction:self.db.execute('ROLLBACK')
+            self.blocked=True
+            if getattr(exc,'sqlite_errorcode',None)==sqlite3.SQLITE_FULL:
+                self._page_cap_stop();return False
+            self.stop_reason='sqlite_fault';raise
         self.accepted+=1;history.append((at,(bid+ask)/2));self.last[ticker]=at
         return True
 
@@ -121,7 +160,9 @@ class Comparison:
         value=native_status(self.db)
         return dict(protocol=PROTOCOL,accepted_inputs=self.accepted,signals=value['signals'],
             complete_signals=value['complete_signals'],complete_events=value['independent_events'],
-            state='capacity_stop' if self.blocked else value['state'],
+            state=('storage_fault' if self.stop_reason=='sqlite_fault' else 'capacity_stop') if self.blocked else value['state'],
+            stop_reason=self.stop_reason,sqlite_page_cap=MAX_PAGES,
+            sqlite_pages=self.db.execute('PRAGMA page_count').fetchone()[0],
             native_quote_evidence=value,metadata_independently_current=False,
             original_rest_evidence_reused=False,execution_enabled=False,fill_assumed=False,
             profitability_proven=False,promotion_ready=False)

@@ -37,7 +37,8 @@ def compact_status(value):
     comparison=value.get('formula_comparison')
     if isinstance(comparison,dict):
         result['formula_comparison']={key:comparison.get(key) for key in (
-            'protocol','state','accepted_inputs','signals','complete_signals','complete_events','execution_enabled')}
+            'protocol','state','accepted_inputs','signals','complete_signals','complete_events','execution_enabled',
+            'stop_reason','sqlite_page_cap','sqlite_pages')}
     return result
 
 
