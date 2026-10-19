@@ -46,6 +46,21 @@ def outcome_status(db,now):
                 actual_fills=0,settlement_outcomes=False,quote_outcomes_only=True)
 
 
+def comparison_status(db,now):
+    # A quiet stream must not leave the last book callback's zero-signal status
+    # on screen after this independent runner has collected real outcomes.
+    from .kalshi_high_edge_shadow import status as native_status
+    native=native_status(db)
+    pages=db.execute('PRAGMA page_count').fetchone()[0]
+    inputs=db.execute('SELECT count(*) FROM comparison_inputs').fetchone()[0]
+    return dict(protocol='stream_native_formula_comparison_v2_20261019',state='capacity_stop' if pages>=4096 or inputs>=10000 else native['state'],
+        accepted_inputs=inputs,signals=native['signals'],complete_signals=native['complete_signals'],complete_events=native['independent_events'],
+        outcome_coverage=outcome_status(db,now),native_quote_evidence=native,sqlite_pages=pages,sqlite_page_cap=4096,
+        stop_reason='sqlite_page_cap' if pages>=4096 else 'accepted_frame_cap' if inputs>=10000 else None,
+        metadata_independently_current=False,original_rest_evidence_reused=False,
+        execution_enabled=False,fill_assumed=False,profitability_proven=False,promotion_ready=False)
+
+
 def fetch(ticker):
     if not re.fullmatch(r'[A-Z0-9_.-]{1,160}',ticker):raise ValueError('invalid_ticker')
     # No credentials, redirects, production host or inferred cached timestamps.
@@ -131,7 +146,8 @@ def run(path,stop,publish):
         runner=Deadlines(path)
         while not stop.is_set():
             runner.tick()
-            publish({'comparison_outcomes':outcome_status(runner.db,time.time())})
+            now=time.time()
+            publish({'comparison_outcomes':outcome_status(runner.db,now),'formula_comparison':comparison_status(runner.db,now)})
             stop.wait(.25)
     except Exception as exc:
         publish({'comparison_outcomes':{'state':'storage_or_runner_fault','error_class':type(exc).__name__}})

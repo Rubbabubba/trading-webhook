@@ -7,7 +7,7 @@ import zlib
 
 import pytest
 from opportunity_lab.kalshi_stream_formula_comparison_v2 import Comparison
-from opportunity_lab.kalshi_comparison_deadlines import Deadlines,outcome_status
+from opportunity_lab.kalshi_comparison_deadlines import Deadlines,outcome_status,comparison_status
 
 
 def setup(tmp_path):
@@ -37,6 +37,7 @@ def test_complete_fresh_outcomes_without_any_more_stream_ticks_and_across_restar
             runner=Deadlines(study.path,clock=lambda:now[0],reader=lambda t:(raw,now[0],now[0],0),free_bytes=lambda:10**9)
     value=study.status()
     assert value['complete_signals']==value['complete_events']==1
+    assert comparison_status(runner.db,now[0])['complete_signals']==1
     assert value['outcome_coverage']['complete']==3
     assert value['native_quote_evidence']['stressed_quote_net_cents']=={'5':1.,'30':1.,'300':1.}
     assert not value['fill_assumed'] and not value['profitability_proven']
