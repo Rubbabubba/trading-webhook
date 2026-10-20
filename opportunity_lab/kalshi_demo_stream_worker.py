@@ -34,12 +34,24 @@ def compact_status(value):
     result['unavailable_symbol_count']=len(value.get('unavailable_symbols',[]))
     result['usable_symbol_count']=len(value.get('usable_symbols',[]))
     result['full_status_reference']=STATUS_NAME
+    # Ledger admission and raw-source capture are different states. Retained
+    # usable ladders/counts must not imply new capture after a source cap/stop.
+    source_active = (value.get('state') == 'collecting'
+                     and value.get('acknowledged_channels') == 2
+                     and bool(value.get('usable_symbols')))
+    result['new_source_inputs_active'] = source_active
+    result['retained_book_counts_only'] = not source_active
     comparison=value.get('formula_comparison')
     if isinstance(comparison,dict):
         result['formula_comparison']={key:comparison.get(key) for key in (
             'protocol','state','accepted_inputs','signals','complete_signals','complete_events','execution_enabled',
             'stop_reason','sqlite_page_cap','sqlite_pages')}
         result['formula_comparison']['outcome_coverage']=comparison.get('outcome_coverage')
+        result['formula_comparison']['source_input_state'] = (
+            'source_active' if source_active else 'source_' + str(value.get('state', 'unknown')))
+        # Keep the immutable comparison ledger state, caps and missed outcomes.
+        # Outcome collection can finish even while new source input is stopped.
+
     for key in ('prior_formula_comparison','comparison_outcomes'):
         if key in value:result[key]=value[key]
     return result
