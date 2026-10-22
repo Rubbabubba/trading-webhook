@@ -1,0 +1,22 @@
+{
+  "protocol": "settlement_capital_accounting_v1_20261022",
+  "kind": "read_only_accounting_capability",
+  "hypothesis": "Resolution labels alone understate capital lock duration; cash is available only after an attributable credit receipt.",
+  "scope": "Pure accounting foundation for queued Settlement-Latency Capital Efficiency work; no strategy selection or executable edge claim.",
+  "observations": "No market outcomes consumed by this implementation; tests are synthetic only.",
+  "frozen_parameters": {
+    "cash_unit": "Decimal USD including recorded fees",
+    "availability": "actual local receipt time, never backdated exchange economic time",
+    "capital_release": "one explicit complete attributable cash-credit receipt per entry, including zero losing settlement",
+    "capacity": "all debit receipts before credit receipts at identical timestamp",
+    "delay_summary": "median credited_at minus resolved_at using only credit receipts available by cutoff",
+    "missing_credit": "capital remains locked, net outcome unknown",
+    "unsupported": "partial credits, offsets, event collateral netting, short inventory, negative credits, unowned or duplicate cash identity"
+  },
+  "automatic_rejection": "Reject nonfinite values, impossible chronology, duplicate ownership/credit, negative cash capacity; never infer a credit from a settlement label.",
+  "next_evidence_gate": "An independently reconciled fixed cohort with authentic fill/fee, resolution and cash-credit receipts. Missing provenance remains blocked. No economic strategy test or profitability sample is registered here.",
+  "integration": "offline module only; no worker import, network, broker, scheduler or execution interface",
+  "execution_enabled": false,
+  "live_authority": false,
+  "frozen_trials_changed": false
+}
