@@ -1,0 +1,20 @@
+{
+  "protocol": "stream_native_formula_comparison_v4_20261023",
+  "environment": "demo",
+  "source": "Prospective availability-v5 only; incomplete snapshots/deltas never supply quote inputs.",
+  "hypothesis": "Measure unchanged frozen V15 and matched V12/V10 quote formulas on a separate prospectively captured stream feed, with exact five-second horizon lateness and original costs. This tests source/measurement capability, not a new order grant or a search for fitted parameters.",
+  "formulas": "Call existing kalshi_high_edge_shadow.observe/status unmodified, including native 5c minimum gross edge, +2c bid improvement,2c stress,1800s event cooldown,500signal cap,5/30/300s horizons and5s maximum lateness. Matched V10/V12 benchmarks use identical accepted inputs.",
+  "metadata": "Exact ticker/event/active binary and original close_time from retained current sampling-window metadata. Reject missing metadata, unknown events, mismatch or closes within1800s. Retain metadata fingerprint; current independent metadata availability is NOT certified by a cache. No live/paper promotion from this cache-based context.",
+  "inputs": "Only valid two-sided books, server-to-receipt and processing age<=2s; no source substitution into old ledgers. One accepted book per ticker per second; original raw message hash and epoch retained. Reset trend history on every connection and source unavailability. No future book or old-capture replay.",
+  "storage": "Separate stream-shadow-comparison-v4.sqlite3;10000 compressed entry frames,100 signals,16MiB total SQLite cap; stop entries at12MiB to reserve outcomes;128MiB shared free floor; no rotation/deletion",
+  "old_evidence": "Original REST and V15/timely ledgers, failed studies and caps remain unchanged. Native table names in this separate DB do not combine observations or claim an original-feed holdout. V2 remains2377inputs/20signals/19complete/2missing; no continuation of expired72h allowance.",
+  "missing_minutes_or_horizons": "Remain unresolved. No invented mark or broker fill.",
+  "review_gate": "Original V15 100complete signals/40independent events/positive stressed totals and event-clustered95% lower bound at every horizon. Also require independently verified source/metadata, untouched independent validation and actual fee/queue/fill/exit evidence before any separately authorized execution trial.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "promotion_ready": false,
+  "profitability_proven": false,
+  "measurement": "5/30/300s and unchanged5s lateness; one unresolved signal at a time, original event cooldown/formulas/costs unchanged. Dedicated read-only deadline thread survives stream reconnects and source archive capacity stop. Up to3 attempts/horizon,900 total requests,one GET per2seconds,2second timeout,Age<=2seconds and request interval<=2seconds. Persist attempted/error/missed/complete status and raw response hashes; no cached-book interpolation. Quote outcomes are not trades, settlement outcomes or fill proof.",
+  "admission": "72hours from immutable v4 start; no new entries while any prior signal is within its300+5second outcome window;100 signals maximum. Old v1/v2 is never opened for write or imported.",
+  "registered_at": "2026-10-23T21:08:27.593640+00:00"
+}

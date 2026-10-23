@@ -55,7 +55,7 @@ def comparison_status(db,now):
     inputs=db.execute('SELECT count(*) FROM comparison_inputs').fetchone()[0]
     protocol=json.loads(db.execute('SELECT detail FROM comparison_protocol WHERE id=1').fetchone()[0])['registration']['protocol']
     reason='sqlite_page_cap' if pages>=4096 else 'accepted_frame_cap' if inputs>=10000 else None
-    if protocol=='stream_native_formula_comparison_v3_20261023' and reason is None:
+    if protocol in {'stream_native_formula_comparison_v3_20261023','stream_native_formula_comparison_v4_20261023'} and reason is None:
         start=db.execute('SELECT started_at FROM high_edge_v15_protocol').fetchone()[0]
         reason='admission_time_cap' if now-start>72*3600 else 'signal_cap' if native['signals']>=100 else 'outcome_storage_reserve' if pages>=3072 else None
     return dict(protocol=protocol,state='capacity_stop' if reason else native['state'],

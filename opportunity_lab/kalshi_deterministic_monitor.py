@@ -13,7 +13,7 @@ import math
 import os
 from pathlib import Path
 import time
-from .kalshi_demo_stream_worker_v4 import compact_status as compact_stream_status
+from .kalshi_demo_stream_worker_v5 import compact_status as compact_stream_status
 
 
 CHECK_INTERVAL_SECONDS = 60

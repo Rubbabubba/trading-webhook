@@ -10,17 +10,17 @@ from .kalshi_demo_stream_archive import Archive
 from .kalshi_continuing_capture import Recorder, LIMITS, PROTOCOL, encoded
 
 
-def lifetime_start(path, clock=time.time):
+def lifetime_start(path, clock=time.time, *, protocol='demo_continuous_stream_availability_v4_20261023'):
     path = Path(path)
     try:
         with path.open('x') as out:
-            json.dump({'protocol': 'demo_continuous_stream_availability_v4_20261023',
+            json.dump({'protocol': protocol,
                        'started_at': clock()}, out)
     except FileExistsError:
         pass
     value = json.loads(path.read_text())
     at = value.get('started_at')
-    if (value.get('protocol') != 'demo_continuous_stream_availability_v4_20261023'
+    if (value.get('protocol') != protocol
             or type(at) not in (int, float) or not math.isfinite(at) or not 0 <= at <= clock()):
         raise ValueError('capture_start_receipt_invalid')
     return at
@@ -38,7 +38,7 @@ def retained_evidence(root):
     """No old ledger is opened writable or imported as a new observation."""
     result = {}
     for name in ('stream-source-v3.sqlite3', 'stream-shadow-comparison-v2.sqlite3',
-                 'continuing-capture-v1.sqlite3'):
+                 'continuing-capture-v1.sqlite3', 'stream-source-v4.sqlite3', 'stream-shadow-comparison-v3.sqlite3'):
         path = Path(root) / name
         if path.exists():
             result[name] = {'bytes': path.stat().st_size, 'state': 'retained_read_only',
