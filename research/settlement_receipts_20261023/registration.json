@@ -1,0 +1,25 @@
+{
+  "protocol": "settlement_receipt_validation_v1_20261023",
+  "registered_at": "2026-10-23T20:09:02.350717+00:00",
+  "capability_package": "cc570963d3a7c4560c8366fe29d0d47fdae45fb7b8135c92a7d6679b68391560",
+  "scope": "Offline identity, hash, cash and chronology validation before existing locked-capital calculator; no strategy or outcome data consumed",
+  "input": "Fixed normalized full long binary settlement, one complete entry and one explicit attributable cash credit. Supplied receipt bytes require independent provenance review; hashes do not establish authenticity.",
+  "rejections": [
+    "receipt hash mismatch",
+    "environment not demo",
+    "account/event/entry/credit mismatch",
+    "duplicate source identity",
+    "nonfinite amount/time",
+    "out-of-order entry-versus-credit receipt availability",
+    "missing explicit zero loss credit",
+    "partial or unsupported netting",
+    "cash credit inconsistent with binary settlement and fees"
+  ],
+  "unchanged": [
+    "frozen V10/V14/V15",
+    "all old source caps and histories",
+    "all risk and live authority"
+  ],
+  "execution_enabled": false,
+  "integration": "offline only; no worker import or deployment; authentic fixed-cohort proof still missing"
+}
