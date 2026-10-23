@@ -1,0 +1,23 @@
+{
+  "protocol": "demo_continuous_stream_availability_v4_20261023",
+  "registered_at": "2026-10-23T20:59:16.563855+00:00",
+  "archive_protocol": "demo_stream_archive_availability_v4_20261023",
+  "endpoint": "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2",
+  "hypothesis": "Prospective source and timely quote-outcome coverage can be collected within a new finite budget after v3 SQLite exhaustion; no change to strategy formulas or execution authority.",
+  "session_seconds": 300,
+  "max_messages": 100000,
+  "max_compressed_bytes": 33554432,
+  "max_sqlite_bytes": 50331648,
+  "admission_stop_sqlite_pages": 11264,
+  "minimum_free_disk_bytes": 134217728,
+  "maximum_elapsed_seconds": 259200,
+  "targets": "Existing sampling window only,1-8 symbols; original selection unchanged.",
+  "stop": "Terminal on lifetime records/bytes/pages/time; no rollover/reopening/deletion. Low disk is transient and resumes only above original128MiB floor. Source faults reconnect60s. Raw credentials/error bodies never persisted.",
+  "storage": "stream-source-v4.sqlite3 and stream-source-v4-status.json; prior v1/v2/v3 and continuing capture v1 retained read-only. Separate first-start receipt; no imported old records.",
+  "comparison": "Separate stream-shadow-comparison-v3.sqlite3, unchanged formulas/costs/freshness/metadata guards;16MiB/10000inputs/100signals/72h,900GET total, one pending305s window,5/30/300s+5s lateness. Old v2 two missing marks never backfilled.",
+  "success": "Genuine current both-channel acknowledgements and raw valid books/public trades linked by exact epoch/SID/sequence/hash, then fresh timely outcomes. Trade overlap is not owned execution or profit.",
+  "rejection": "Any source integrity fault invalidates epoch. Missing trades, uncertain metadata, missing outcomes and cap stops remain visible. Profitability qualification still requires frozen100complete/40event gates plus independent validation and actual queue/fill/fees/exits.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "profitability_proven": false
+}

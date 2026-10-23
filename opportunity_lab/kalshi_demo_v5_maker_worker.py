@@ -18,9 +18,10 @@ from .kalshi_binary_broker import BinaryDemoBroker
 from .kalshi_binary_journal import BinaryJournal
 from .kalshi_demo_broker import DemoClient, check_exchange
 from .kalshi_demo_market_data import DemoMarkets
-from .kalshi_demo_stream_worker import Service as DemoStreamService
+from .kalshi_demo_stream_worker_v4 import Service as DemoStreamService
 from .kalshi_rule_vintage_archive import init as init_rule_archive, status as rule_archive_status
-from .kalshi_continuing_capture import Recorder as ContinuingCapture, priority_pending as capture_priority_pending, unavailable_status as capture_unavailable_status
+from .kalshi_continuing_capture import priority_pending as capture_priority_pending, unavailable_status as capture_unavailable_status
+from .kalshi_collection_recovery import open_continuing_capture as ContinuingCapture
 from .kalshi_measurement_scheduler import allow_optional as measurement_optional, due_ticker as measurement_due
 from .kalshi_demo_v4_worker import event_id, limit_price_cents, one_contract_frame
 from .kalshi_depth_replenishment import init as init_depth_recorder, capture as capture_depth, status as depth_status

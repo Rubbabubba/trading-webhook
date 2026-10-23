@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-23T21:02:55.454121+00:00",
+  "initial_runtime_missing_pytest": true,
+  "sandbox_windows_event_loop_stall": "Retained first9passes then interrupted; elevated synthetic run succeeded.",
+  "suite_one": {
+    "passed": 77,
+    "subtests": 5
+  },
+  "final_source_deadline_monitor": {
+    "passed": 63
+  },
+  "counts_overlap": true,
+  "authentic_fills": false
+}
