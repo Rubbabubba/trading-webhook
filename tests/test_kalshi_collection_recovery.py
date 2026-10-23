@@ -34,7 +34,7 @@ def test_exhausted_rest_archive_is_readonly_no_more_fault_churn(tmp_path):
     view.quote({'not':'a market'});assert view.poll(None) is False
     view.fault('new fault must not mutate evidence');view.close()
     assert view.status()['new_inputs_active'] is False
-    assert view.status()['state']=='retained_capacity_stop'
+    assert view.status()['state']=='capacity_insufficient_coverage'
     assert p.read_bytes()==before
 
 

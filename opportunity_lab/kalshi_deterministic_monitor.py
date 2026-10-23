@@ -581,7 +581,10 @@ def faults(status, *, now):
     evidence = status.get("evidence", {})
     if evidence.get('rule_vintage_archive',{}).get('state')=='fault':
         result.append('rule_vintage_archive_fault')
-    if (evidence.get('continuing_capture') or {}).get('state') in ('blocked','capacity_insufficient_coverage','initialization_blocked'):
+    continuing=evidence.get('continuing_capture') or {}
+    if (continuing.get('state') in ('blocked','capacity_insufficient_coverage','initialization_blocked')
+            and not (continuing.get('retained_evidence_only') is True
+                     and continuing.get('new_inputs_active') is False)):
         result.append('continuing_capture_blocked')
     if (evidence.get('market_read_health') or {}).get('state') == 'source_fault':
         result.append('demo_orderbook_source_fault')

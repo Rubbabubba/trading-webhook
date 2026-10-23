@@ -552,3 +552,12 @@ def test_new_comparison_missing_outcomes_and_runner_fault_are_visible():
     packet,_,_=check(status,{},REGISTRATION,now=1790013601,v12_registration=V12_REGISTRATION)
     assert 'demo_stream_outcome_runner_fault' in packet['health']['faults']
     assert 'demo_stream_missing_outcomes' in packet['health']['faults']
+
+
+def test_retired_capture_remains_visible_without_a_false_active_collector_fault():
+    status=healthy()
+    status['evidence']['continuing_capture']={'state':'capacity_insufficient_coverage',
+        'retained_evidence_only':True,'new_inputs_active':False,'last_error':'capture_accounted_capacity'}
+    packet,_,_=check(status,{},REGISTRATION,now=1790013601,v12_registration=V12_REGISTRATION)
+    assert 'continuing_capture_blocked' not in packet['health']['faults']
+    assert packet['continuing_capture']['state']=='capacity_insufficient_coverage'

@@ -55,7 +55,7 @@ def retained_evidence(root):
 
 class FrozenCapture:
     def __init__(self, value):
-        self.value = dict(value, state='retained_capacity_stop',
+        self.value = dict(value, state='capacity_insufficient_coverage',
                           new_inputs_active=False, retained_evidence_only=True)
     def status(self, now=None):
         return dict(self.value)
