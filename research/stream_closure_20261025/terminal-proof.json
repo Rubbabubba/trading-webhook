@@ -1,0 +1,183 @@
+{
+  "observed_at": 1792959085.5096323,
+  "files": {
+    "stream-source-v5.sqlite3": {
+      "bytes": 46137344,
+      "sha256": "9e89311a13a39f8671accadb7e0611fb285cf402bd83a7870dcad222b0298a5f"
+    },
+    "stream-shadow-comparison-v4.sqlite3": {
+      "bytes": 10883072,
+      "sha256": "5d7c707e79fbb72a6ee8e2a709e751c93c309468ef7a5939f0d3ea1e0204f507"
+    }
+  },
+  "source": {
+    "protocol": "demo_continuous_stream_availability_v5_20261023",
+    "state": "capacity_stop",
+    "execution_enabled": false,
+    "fill_assumed": false,
+    "profitability_proven": false,
+    "registration_sha256": "eed1f8393f45c731996b023bbb68cda00766c3785d0d2215550df40864ce2ca9",
+    "retained_evidence": {
+      "stream-source-v3.sqlite3": {
+        "bytes": 50331648,
+        "state": "retained_read_only",
+        "sha256": "4c499885d4d3f7e84b90ecd8ee2213f10c1194b816f4dd75e78aa568a30f6945"
+      },
+      "stream-shadow-comparison-v2.sqlite3": {
+        "bytes": 4435968,
+        "state": "retained_read_only",
+        "sha256": "acc15df05ff7f7b1441638d9907e95cec7b6e13d9bd4b0c7ff443683cc3bbf05",
+        "outcome_coverage": {
+          "complete": 58,
+          "pending": 0,
+          "missed": 2,
+          "complete_signals": 19,
+          "requests": 64,
+          "request_cap": 900,
+          "state": "missing_outcomes",
+          "actual_fills": 0,
+          "settlement_outcomes": false,
+          "quote_outcomes_only": true
+        }
+      },
+      "continuing-capture-v1.sqlite3": {
+        "bytes": 26464256,
+        "state": "retained_read_only",
+        "sha256": "6d4337ecc429bf17c05e73a1e15d1725aec28066e37e52b436412d87b3cb2a8b"
+      },
+      "stream-source-v4.sqlite3": {
+        "bytes": 28672,
+        "state": "retained_read_only",
+        "sha256": "4ec2a3119ccde5460360c7a97067ad11738c3bac9f882417cb22e9fc208406ba"
+      },
+      "stream-shadow-comparison-v3.sqlite3": {
+        "bytes": 65536,
+        "state": "retained_read_only",
+        "sha256": "b83003196724c9e0ea89f7797a065bfa1e96a00be5406dd4b9e1f1960e78f9fa"
+      }
+    },
+    "observed_at": 1792959085.091633,
+    "prior_formula_comparison": {
+      "protocol": "stream_native_formula_comparison_v1_20261018",
+      "state": "retained_frozen",
+      "accepted_inputs": 4073,
+      "signals": 17
+    },
+    "target_count": 8,
+    "error_class": "ValueError",
+    "source_fault_code": null,
+    "storage_stop_reason": "archive_capacity",
+    "comparison_outcomes": {
+      "complete": 17,
+      "pending": 0,
+      "missed": 1,
+      "complete_signals": 5,
+      "requests": 20,
+      "request_cap": 900,
+      "state": "missing_outcomes",
+      "actual_fills": 0,
+      "settlement_outcomes": false,
+      "quote_outcomes_only": true
+    },
+    "formula_comparison": {
+      "protocol": "stream_native_formula_comparison_v4_20261023",
+      "state": "collecting",
+      "accepted_inputs": 5792,
+      "signals": 6,
+      "complete_signals": 5,
+      "complete_events": 5,
+      "outcome_coverage": {
+        "complete": 17,
+        "pending": 0,
+        "missed": 1,
+        "complete_signals": 5,
+        "requests": 20,
+        "request_cap": 900,
+        "state": "missing_outcomes",
+        "actual_fills": 0,
+        "settlement_outcomes": false,
+        "quote_outcomes_only": true
+      },
+      "native_quote_evidence": {
+        "schema": "kalshi_high_edge_two_tick_v15",
+        "signals": 6,
+        "complete_signals": 5,
+        "independent_events": 5,
+        "state": "collecting",
+        "stressed_quote_net_cents": {
+          "5": 2,
+          "30": 2.5,
+          "300": 2.5
+        },
+        "event_cluster_lcb_cents": {
+          "5": 0.03331757609615377,
+          "30": 0.06173067641004126,
+          "300": 0.06173067641004126
+        },
+        "same_observation_benchmarks": {
+          "5": {
+            "challenger": 2,
+            "frozen_v10": 0,
+            "frozen_v12": 12
+          },
+          "30": {
+            "challenger": 2.5,
+            "frozen_v10": 0,
+            "frozen_v12": 12.5
+          },
+          "300": {
+            "challenger": 2.5,
+            "frozen_v10": 0,
+            "frozen_v12": 12.5
+          }
+        },
+        "execution_enabled": false,
+        "owned_fills": 0,
+        "fill_assumed": false,
+        "promotion_ready": false,
+        "markout_maximum_lateness_seconds": 5
+      },
+      "sqlite_pages": 2657,
+      "sqlite_page_cap": 4096,
+      "stop_reason": null,
+      "metadata_independently_current": false,
+      "original_rest_evidence_reused": false,
+      "execution_enabled": false,
+      "fill_assumed": false,
+      "profitability_proven": false,
+      "promotion_ready": false
+    },
+    "records": 78518,
+    "compressed_bytes": 18076634,
+    "latest_received_at": 1792873616.1281016,
+    "interrupted_connections": 0,
+    "active": false,
+    "acknowledged_channels": 2,
+    "unavailable_symbols": [],
+    "unavailable_observations": {},
+    "usable_symbols": [
+      "KXNBAGAME-26OCT25MEMSAC-SAC",
+      "KXNBAGAME-26OCT25TORMIN-TOR",
+      "KXNBAGAME-26OCT26ATLHOU-ATL",
+      "KXNBAGAME-26OCT26GSWDEN-GSW",
+      "KXNBAGAME-26OCT26INDMIL-MIL",
+      "KXNBAGAME-26OCT26MINCLE-CLE",
+      "KXNBAGAME-26OCT27BKNBOS-BKN",
+      "KXNBAGAME-26OCT27DETNYK-DET"
+    ],
+    "source_coverage": "selected_targets_only",
+    "counter_scope": "records_cumulative; book/trade_counts_current_epoch",
+    "snapshots": 8,
+    "deltas": 1423,
+    "public_trades": 0,
+    "trades_with_prior_book": 0,
+    "comparison_error_class": null
+  },
+  "comparison_counts": {
+    "inputs": 5792,
+    "signals": 6,
+    "marks": 17
+  },
+  "source_page_count": 11264,
+  "source_db_records": 78518
+}

@@ -1,0 +1,46 @@
+{
+  "schema": "bounded_stream_closure_v1_20261025",
+  "state": "insufficient_evidence",
+  "collection_state": "terminal_original_archive_admission_cap",
+  "last_source_receipt_utc": "2026-10-24T20:26:56.128102+00:00",
+  "records": 78518,
+  "accepted_inputs": 5792,
+  "signals": 6,
+  "complete_signals": 5,
+  "complete_event_paths": 5,
+  "missing_horizons": 1,
+  "owned_fills": 0,
+  "realized_trading_pnl": null,
+  "conditional_displayed_bid_exit_stressed_cents": {
+    "5": "-20",
+    "30": "-16",
+    "300": "-16"
+  },
+  "retained_prior_audit_sha256": "d579062a6f38574c0d89c7e63cfd078f87b144b6dda830bd8c694e4b2c6f6412",
+  "retained_files": {
+    "stream-source-v5.sqlite3": {
+      "bytes": 46137344,
+      "sha256": "9e89311a13a39f8671accadb7e0611fb285cf402bd83a7870dcad222b0298a5f"
+    },
+    "stream-shadow-comparison-v4.sqlite3": {
+      "bytes": 10883072,
+      "sha256": "5d7c707e79fbb72a6ee8e2a709e751c93c309468ef7a5939f0d3ea1e0204f507"
+    }
+  },
+  "gates": {
+    "minimum_100_complete_signals": false,
+    "minimum_40_complete_events": false,
+    "positive_conditional_bid_exit_all_horizons": false,
+    "independently_current_metadata": false,
+    "owned_entry_queue_fee_exit_proof": false,
+    "independent_untouched_validation": false
+  },
+  "binding_stage": "authentic_entry_fillability_and_positive_executable_exit_economics",
+  "next_work": "Prepare source/metadata and causal queue/fillability adapters separately; no rollover or new price collection authorized by this closure.",
+  "old_usable_books_are_current": false,
+  "comparison_collecting_label_is_not_active_source_collection": true,
+  "reused_outcomes_are_new_evidence": false,
+  "execution_enabled": false,
+  "promotion_ready": false,
+  "profitability_proven": false
+}

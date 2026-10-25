@@ -1,0 +1,14 @@
+{
+  "raw_message_types": {
+    "subscribed": 518,
+    "orderbook_snapshot": 2078,
+    "orderbook_delta": 75922
+  },
+  "epoch_count": 259,
+  "input_event_count": 361,
+  "input_ticker_count": 363,
+  "input_epoch_ticker_groups": 1568,
+  "max_input_history_span_seconds": 300.5108003616333,
+  "groups_at_least_300_seconds": 4,
+  "not_full_source_reaudit": true
+}

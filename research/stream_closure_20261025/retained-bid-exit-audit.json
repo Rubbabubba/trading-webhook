@@ -1,0 +1,551 @@
+{
+  "schema": "conditional_bid_exit_audit_v1_20261024",
+  "scope": "All six newly captured v4 signals; five complete paths, one incomplete retained. Diagnostic on inspected data, not a new strategy test.",
+  "receipts_hash_verified": 20,
+  "marks_arithmetic_and_time_verified": 17,
+  "complete_signals": 5,
+  "complete_events": 5,
+  "totals_complete_only": {
+    "5": {
+      "challenger": {
+        "conditional_paths": 5,
+        "midpoint_stressed_cents": "2",
+        "bid_exit_stressed_cents": "-20"
+      },
+      "frozen_v10": {
+        "conditional_paths": 0,
+        "midpoint_stressed_cents": null,
+        "bid_exit_stressed_cents": null
+      },
+      "frozen_v12": {
+        "conditional_paths": 5,
+        "midpoint_stressed_cents": "12",
+        "bid_exit_stressed_cents": "-10"
+      }
+    },
+    "30": {
+      "challenger": {
+        "conditional_paths": 5,
+        "midpoint_stressed_cents": "5/2",
+        "bid_exit_stressed_cents": "-16"
+      },
+      "frozen_v10": {
+        "conditional_paths": 0,
+        "midpoint_stressed_cents": null,
+        "bid_exit_stressed_cents": null
+      },
+      "frozen_v12": {
+        "conditional_paths": 5,
+        "midpoint_stressed_cents": "25/2",
+        "bid_exit_stressed_cents": "-6"
+      }
+    },
+    "300": {
+      "challenger": {
+        "conditional_paths": 5,
+        "midpoint_stressed_cents": "5/2",
+        "bid_exit_stressed_cents": "-16"
+      },
+      "frozen_v10": {
+        "conditional_paths": 0,
+        "midpoint_stressed_cents": null,
+        "bid_exit_stressed_cents": null
+      },
+      "frozen_v12": {
+        "conditional_paths": 5,
+        "midpoint_stressed_cents": "25/2",
+        "bid_exit_stressed_cents": "-6"
+      }
+    }
+  },
+  "rows": [
+    {
+      "signal_id": 1,
+      "ticker": "KXKBLGAME-26OCT240330THUPHO-PHO",
+      "event": "KXKBLGAME-26OCT240330THUPHO",
+      "horizon": 5,
+      "lateness_seconds": 0.3715081,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "1ac034c2d52fda3581e45fd59de8b5e9b2948e182aac6beced4dee4ececfb88c",
+      "challenger": {
+        "midpoint_stressed_cents": "1/2",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "5/2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 1,
+      "ticker": "KXKBLGAME-26OCT240330THUPHO-PHO",
+      "event": "KXKBLGAME-26OCT240330THUPHO",
+      "horizon": 30,
+      "lateness_seconds": 0.3479404,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "1ac034c2d52fda3581e45fd59de8b5e9b2948e182aac6beced4dee4ececfb88c",
+      "challenger": {
+        "midpoint_stressed_cents": "1/2",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "5/2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 1,
+      "ticker": "KXKBLGAME-26OCT240330THUPHO-PHO",
+      "event": "KXKBLGAME-26OCT240330THUPHO",
+      "horizon": 300,
+      "lateness_seconds": 0.296612,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "1ac034c2d52fda3581e45fd59de8b5e9b2948e182aac6beced4dee4ececfb88c",
+      "challenger": {
+        "midpoint_stressed_cents": "1/2",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "5/2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 2,
+      "ticker": "KXKBLGAME-26OCT240330EGIGOY-EGI",
+      "event": "KXKBLGAME-26OCT240330EGIGOY",
+      "horizon": 5,
+      "lateness_seconds": 0.2443662,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "8ad25c6fcf6260fde859e262b464a9f136ba4fbfde98a047d71c97524586112b",
+      "challenger": {
+        "midpoint_stressed_cents": "0",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 2,
+      "ticker": "KXKBLGAME-26OCT240330EGIGOY-EGI",
+      "event": "KXKBLGAME-26OCT240330EGIGOY",
+      "horizon": 30,
+      "lateness_seconds": 0.14849,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "8ad25c6fcf6260fde859e262b464a9f136ba4fbfde98a047d71c97524586112b",
+      "challenger": {
+        "midpoint_stressed_cents": "0",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 2,
+      "ticker": "KXKBLGAME-26OCT240330EGIGOY-EGI",
+      "event": "KXKBLGAME-26OCT240330EGIGOY",
+      "horizon": 300,
+      "lateness_seconds": 0.1369278,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "8ad25c6fcf6260fde859e262b464a9f136ba4fbfde98a047d71c97524586112b",
+      "challenger": {
+        "midpoint_stressed_cents": "0",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 3,
+      "ticker": "KXLIGAMX1HTOTAL-26OCT24MONCDG-2",
+      "event": "KXLIGAMX1HTOTAL-26OCT24MONCDG",
+      "horizon": 5,
+      "lateness_seconds": 0.2546462,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "982eddb4d8c0aecf69283ffc37cf58b096412166068b6269b9379cc8c32ae7a1",
+      "challenger": {
+        "midpoint_stressed_cents": "1",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "3",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 3,
+      "ticker": "KXLIGAMX1HTOTAL-26OCT24MONCDG-2",
+      "event": "KXLIGAMX1HTOTAL-26OCT24MONCDG",
+      "horizon": 30,
+      "lateness_seconds": 0.177939,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "982eddb4d8c0aecf69283ffc37cf58b096412166068b6269b9379cc8c32ae7a1",
+      "challenger": {
+        "midpoint_stressed_cents": "1",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "3",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 3,
+      "ticker": "KXLIGAMX1HTOTAL-26OCT24MONCDG-2",
+      "event": "KXLIGAMX1HTOTAL-26OCT24MONCDG",
+      "horizon": 300,
+      "lateness_seconds": 0.2111897,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "982eddb4d8c0aecf69283ffc37cf58b096412166068b6269b9379cc8c32ae7a1",
+      "challenger": {
+        "midpoint_stressed_cents": "1",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "3",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 4,
+      "ticker": "KXNBA1HSPREAD-26OCT24BKNCLE-CLE5",
+      "event": "KXNBA1HSPREAD-26OCT24BKNCLE",
+      "horizon": 5,
+      "lateness_seconds": 0.2448573,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "d85e9b1c65bfea8059f5bbc5589b46f8d82c5906c42bb9899b41a56414351a7b",
+      "challenger": {
+        "midpoint_stressed_cents": "1/2",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "5/2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 4,
+      "ticker": "KXNBA1HSPREAD-26OCT24BKNCLE-CLE5",
+      "event": "KXNBA1HSPREAD-26OCT24BKNCLE",
+      "horizon": 30,
+      "lateness_seconds": 0.2494924,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "9d6932c662919da08a917d08d8f320f7d5f956db0e43ffcc28c07d872f5d4241",
+      "challenger": {
+        "midpoint_stressed_cents": "1",
+        "bid_exit": {
+          "gross_cents": "2",
+          "stressed_cents": "0"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "3",
+        "bid_exit": {
+          "gross_cents": "4",
+          "stressed_cents": "2"
+        }
+      }
+    },
+    {
+      "signal_id": 4,
+      "ticker": "KXNBA1HSPREAD-26OCT24BKNCLE-CLE5",
+      "event": "KXNBA1HSPREAD-26OCT24BKNCLE",
+      "horizon": 300,
+      "lateness_seconds": 0.2770657,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "e324885b779fc7bb93da76669bae3877b29ea4814b1765f667a4c3475de13fa2",
+      "challenger": {
+        "midpoint_stressed_cents": "1",
+        "bid_exit": {
+          "gross_cents": "2",
+          "stressed_cents": "0"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "3",
+        "bid_exit": {
+          "gross_cents": "4",
+          "stressed_cents": "2"
+        }
+      }
+    },
+    {
+      "signal_id": 5,
+      "ticker": "KXNCAAMBGAME-26NOV01NDVILL-VILL",
+      "event": "KXNCAAMBGAME-26NOV01NDVILL",
+      "horizon": 5,
+      "lateness_seconds": 0.3651732,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "fcd7fa7684dee6b1f750501138f34ea5beaadfb73cbc88f89cb72d56880d7058",
+      "challenger": {
+        "midpoint_stressed_cents": "0",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 5,
+      "ticker": "KXNCAAMBGAME-26NOV01NDVILL-VILL",
+      "event": "KXNCAAMBGAME-26NOV01NDVILL",
+      "horizon": 30,
+      "lateness_seconds": 0.3819414,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "fcd7fa7684dee6b1f750501138f34ea5beaadfb73cbc88f89cb72d56880d7058",
+      "challenger": {
+        "midpoint_stressed_cents": "0",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 5,
+      "ticker": "KXNCAAMBGAME-26NOV01NDVILL-VILL",
+      "event": "KXNCAAMBGAME-26NOV01NDVILL",
+      "horizon": 300,
+      "lateness_seconds": 0.27858,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "fcd7fa7684dee6b1f750501138f34ea5beaadfb73cbc88f89cb72d56880d7058",
+      "challenger": {
+        "midpoint_stressed_cents": "0",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 6,
+      "ticker": "KXISRPLBTTS-26OCT24MTAHAI-BTTS",
+      "event": "KXISRPLBTTS-26OCT24MTAHAI",
+      "horizon": 5,
+      "lateness_seconds": 0.2860689,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "1251226795e0fd81c93c7c82ccb9b8aabd34bd8971f408e3891a21a2629dd87f",
+      "challenger": {
+        "midpoint_stressed_cents": "1/2",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "5/2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    },
+    {
+      "signal_id": 6,
+      "ticker": "KXISRPLBTTS-26OCT24MTAHAI-BTTS",
+      "event": "KXISRPLBTTS-26OCT24MTAHAI",
+      "horizon": 30,
+      "lateness_seconds": 0.5388276,
+      "entry_filled": false,
+      "exchange_timestamp_verified": false,
+      "counterfactual_only": true,
+      "receipt_sha256": "1251226795e0fd81c93c7c82ccb9b8aabd34bd8971f408e3891a21a2629dd87f",
+      "challenger": {
+        "midpoint_stressed_cents": "1/2",
+        "bid_exit": {
+          "gross_cents": "-2",
+          "stressed_cents": "-4"
+        }
+      },
+      "frozen_v10": {
+        "no_trade": true
+      },
+      "frozen_v12": {
+        "midpoint_stressed_cents": "5/2",
+        "bid_exit": {
+          "gross_cents": "0",
+          "stressed_cents": "-2"
+        }
+      }
+    }
+  ],
+  "missing_terminal": [
+    [
+      6,
+      300,
+      "missed_window",
+      1792861757.300628
+    ]
+  ],
+  "actual_fills": 0,
+  "entry_fillability_verified": false,
+  "profitability_proven": false,
+  "production_changed": false
+}
