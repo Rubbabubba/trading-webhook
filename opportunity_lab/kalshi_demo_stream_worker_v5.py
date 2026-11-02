@@ -13,6 +13,7 @@ import time
 
 from .kalshi_collection_recovery import RecoveryArchive as Archive, retained_evidence, lifetime_start
 from .kalshi_demo_stream_source import SourceFault
+from .kalshi_historical_diagnostics import fault_receipt
 from .kalshi_stream_availability_v5 import AvailabilityBooks as Books
 
 URL = 'wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2'
@@ -293,7 +294,7 @@ class Service:
                         and str(exc) in {'archive_capacity','archive_low_disk',
                                          'archive_connection_capacity','database or disk is full'})
                     self.publish({'state': 'capacity_stop' if capacity else 'source_or_transport_fault',
-                                  'error_class': type(exc).__name__, **archive.status(),
+                                  'error_class': type(exc).__name__, 'fault_receipt': fault_receipt(exc, time.time()), **archive.status(),
                                   'storage_stop_reason':str(exc) if capacity else None,
                                   'source_fault_code': str(exc) if isinstance(exc,SourceFault) and re.fullmatch(r'[a-z_]{1,80}',str(exc)) else None})
                     if capacity:

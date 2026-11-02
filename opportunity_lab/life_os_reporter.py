@@ -27,6 +27,14 @@ def publish(packet: dict, *, url: str | None = None, token: str | None = None) -
     worker = packet.get("worker") or {}
     if worker.get("environment") != "demo" or worker.get("production_execution_enabled") is not False:
         raise ValueError("Only Kalshi demo reports may be sent to Life OS")
+    from .kalshi_historical_diagnostics import collect
+    try:
+        history = collect(Path("/var/data/kalshi-demo-v9"))
+    except Exception as error:
+        # Optional historical recovery cannot stop the original monitor export.
+        history = {"schema":"kalshi_historical_diagnostics_v1_20261101",
+                   "coverage_error":type(error).__name__}
+    packet = dict(packet, historical_diagnostics=history)
     body = json.dumps(packet, separators=(",", ":")).encode("utf-8")
     if len(body) > 200_000:
         raise ValueError("Life OS Kalshi report exceeds the intake limit")
