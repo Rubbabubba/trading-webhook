@@ -1696,6 +1696,8 @@ def write_status(path, state, journal, **values):
     current_evidence['measurement_scheduler'] = state.load('measurement_scheduler', {})
     current_evidence['sampling_book_health'] = state.load('sampling_window_book_health', {})
     current_evidence['rule_vintage_archive'] = rule_archive_status(state.db)
+    metadata=getattr(state,'metadata_capture',None)
+    if metadata is not None:current_evidence['metadata_capture']=metadata.status()
     stream = getattr(state, 'stream_service', None)
     if stream is not None:
         current_evidence['demo_stream_source'] = stream.status()
@@ -1805,6 +1807,9 @@ def run(data_root, *, cycles=None):
     # Root worker lock is already held; duplicate processes cannot open the stream archive.
     state.stream_service = DemoStreamService(root).start() if cycles is None else None
     markets.stream_source=state.stream_service
+    from .kalshi_metadata_capture import MetadataCapture
+    state.metadata_capture=MetadataCapture(root).start() if cycles is None else None
+    markets.metadata_capture=state.metadata_capture
     try:
         release_legacy_uncertainty_stop(state, journal)
         check_exchange(client)
@@ -2102,6 +2107,7 @@ def run(data_root, *, cycles=None):
             cycle += 1
             if cycles is None or cycle < cycles: time.sleep(2)
     finally:
+        if state.metadata_capture is not None:state.metadata_capture.close()
         if state.stream_service is not None:state.stream_service.close()
         if state.continuing_capture is not None:state.continuing_capture.close()
         journal.close(); state.close(); lock.close()

@@ -853,6 +853,7 @@ def check(status, checkpoint, registration, *, now, v12_registration=None):
         "high_edge_two_tick_shadow": (status.get('evidence') or {}).get('high_edge_two_tick_shadow'),
         "timely_shadow_measurement": (status.get('evidence') or {}).get('timely_shadow_measurement'),
         "rule_vintage_archive": (status.get('evidence') or {}).get('rule_vintage_archive'),
+        "metadata_capture": (status.get('evidence') or {}).get('metadata_capture'),
         "continuing_capture": (status.get('evidence') or {}).get('continuing_capture'),
         "demo_stream_source": compact_stream_status((status.get('evidence') or {}).get('demo_stream_source')),
         "market_read_health": (status.get('evidence') or {}).get('market_read_health'),

@@ -1,0 +1,21 @@
+{
+  "schema": "kalshi_existing_get_metadata_capture_v1_20261102",
+  "purpose": "Retain entity bytes from already scheduled Demo metadata GETs; no extra reads or orders.",
+  "hypothesis": "Transport provenance and explicit missing Age can be retained prospectively without changing any frozen strategy or decision.",
+  "duration_seconds": 21600,
+  "maximum_receipts": 1000,
+  "maximum_payload_bytes": 4194304,
+  "maximum_entity_bytes": 65536,
+  "database_bytes": 8388608,
+  "journal_bytes": 8388608,
+  "free_floor_bytes": 134217728,
+  "queue_slots": 8,
+  "start": "First process initialization at new exclusive registered path; immutable across restart.",
+  "stop": "First time, count, payload, physical resource or durable storage stop; no rollover or extension.",
+  "comparison": "No economic test or fill simulation; independent hash/identity/clock joins only.",
+  "execution_enabled": false,
+  "fill_assumed": false,
+  "profitability_proven": false,
+  "unknown_age": "Retain null and http_age_unknown; never infer zero or exchange freshness.",
+  "risks": "Entity bytes are decoded HTTP content, not original compressed wire bytes or authenticated publication. Missing transport evidence cannot be reconstructed."
+}

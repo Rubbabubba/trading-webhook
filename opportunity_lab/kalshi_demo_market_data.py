@@ -24,7 +24,13 @@ class DemoMarkets:
         time.sleep(max(0,self.next_at-time.monotonic()));start=datetime.now(timezone.utc).timestamp()
         try:
             with self.opener.open(Request(self.BASE+path+('?' + urlencode(params) if params else '')),timeout=8) as response:
-                data=json.load(response);age=float(response.headers.get('Age','0'))
+                raw=response.read();raw_received=datetime.now(timezone.utc).timestamp()
+                data=json.loads(raw);age=float(response.headers.get('Age','0'))
+                observer=getattr(self,'metadata_capture',None)
+                if observer is not None and path.startswith('/markets/') and '/' not in path[len('/markets/'):]:
+                    try:observer.submit(raw,url=response.geturl(),method='GET',status=response.status,
+                                        requested_at=start,received_at=raw_received,age=response.headers.get('Age'))
+                    except Exception:pass  # Optional capture cannot interrupt reconciliation or decisions.
             end=datetime.now(timezone.utc).timestamp()
             if not math.isfinite(age) or not 0<=age<=2 or not 0<=end-start<=2:
                 raise ValueError('stale_demo_market_data')
