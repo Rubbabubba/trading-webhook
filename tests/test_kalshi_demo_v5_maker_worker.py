@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 import json
 
+from opportunity_lab.kalshi_binary_broker import BinaryDemoBroker
 from opportunity_lab.kalshi_binary_journal import BinaryJournal
 from opportunity_lab.kalshi_demo_v5_maker_worker import (
     EXECUTION_DISABLED_REASON,
@@ -684,6 +685,30 @@ def test_unresolved_startup_stays_healthy_read_only_and_writes_status(tmp_path):
         assert journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0] == 0
     finally:
         journal.close(); state.close()
+
+
+def test_external_startup_position_keeps_journal_stopped_and_worker_reporting(tmp_path):
+    class ExternalPositionClient:
+        def pages(self, path, _key, **_filters):
+            if path == "/portfolio/settlements":
+                return []
+            assert path == "/portfolio/positions"
+            return [{"ticker": "EXTERNAL", "position_fp": "1.00"}]
+
+    state = MakerState(tmp_path / "state.sqlite3")
+    journal = BinaryJournal(tmp_path / "journal.sqlite3", order_limit_cents=110,
+                            capital_limit_cents=160, daily_loss_cents=100)
+    try:
+        assert recover_or_report(tmp_path, state, journal, BinaryDemoBroker(journal, ExternalPositionClient())) is False
+        status = json.loads((tmp_path / "status.json").read_text())
+        assert status["phase"] == "reconciling"
+        assert status["new_submissions_enabled"] is False
+        assert status["errors"] == ["external_or_unreconciled_position"]
+        assert journal.db.execute("SELECT stopped FROM controls WHERE id=1").fetchone()[0] == 1
+        assert not journal.accounting()["positions"]
+    finally:
+        journal.close()
+        state.close()
 
 
 def test_only_legacy_uncertainty_crash_stop_is_released(tmp_path):

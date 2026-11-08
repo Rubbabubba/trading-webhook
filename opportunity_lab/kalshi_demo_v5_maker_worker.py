@@ -1770,7 +1770,9 @@ def recover_or_report(root, state, journal, broker):
         return True
     except Exception as exc:
         code = safe_cycle_error(exc)
-        if code not in RECONCILIATION_BLOCK_CODES:
+        # Ownership mismatches must keep the worker closed to submissions,
+        # but the process must stay up to report and recheck them.
+        if code not in RECONCILIATION_BLOCK_CODES and code != "external_or_unreconciled_position":
             raise
         state.record(None, {"action": "reconciliation_wait", "error_code": code})
         write_status(root / "status.json", state, journal, phase="reconciling",
