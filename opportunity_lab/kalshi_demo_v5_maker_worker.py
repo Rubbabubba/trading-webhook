@@ -789,6 +789,13 @@ def safe_cycle_error(error):
 
 
 def recover(state, journal, broker):
+    if getattr(broker, "test_inventory", None) is not None:
+        broker.reconcile_positions()
+        state.save("factory_restart_reconciliation", {
+            "reconciled_at": now_iso(), "environment": "demo", "positions_verified": True,
+            "separate_test_inventory": True, "new_submissions_enabled": False,
+        })
+        return
     for row in journal.records():
         cid = row["payload"]["client_order_id"]
         if row["state"] == "reserved":
@@ -1763,16 +1770,20 @@ def write_status(path, state, journal, **values):
         log_event("deterministic_monitor_error", error_code=safe_cycle_error(exc))
 
 
-def recover_or_report(root, state, journal, broker):
+def recover_or_report(root, state, journal, broker, *, test_inventory_receipt=None):
     """Reconcile once, remaining alive and read-only while evidence is incomplete."""
     try:
+        if test_inventory_receipt is not None and broker.test_inventory is None:
+            from .kalshi_demo_test_inventory import verify_test_inventory
+            broker.test_inventory = verify_test_inventory(test_inventory_receipt, broker.client)
         recover(state, journal, broker)
         return True
     except Exception as exc:
         code = safe_cycle_error(exc)
         # Ownership mismatches must keep the worker closed to submissions,
         # but the process must stay up to report and recheck them.
-        if code not in RECONCILIATION_BLOCK_CODES and code != "external_or_unreconciled_position":
+        if (test_inventory_receipt is None and code not in RECONCILIATION_BLOCK_CODES
+                and code != "external_or_unreconciled_position"):
             raise
         state.record(None, {"action": "reconciliation_wait", "error_code": code})
         write_status(root / "status.json", state, journal, phase="reconciling",
@@ -1789,7 +1800,11 @@ def run(data_root, *, cycles=None):
     journal = BinaryJournal(root / "journal.sqlite3", order_limit_cents=ORDER_LIMIT_CENTS,
                             capital_limit_cents=CAPITAL_LIMIT_CENTS, daily_loss_cents=DAILY_LOSS_CENTS)
     client = DemoClient(os.environ["KALSHI_DEMO_API_KEY_ID"], os.environ["KALSHI_DEMO_PRIVATE_KEY_PATH"])
-    markets = DemoMarkets(); broker = BinaryDemoBroker(journal, client)
+    inventory_receipt = root / "separate-demo-test-inventory-v1.json"
+    if not inventory_receipt.exists():
+        inventory_receipt = None
+    markets = DemoMarkets()
+    broker = BinaryDemoBroker(journal, client)
     state.market_reader = markets
     init_rule_archive(state.db)
     markets.rule_archive_db = state.db
@@ -1813,14 +1828,16 @@ def run(data_root, *, cycles=None):
     state.metadata_capture=MetadataCapture(root).start() if cycles is None else None
     markets.metadata_capture=state.metadata_capture
     try:
-        release_legacy_uncertainty_stop(state, journal)
+        if inventory_receipt is None:
+            release_legacy_uncertainty_stop(state, journal)
         check_exchange(client)
-        while not recover_or_report(root, state, journal, broker):
+        while not recover_or_report(root, state, journal, broker, test_inventory_receipt=inventory_receipt):
             cycle += 1
             if cycles is not None and cycle >= cycles:
                 return
             time.sleep(RECONCILIATION_WAIT_SECONDS)
             check_exchange(client)
+        test_inventory = getattr(broker, "test_inventory", None)
         log_event("worker_started", production_execution_enabled=False)
         while cycles is None or cycle < cycles:
             errors = []
@@ -1839,7 +1856,7 @@ def run(data_root, *, cycles=None):
                     state.save("factory_trial_last_settlement_check", time.time())
                     position, accounting = current_position(journal, state)
                 active = working_order(journal)
-                if not position and not active and state.load(V12_TRIAL_START_BALANCE_KEY) is None:
+                if test_inventory is None and not position and not active and state.load(V12_TRIAL_START_BALANCE_KEY) is None:
                     activation = broker.snapshot()["balance"]["balance"]
                     state.save(V12_TRIAL_START_BALANCE_KEY, activation)
                     state.save(V12_TRIAL_LAST_FLAT_BALANCE_KEY, activation)
@@ -1850,7 +1867,7 @@ def run(data_root, *, cycles=None):
                         "start_balance_cents": activation,
                         "production_execution_enabled": False,
                     })
-                if (not position and not active
+                if (test_inventory is None and not position and not active
                         and state.load(V12_FILLABILITY_START_BALANCE_KEY) is None):
                     activation = broker.snapshot()["balance"]["balance"]
                     state.save(V12_FILLABILITY_START_BALANCE_KEY, activation)
@@ -1958,7 +1975,7 @@ def run(data_root, *, cycles=None):
                                       pending_event[0] if pending_event else pending)
                         record_due_markouts(state, pending, frame)
                     elif measurement_optional(state, 'new_scan'):
-                        if (time.time() - float(state.load("factory_trial_last_scan", 0))
+                        if (test_inventory is None and time.time() - float(state.load("factory_trial_last_scan", 0))
                                 >= FACTORY_TRIAL_SCAN_INTERVAL_SECONDS):
                             state.save("factory_trial_last_scan", time.time())
                             completed_trials = state.load("factory_trial_completed_ids", [])
@@ -2014,12 +2031,12 @@ def run(data_root, *, cycles=None):
                                 "SELECT 1 FROM entered_events WHERE event_id=?",
                                 (independent_event,),
                             ).fetchone()
-                            if v9_submission_allowed(signal, event_locked=bool(locked)):
+                            if test_inventory is None and v9_submission_allowed(signal, event_locked=bool(locked)):
                                 result = submit(state, journal, broker, markets, market, signal["side"], "buy",
                                                 signal["price_cents"], maker=True, context=signal)
                                 if result["filled"]:
                                     register_fill(state, result, frame)
-                            elif v12_signal is not None:
+                            elif test_inventory is None and v12_signal is not None:
                                 improved, improvement_reason = v12_fillability_quote(v12_signal)
                                 if improved is None:
                                     state.record(market["ticker"], {
@@ -2064,7 +2081,7 @@ def run(data_root, *, cycles=None):
                                         register_fill(state, result, frame)
                 snapshot = broker.snapshot() if not working_order(journal) else None
                 end_accounting = journal.accounting()
-                if snapshot is not None and not end_accounting["positions"]:
+                if test_inventory is None and snapshot is not None and not end_accounting["positions"]:
                     state.save(
                         V12_FILLABILITY_LAST_FLAT_BALANCE_KEY,
                         snapshot["balance"]["balance"],
@@ -2097,9 +2114,16 @@ def run(data_root, *, cycles=None):
                         except Exception as exc:
                             try:state.continuing_capture.fault('capture_poll_'+type(exc).__name__)
                             except Exception:pass
+                hold_status = {} if test_inventory is None else {
+                    "new_submissions_enabled": False,
+                    "separate_demo_test_inventory": {
+                        "positions": test_inventory.positions,
+                        "receipt_sha256": test_inventory.receipt_sha256,
+                    },
+                }
                 write_status(root / "status.json", state, journal, phase="running", errors=[],
                              demo_balance_cents=(snapshot or {}).get("balance", {}).get("balance"),
-                             open_positions=len(end_accounting["positions"]), cohort_size=len(cohort))
+                             open_positions=len(end_accounting["positions"]), cohort_size=len(cohort), **hold_status)
                 if cycle % 30 == 0: log_event("worker_heartbeat", **evidence(state, journal))
             except Exception as exc:
                 code = safe_cycle_error(exc)

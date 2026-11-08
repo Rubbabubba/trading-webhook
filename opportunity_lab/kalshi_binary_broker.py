@@ -7,13 +7,14 @@ from .kalshi_binary_accounting import reconcile_positions
 
 
 class BinaryDemoBroker(DemoBroker):
-    def __init__(self, journal, client, *, unresolved_journals=(), quarantine_markets=None):
+    def __init__(self, journal, client, *, unresolved_journals=(), quarantine_markets=None, test_inventory=None):
         from .kalshi_binary_journal import BinaryJournal
         if not isinstance(journal,BinaryJournal):raise ValueError('binary_journal_required')
         super().__init__(journal,client)
         self.unresolved_journals=tuple(unresolved_journals)
         self.quarantine_markets=quarantine_markets
         self.quarantined_reserve_cents=0
+        self.test_inventory = test_inventory
 
     def _check_other_journals(self):
         import sqlite3
@@ -55,10 +56,16 @@ class BinaryDemoBroker(DemoBroker):
         balance=self.client.request('GET','/portfolio/balance',params={'subaccount':0})
         positions=self.client.pages('/portfolio/positions','market_positions',subaccount=0,count_filter='position')
         orders=self.client.pages('/portfolio/orders','orders',subaccount=0,status='resting')
+        if self.test_inventory is not None:
+            self.test_inventory.reconcile(self.journal.accounting(), positions)
+            if orders:
+                raise ValueError('external_resting_orders')
         return dict(environment=self.journal.environment,started_at=start,observed_at=self.journal.clock().timestamp(),balance=balance,
                     positions=positions,resting_orders=orders,quarantined_reserve_cents=self.quarantined_reserve_cents)
 
     def submit(self, client_id, *, quote_snapshot=None, quote_provider=None, demo_probe=False):
+        if self.test_inventory is not None:
+            raise ValueError('demo_test_inventory_submission_hold')
         if self.journal.get(client_id)['state']!='reserved':raise ValueError('submission_not_allowed')
         check_exchange(self.client)
         snapshot=self.snapshot()
@@ -98,7 +105,11 @@ class BinaryDemoBroker(DemoBroker):
         if any(r['state'] not in allowed for r in self.journal.records()):raise ValueError('orders_not_terminal')
         rows=self.client.pages('/portfolio/positions','market_positions',subaccount=0,count_filter='position')
         try:
-            reconcile_positions(self.journal.accounting(),rows)
+            accounting = self.journal.accounting()
+            if self.test_inventory is None:
+                reconcile_positions(accounting, rows)
+            else:
+                self.test_inventory.reconcile(accounting, rows)
             if self.client.pages('/portfolio/orders','orders',subaccount=0,status='resting'):
                 raise ValueError('external_resting_orders')
         except Exception:
