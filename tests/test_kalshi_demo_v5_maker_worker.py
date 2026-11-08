@@ -589,6 +589,23 @@ def test_long_discovery_rotates_previous_universe_before_new_candidates(tmp_path
         state.close()
 
 
+def test_partial_discovery_admits_new_event_when_older_markets_near_close(tmp_path):
+    state = MakerState(tmp_path / "state.sqlite3")
+    existing = [candidate("LIVE-A", "LIVE")]
+    for index in range(2):
+        old = candidate(f"OLD-{index}", f"OLD-{index}")
+        old["close_time"] = "1970-01-01T00:50:00+00:00"
+        existing.append(old)
+    markets = FakeMarkets([[candidate("NEW-A", "NEW")], []])
+    try:
+        cohort, cohort_at = refresh_cohort(state, markets, existing, 100.0, now=2000.0)
+        assert {row["ticker"] for row in cohort} == {"LIVE-A", "NEW-A"}
+        assert cohort_at == 2000.0
+        assert state.load("market_discovery")["in_progress"] is True
+    finally:
+        state.close()
+
+
 def test_long_discovery_expands_underfilled_cohort_before_rotation_ttl(tmp_path):
     state = MakerState(tmp_path / "state.sqlite3")
     existing = [candidate(f"OLD-{index}", f"OLD-{index}") for index in range(16)]

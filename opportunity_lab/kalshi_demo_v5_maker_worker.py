@@ -447,12 +447,12 @@ def refresh_cohort(state, markets, cohort, cohort_at, *, now):
         # every newly discovered event. Per-market book reads revalidate each
         # candidate, and the completed pass later removes stale events.
         partial = select_maker_markets(partial + cohort, now=now)
-        # During a long universe walk, expand the active scan set whenever a
-        # new eligible event appears. Never replace a broad serving set with a
-        # smaller partial page while the full discovery pass is incomplete.
+        # The union above preserves every still-eligible event in the serving
+        # cohort. Its count can fall as old markets near close, even while
+        # the partial pass adds new eligible events.
         old_tickers = {market["ticker"] for market in cohort}
         new_tickers = {market["ticker"] for market in partial}
-        if partial and len(partial) >= len(cohort) and new_tickers != old_tickers:
+        if partial and new_tickers != old_tickers:
             state.save("cohort", partial)
             state.save("cohort_at", now)
             state.record(None, {
