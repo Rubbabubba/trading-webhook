@@ -1,0 +1,74 @@
+{
+  "protocol": "qualified_wallet_sports_first_read_only_v2",
+  "execution_enabled": false,
+  "wallets": [
+    "0x2a69660046d7acc4ab204d7cc5ba78b0776cd2f7",
+    "0x6ac5bb06a9eb05641fd5e82640268b92f3ab4b6e",
+    "0x684baa57c338c2549aec0aa3f034f695d72a8409",
+    "0x60a92c8620846d81f5ea17b0564e0d4b7c545a71"
+  ],
+  "mappings": [
+    {
+      "condition_id": "0x892d1e281ad603dffc0361a23072a601c14025da05a512f9f3812dbff5414b5c",
+      "token_id": "80715501435278800376538251697430664442452728911302405234327845338824540021870",
+      "ticker": "KXTIME-26-MAR",
+      "event_ticker": "KXTIME-26",
+      "side": "yes",
+      "decision": "diagnostic",
+      "kalshi_rules": {
+        "rules_primary": "If Marco Rubio is Time Person of the Year for 2026, then the market resolves to Yes.",
+        "rules_secondary": "This will count towards the payout criterion: \nIf multiple persons win, all persons that are listed are encompassed within the Payout Criterion. If, for example, the Person of the Year is \u201cJoe Biden and Kamala Harris\u201d, both \u201cJoe Biden\u201d and \u201cKamala Harris\u201d strikes are encompassed within the Payout Criterion. \nThe person must be explicitly named as the Person of the Year or pictured on the/a relevant cover if they are associated with the group/concept winning (the picture is only relevant for a natural human being winning). Some examples to illustrate this: \u201cJamal Khasogghi\u201d would resolve to Yes in 2018, when \u201cThe Guardians\u201d won, as he is also named and shown on a cover and falls within \u201cThe Guardians\u201d. Similarly, \u201cBill Gates\u201d would resolve to Yes in 2005. \nIf Time uses language that does not specifically refer to a person or organization (examples being 2018\u2019s \u201cThe Guardians of Truth\u201d or 2017\u2019s \u201cThe Silence Breakers\u201d), Kalshi will resolve markets to the most simple meaning reasonable. In those cases, \u201cJournalists\u201d and \u201cthe Me Too movement\u201d would resolve to Yes.\n\nThis does NOT count towards the payout criterion: \nIf there is no Person of the Year (and instead many variations thereof, e.g. Entertainer of the Year, Hero of the Year), that is not encompassed in the Payout Criterion. \nIf \u201cChatGPT\u201d was the Person of the Year, strikes of \u201cAI\u201d or \u201cLLMs\u201d would resolve to No, since even if they are conceptually linked, they are not synonymous (and thus are not explicitly named), and are not persons, so it would not matter if they were identified in the image. Or if \u201cSam Altman\u201d was the Person of the Year, and the cover showed a person using ChatGPT on their computer, \u201cChatGPT\u201d would not resolve to Yes because it is not a person.\n\nThis market and these products have not been endorsed by TIME. Any references to TIME, or any associated marks are descriptive only and do not indicate an endorsement of this product or any affiliation between TIME and Kalshi.",
+        "close_time": "2027-01-01T04:59:00Z"
+      }
+    },
+    {
+      "condition_id": "0x0e9d7335ee3eb0add746b555b39a8dd45533f628d607a4b927955ef51a9488b2",
+      "token_id": "11427400247473534107034432151006615273573850507768387073827423868179178269563",
+      "ticker": "KXNFLGAME-26NOV08TBCHI-TB",
+      "event_ticker": "KXNFLGAME-26NOV08TBCHI",
+      "side": "yes",
+      "decision": "diagnostic",
+      "kalshi_rules": {
+        "rules_primary": "If Tampa Bay wins the Tampa Bay vs Chicago Pro Football game originally scheduled for Nov 8, 2026, then the market resolves to Yes.",
+        "rules_secondary": "The following market refers to the team who wins the Tampa Bay vs Chicago Pro Football game originally scheduled for Nov 8, 2026. If the game ends in a tie, the market will resolve to $0.50 for each team. If the game is postponed but begins within 48 hours from its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is not started within 48 hours, the market will resolve to a fair price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+      }
+    },
+    {
+      "condition_id": "0x89eecbecb6095c2738badb8ae08509daa859528605e3d3e08261959f6c1bcf71",
+      "token_id": "52801236811279265721158547548598938815667318237588710394936432465867060790373",
+      "ticker": "KXNFLSPREAD-26NOV08TBCHI-CHI7",
+      "event_ticker": "KXNFLSPREAD-26NOV08TBCHI",
+      "side": "no",
+      "decision": "diagnostic",
+      "kalshi_rules": {
+        "rules_primary": "If Chicago wins by more than 6.5 points in the Tampa Bay vs Chicago Pro Football game originally scheduled for Nov 8, 2026, then the market resolves to Yes.",
+        "rules_secondary": "Kalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+      }
+    },
+    {
+      "condition_id": "0x2737f507596e6a40ebce7b1f138e904dd460b347febde159cc16eb8c62c00b96",
+      "token_id": "58289239261271766265026058442996157007692541861495498696286722482331682255959",
+      "ticker": "KXNBAGAME-26NOV08NOPLAC-NOP",
+      "event_ticker": "KXNBAGAME-26NOV08NOPLAC",
+      "side": "yes",
+      "decision": "diagnostic",
+      "kalshi_rules": {
+        "rules_primary": "If New Orleans wins the New Orleans vs Los Angeles C Pro Basketball game originally scheduled for Nov 8, 2026, then the market resolves to Yes.",
+        "rules_secondary": "If the game is postponed but begins within 48 hours of its originally scheduled start time, the market will remain open and resolve based on the official final result. If the game is cancelled or not started within 48 hours of its originally scheduled start, all markets will resolve to a fair price.\n\nKalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners."
+      }
+    }
+  ],
+  "source_sha256": {
+    "polymarket-wallet-discovery-v2-20261109.json": "728c0acfaaeded78a7020c1043fae8df66d28dd3a3605d2f37982b8a3d3bfff3",
+    "rubio-time-polymarket-rule-check-20261109.json": "60386a7cd6633efaa3596d0aeb3392cb31c741d7663eacdaf36877fa693f8200",
+    "rubio-time-kalshi-listing-check-20261109T024702Z.json": "2284d04082ad79805ca6ad148954e651ff99422d9e73ba5ef32be8429309161f",
+    "qualified-wallet-nfl-quote-diagnostic-v1-registration.json": "8769f68ba99a787fca91db00f493bca5f1e314616deb39e063fd15cb587ac433",
+    "qualified-wallet-nba-quote-diagnostic-v1-registration.json": "00987b12bb830ccf6de296c5f09cf0fd03048fce3051a90f55e3d8c2da0b608e"
+  },
+  "scope": "Public GET only. Query full-game NBA/NFL markets for three sports wallets. Keep existing reviewed mappings and journal unmatched trades. Sports discovery compares completed-game terms and flags exceptional settlement. Continue only through the predecessor expiry; no automatic rollover or execution.",
+  "sports_discovery_wallets": [
+    "0x2a69660046d7acc4ab204d7cc5ba78b0776cd2f7",
+    "0x6ac5bb06a9eb05641fd5e82640268b92f3ab4b6e",
+    "0x684baa57c338c2549aec0aa3f034f695d72a8409"
+  ]
+}

@@ -110,7 +110,7 @@ def read_quote(mapping, base, read=public_get, *, deadline=None):
     book, sent, received, age, date = read(base + "/markets/" + ticker + "/orderbook", {"depth": 20})
     market = read(base + "/markets/" + ticker)[0]["market"]
     if (market["ticker"] != ticker or market["status"] != "active" or market["market_type"] != "binary"
-            or market.get("exchange_index", 0) != 0
+            or market.get("exchange_index", 0) != mapping.get("exchange_index", 0)
             or market["event_ticker"] != mapping["event_ticker"]
             or any(market.get(k) != v for k, v in mapping["kalshi_rules"].items())):
         raise ValueError("wallet_market_changed")
@@ -126,6 +126,9 @@ def read_quote(mapping, base, read=public_get, *, deadline=None):
 
 def read_fee(quote, base, read=public_get):
     from datetime import datetime, timezone
+    exchange_index = quote["market"].get("exchange_index", 0)
+    if exchange_index != 0:
+        raise ValueError("wallet_fee_exchange_unverified")
     event_id = quote["market"]["event_ticker"]
     if not TICKER.fullmatch(event_id):
         raise ValueError("invalid_wallet_event")
@@ -135,7 +138,7 @@ def read_fee(quote, base, read=public_get):
         raise ValueError("invalid_wallet_series")
     data, _, received, _, _ = read(base + "/series/" + series_id)
     return fee_basis({"event_id": event_id, "price_cents": cents(price_book(quote, quote["side"])[1]),
-                      "market_type": "binary", "exchange_index": 0,
+                      "market_type": "binary", "exchange_index": exchange_index,
                       "observed_at": datetime.fromtimestamp(quote["observed_at"], timezone.utc).isoformat()},
                      event, data["series"], fetched_at=received)
 
@@ -146,13 +149,33 @@ def load_policy(path):
     if (policy["execution_enabled"] is not False or len(wallets) != 4 or len(set(wallets)) != 4
             or any(not WALLET.fullmatch(wallet) for wallet in wallets)):
         raise ValueError("read_only_screened_wallet_policy_required")
+    sports_wallets = policy.get("sports_discovery_wallets", [])
+    if not isinstance(sports_wallets, list) or not set(sports_wallets) <= set(wallets):
+        raise ValueError("invalid_sports_discovery_wallets")
     mappings = {(m["condition_id"], m["token_id"]): m for m in policy["mappings"]}
     if len(mappings) != len(policy["mappings"]):
         raise ValueError("duplicate_wallet_mapping")
     return policy, mappings
 
 
-def monitor_tick(db, wallets, mappings, since, read):
+def _read_trade_quote(trade, mapping, base, read):
+    deadline = trade["observed_at"] + 2
+    if mapping is None:
+        from .kalshi_wallet_sports import discover
+        if time.time() > deadline:
+            raise ValueError("wallet_quote_dispatch_late")
+        mapping = discover(trade, base, read)
+    if "sports_match" not in mapping:
+        return read_quote(mapping, base, read, deadline=deadline)
+    try:
+        quote = read_quote(mapping, base, read, deadline=deadline)
+    except Exception as exc:
+        quote = {key: mapping[key] for key in ("ticker", "event_ticker", "side", "exchange_index")}
+        quote["error"] = str(exc) if isinstance(exc, ValueError) else getattr(exc, "code", type(exc).__name__)
+    return {**quote, "sports_match": mapping["sports_match"]}
+
+
+def monitor_tick(db, wallets, mappings, since, read, *, sports_wallets=()):
     errors, scheduled = {}, {}
     with ThreadPoolExecutor(max_workers=4) as source_pool, ThreadPoolExecutor(max_workers=8) as quote_pool:
         sources = {source_pool.submit(read_buys, wallet, since, read): wallet for wallet in wallets}
@@ -168,14 +191,15 @@ def monitor_tick(db, wallets, mappings, since, read):
                                   (key, json.dumps(trade))).rowcount:
                     continue
                 mapping = mappings.get((trade["condition_id"], trade["token_id"]))
+                discover_sports = (trade["proxy_wallet"] in sports_wallets
+                                   and str(trade.get("event_slug")).startswith(("nba-", "nfl-")))
                 age = trade["observed_at"] - trade["timestamp"]
-                state = ("unmapped" if mapping is None else
+                state = ("unmapped" if mapping is None and not discover_sports else
                          "stale_or_quote_budget" if not -10 <= age <= 30 or len(scheduled) >= 4 else None)
                 if state:
                     db.execute("UPDATE buys SET state=? WHERE id=?", (state, key))
                     continue
-                scheduled[key] = {venue: (base, quote_pool.submit(read_quote, mapping, base, read,
-                                          deadline=trade["observed_at"] + 2))
+                scheduled[key] = {venue: (base, quote_pool.submit(_read_trade_quote, trade, mapping, base, read))
                                   for venue, base in (("production", PRODUCTION), ("demo", DEMO))}
         for key, jobs in scheduled.items():
             detail = {}
@@ -186,10 +210,12 @@ def monitor_tick(db, wallets, mappings, since, read):
                     detail[venue] = {"error": str(exc) if isinstance(exc, ValueError)
                                      else getattr(exc, "code", type(exc).__name__)}
                     continue
+                if "ask" not in quote:
+                    continue
                 try:
                     quote["fee_basis"] = read_fee(quote, base, read)
                 except Exception as exc:
-                    quote["fee_error"] = getattr(exc, "code", type(exc).__name__)
+                    quote["fee_error"] = str(exc) if isinstance(exc, ValueError) else getattr(exc, "code", type(exc).__name__)
             db.execute("UPDATE buys SET state='quote_attempted',evidence=? WHERE id=?", (json.dumps(detail), key))
     return errors
 
@@ -225,7 +251,8 @@ def capture(root, policy_path, *, stop=None, duration=86400, read=public_get):
             while not stop.is_set() and time.time() < expires:
                 tick = time.monotonic()
                 since = max(0, int(max(started - 10, time.time() - 40)))
-                errors = monitor_tick(db, policy["wallets"], mappings, since, read)
+                errors = monitor_tick(db, policy["wallets"], mappings, since, read,
+                                      sports_wallets=policy.get("sports_discovery_wallets", ()))
                 status = (time.time(), json.dumps({"poll_errors": errors, "wallets": len(policy["wallets"])},
                                                   sort_keys=True))
                 if previous is None or status[1] != previous[1] or status[0] - previous[0] > 10:
