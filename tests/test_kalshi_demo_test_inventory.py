@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -69,4 +70,38 @@ def test_wrong_fill_fails_before_inventory_is_admitted(inventory):
     receipt, client, fill, _ = inventory
     fill["yes_price_dollars"] = "0.19"
     with pytest.raises(ValueError, match="test_inventory_fill_price_mismatch"):
+        verify_test_inventory(receipt, client)
+
+
+def test_reconciled_closing_fill_admits_flat_inventory_with_submission_hold(inventory, tmp_path):
+    receipt, client, opening, _ = inventory
+    original_request = client.request
+    closing_identity = dict(ticker="TEST", order_id="close-order", subaccount_number=0,
+                            book_side="bid", outcome_side="yes")
+    close = dict(ticker="TEST", order_id="close-order", fill_id="close-fill",
+                 client_order_id="wallet-close-20261109-test", fee_cost="0.02", yes_price_dollars="0.21")
+    closing_order = dict(closing_identity, client_order_id=close["client_order_id"], status="executed",
+                         initial_count_fp="1.00", fill_count_fp="1.00", remaining_count_fp="0.00")
+    closing_fill = dict(closing_identity, fill_id="close-fill", count_fp="1.00",
+                        fee_cost="0.02", yes_price_dollars="0.21")
+    client.request = lambda method, path, **kw: (
+        {"order": closing_order} if (method, path) == ("GET", "/portfolio/orders/close-order")
+        else original_request(method, path, **kw)
+    )
+    client.pages = lambda path, *_args, **_kw: [opening, closing_fill] if path.endswith("/fills") else []
+    receipt.with_name("separate-demo-test-inventory-close-v1.json").write_text(json.dumps(dict(
+        environment="demo", subaccount=0, opening_sha256=hashlib.sha256(receipt.read_bytes()).hexdigest(),
+        positions=[close])))
+    inventory = verify_test_inventory(receipt, client)
+    assert inventory.positions == {}
+    journal = BinaryJournal(tmp_path / "flat.sqlite3")
+    try:
+        broker = BinaryDemoBroker(journal, client, test_inventory=inventory)
+        assert broker.snapshot()["positions"] == []
+        with pytest.raises(ValueError, match="demo_test_inventory_submission_hold"):
+            broker.submit("unexpected")
+    finally:
+        journal.close()
+    closing_fill["fee_cost"] = "0.03"
+    with pytest.raises(ValueError, match="test_inventory_close_mismatch"):
         verify_test_inventory(receipt, client)
