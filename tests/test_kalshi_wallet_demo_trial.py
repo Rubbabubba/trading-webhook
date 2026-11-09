@@ -33,9 +33,18 @@ def example():
     return registration, trade, quote, now
 
 
-def test_exact_demo_quote_at_all_in_cap(example):
+@pytest.mark.parametrize("wallet_price", ["0.38", "0.42", "0.46"])
+def test_exact_demo_quote_including_both_band_endpoints(example, wallet_price):
     registration, trade, quote, now = example
+    trade["price"] = wallet_price
     assert evaluate(registration, trade, quote, now=now, offset_low=-.5, offset_high=.5) == (40, 2)
+
+
+def test_buffalo_price_difference_fits_band(example):
+    registration, trade, quote, now = example
+    trade["price"] = "0.61"
+    quote["orderbook_fp"] = {"yes_dollars": [["0.61", "2"]], "no_dollars": [["0.38", "1330.88"]]}
+    assert evaluate(registration, trade, quote, now=now, offset_low=-.5, offset_high=.5) == (62, 2)
 
 
 @pytest.mark.parametrize("bad_input,reason", [
@@ -45,6 +54,7 @@ def test_exact_demo_quote_at_all_in_cap(example):
     ("old_rules", "wallet_demo_quote_or_rules_unverified"),
     ("production", "wallet_demo_quote_or_rules_unverified"),
     ("wide", "wallet_demo_price_or_depth_guard"),
+    ("low", "wallet_demo_price_or_depth_guard"),
     ("small", "wallet_demo_price_or_depth_guard"),
 ])
 def test_rejects_unqualified_input(example, bad_input, reason):
@@ -60,7 +70,9 @@ def test_rejects_unqualified_input(example, bad_input, reason):
     elif bad_input == "production":
         quote["environment"] = "production"
     elif bad_input == "wide":
-        trade["price"] = "0.4199"
+        trade["price"] = "0.3799"
+    elif bad_input == "low":
+        trade["price"] = "0.4601"
     elif bad_input == "small":
         quote["orderbook_fp"]["no_dollars"][0][1] = "0.5"
     with pytest.raises(ValueError, match=reason):

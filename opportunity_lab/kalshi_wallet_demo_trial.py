@@ -14,6 +14,7 @@ from .kalshi_shadow import price_book
 
 
 CLIENT_ID = "wallet-demo-one-contract-v1"
+PRICE_TOLERANCE_CENTS = 4
 CHECKS = {
     "outcome_and_payoff", "event_and_period", "cutoff", "resolution_source",
     "threshold_boundary", "tie_cancellation_delay_fallback_and_revision",
@@ -75,7 +76,7 @@ def evaluate(registration, trade, quote, *, now, offset_low, offset_high):
     if (type(fee) is not int or not 0 <= fee <= 5 or not 1 <= cents <= 99 or depth < 1
             or not wallet_price.is_finite() or not size.is_finite()
             or not 0 < wallet_price < 1 or size <= 0
-            or cents + fee > wallet_price * 100):
+            or abs(cents + fee - wallet_price * 100) > PRICE_TOLERANCE_CENTS):
         raise ValueError("wallet_demo_price_or_depth_guard")
     return cents, fee
 
