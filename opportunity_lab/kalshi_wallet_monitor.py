@@ -3,6 +3,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, ROUND_CEILING
 from email.utils import parsedate_to_datetime
+from fractions import Fraction
 import hashlib
 import json
 from pathlib import Path
@@ -14,9 +15,9 @@ from urllib.parse import urlencode
 from urllib.request import Request, build_opener
 
 from .kalshi_account_monitor import NoRedirect
+from .kalshi_demo_stream_source import levels
 from .kalshi_factory_fee_probe import fee_basis
 from .kalshi_process_lock import acquire
-from .kalshi_shadow import price_book
 
 ACTIVITY = "https://data-api.polymarket.com/v2/activity"
 POLY_CLOCK = "https://clob.polymarket.com/time"
@@ -99,6 +100,25 @@ def trade_key(trade):
 def cents(price):
     return int((Decimal(price.numerator) / Decimal(price.denominator) * 100)
                .to_integral_value(rounding=ROUND_CEILING))
+
+
+def price_book(frame, side):
+    """Use public depth limits rather than the private accounting amount limit."""
+    if side not in ("yes", "no"):
+        raise ValueError("wallet_book_side_invalid")
+    ladders = []
+    for outcome in (side, "no" if side == "yes" else "yes"):
+        rows = frame["orderbook_fp"][outcome + "_dollars"]
+        ladder = levels(rows)
+        if not ladder or len(ladder) != len(rows):
+            raise ValueError("wallet_book_unavailable")
+        price = max(ladder)
+        ladders.append((Fraction(price), Fraction(ladder[price])))
+    (bid, bid_depth), (opposite_bid, ask_depth) = ladders
+    ask = 1 - opposite_bid
+    if bid >= ask:
+        raise ValueError("crossed_book")
+    return bid, ask, bid_depth, ask_depth
 
 
 def read_quote(mapping, base, read=public_get, *, deadline=None):
