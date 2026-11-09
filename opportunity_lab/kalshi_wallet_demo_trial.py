@@ -15,29 +15,46 @@ from .kalshi_shadow import price_book
 
 CLIENT_ID = "wallet-demo-one-contract-v1"
 PRICE_TOLERANCE_CENTS = 4
+POSTPONEMENT_EXCEPTION = "nfl_moneyline_postponement"
+FALLBACK_CHECK = "tie_cancellation_delay_fallback_and_revision"
 CHECKS = {
     "outcome_and_payoff", "event_and_period", "cutoff", "resolution_source",
-    "threshold_boundary", "tie_cancellation_delay_fallback_and_revision",
+    "threshold_boundary", FALLBACK_CHECK,
 }
 HEX64 = r"[0-9a-f]{64}"
 RULE_FIELDS = {"rules_primary", "rules_secondary", "close_time"}
 
 
+def _admitted(mapping):
+    expected = dict.fromkeys(CHECKS, True)
+    if mapping["decision"] == "exact":
+        return mapping["checks"] == expected and all(v is True for v in mapping["checks"].values())
+    if mapping["decision"] != POSTPONEMENT_EXCEPTION:
+        return False
+    expected[FALLBACK_CHECK] = POSTPONEMENT_EXCEPTION
+    return (
+        mapping["checks"] == expected
+        and all(mapping["checks"][key] is True for key in CHECKS - {FALLBACK_CHECK})
+        and re.fullmatch(r"KXNFLGAME-\d{2}[A-Z]{3}\d{2}[A-Z]+", mapping["event_ticker"])
+        and mapping["ticker"].startswith(mapping["event_ticker"] + "-")
+        and mapping["side"] == "yes"
+    )
+
+
 def evaluate(registration, trade, quote, *, now, offset_low, offset_high):
-    """Require a pinned exact match, verified clocks and an actionable Demo ask."""
+    """Require a reviewed match, verified clocks and an actionable Demo ask."""
     mapping = registration["mapping"]
     wallets = registration["wallets"]
     rules = mapping["demo_rules"]
     if (registration["environment"] != "demo" or len(wallets) != 4
             or len(set(wallets)) != 4
             or any(not re.fullmatch(r"0x[0-9a-f]{40}", wallet) for wallet in wallets)
-            or mapping["decision"] != "exact" or set(mapping["checks"]) != CHECKS
-            or any(value is not True for value in mapping["checks"].values())
+            or not _admitted(mapping)
             or mapping["side"] not in ("yes", "no")
             or set(rules) != RULE_FIELDS or not rules["rules_primary"]
             or not re.fullmatch(HEX64, mapping["rules_receipt_sha256"])
             or not re.fullmatch(HEX64, mapping["fee_receipt_sha256"])):
-        raise ValueError("wallet_demo_exact_admission_required")
+        raise ValueError("wallet_demo_reviewed_mapping_required")
     start, end = (datetime.fromisoformat(registration[k]) for k in ("start_utc", "end_utc"))
     if (start.utcoffset() is None or end.utcoffset() is None
             or not 0 < (end - start).total_seconds() <= 86400
@@ -89,13 +106,15 @@ def run_once(broker, lock_path, registration, trade, *, quote_provider, offsets)
     journal = broker.journal
     with acquire(lock_path):
         orders = journal.records()
+        abandoned = journal.db.execute("SELECT count(*) FROM abandoned_intents").fetchone()[0]
+        client_id = f"{CLIENT_ID}-{abandoned}" if abandoned else CLIENT_ID
         if orders:
-            if len(orders) != 1 or orders[0]["payload"]["client_order_id"] != CLIENT_ID:
+            if len(orders) != 1 or orders[0]["payload"]["client_order_id"] != client_id:
                 raise ValueError("wallet_demo_isolated_journal_required")
             record = orders[0]
             if record["state"] == "reserved":
                 return {"state": "reserved_unsent", "fill_verified": False}
-            record = broker.refresh(CLIENT_ID)
+            record = broker.refresh(client_id)
         else:
             mapping = registration["mapping"]
             payload = {"ticker": mapping["ticker"]}
@@ -107,7 +126,7 @@ def run_once(broker, lock_path, registration, trade, *, quote_provider, offsets)
                                 offset_low=offsets[0], offset_high=offsets[1])
 
             price, fee = check(quote)
-            journal.reserve(CLIENT_ID, payload["ticker"], 1, price, fee, outcome=mapping["side"],
+            journal.reserve(client_id, payload["ticker"], 1, price, fee, outcome=mapping["side"],
                             action="buy", account_snapshot=snapshot)
 
             def fresh_quote(order):
@@ -119,12 +138,17 @@ def run_once(broker, lock_path, registration, trade, *, quote_provider, offsets)
                         "wallet_signal": trade, "wallet_clock_offsets": offsets,
                         "wallet_exact_mapping": mapping}
 
-            record = broker.submit(CLIENT_ID, quote_provider=fresh_quote)
+            try:
+                record = broker.submit(client_id, quote_provider=fresh_quote)
+            except Exception:
+                if journal.get(client_id)["state"] == "reserved":
+                    journal.abandon_reserved(client_id)
+                raise
         if record["state"] != "terminal":
             return {"state": record["state"], "fill_verified": False}
         broker.reconcile_positions()
         journal.validate_reconciliation()
-        raw = journal.db.execute("SELECT detail FROM broker_evidence WHERE client_id=?", (CLIENT_ID,)).fetchone()
+        raw = journal.db.execute("SELECT detail FROM broker_evidence WHERE client_id=?", (client_id,)).fetchone()
         evidence = json.loads(raw[0])
         return {"state": "terminal", "fill_verified": record["filled"] == 1,
                 "filled": record["filled"], "order_id": record["broker_id"],

@@ -5,7 +5,9 @@ import pytest
 
 from opportunity_lab.kalshi_binary_broker import BinaryDemoBroker
 from opportunity_lab.kalshi_demo_broker import DemoClient
-from opportunity_lab.kalshi_wallet_demo_trial import CHECKS, CLIENT_ID, evaluate, run_once
+from opportunity_lab.kalshi_wallet_demo_trial import (
+    CHECKS, CLIENT_ID, FALLBACK_CHECK, POSTPONEMENT_EXCEPTION, evaluate, run_once,
+)
 
 
 @pytest.fixture
@@ -42,13 +44,22 @@ def test_exact_demo_quote_including_both_band_endpoints(example, wallet_price):
 
 def test_buffalo_price_difference_fits_band(example):
     registration, trade, quote, now = example
+    mapping = registration["mapping"]
+    mapping.update(decision=POSTPONEMENT_EXCEPTION, ticker="KXNFLGAME-26NOV09BUFMIN-BUF",
+                   event_ticker="KXNFLGAME-26NOV09BUFMIN")
+    mapping["checks"][FALLBACK_CHECK] = POSTPONEMENT_EXCEPTION
+    quote["ticker"] = mapping["ticker"]
+    quote["market"].update(ticker=mapping["ticker"], event_ticker=mapping["event_ticker"])
     trade["price"] = "0.61"
     quote["orderbook_fp"] = {"yes_dollars": [["0.61", "2"]], "no_dollars": [["0.38", "1330.88"]]}
     assert evaluate(registration, trade, quote, now=now, offset_low=-.5, offset_high=.5) == (62, 2)
+    mapping["checks"]["outcome_and_payoff"] = False
+    with pytest.raises(ValueError, match="wallet_demo_reviewed_mapping_required"):
+        evaluate(registration, trade, quote, now=now, offset_low=-.5, offset_high=.5)
 
 
 @pytest.mark.parametrize("bad_input,reason", [
-    ("diagnostic", "wallet_demo_exact_admission_required"),
+    ("diagnostic", "wallet_demo_reviewed_mapping_required"),
     ("stale", "wallet_demo_signal_stale_or_unmatched"),
     ("other_wallet", "wallet_demo_signal_stale_or_unmatched"),
     ("old_rules", "wallet_demo_quote_or_rules_unverified"),
@@ -84,6 +95,7 @@ def test_uncertain_intent_only_reconciles(tmp_path):
     broker.client = object.__new__(DemoClient)
     broker.journal = Mock()
     broker.journal.environment = "demo"
+    broker.journal.db.execute.return_value.fetchone.return_value = (0,)
     broker.journal.records.return_value = [{"payload": {"client_order_id": CLIENT_ID}, "state": "uncertain"}]
     broker.refresh.side_effect = ValueError("submission_unresolved")
     with pytest.raises(ValueError, match="submission_unresolved"):
@@ -100,7 +112,7 @@ def test_submits_one_demo_contract_and_reconciles_fee(example, tmp_path):
     broker.journal.environment = "demo"
     broker.journal.clock.return_value = datetime.fromtimestamp(now, timezone.utc)
     broker.journal.records.return_value = []
-    broker.journal.db.execute.return_value.fetchone.return_value = ('{"fees_dollars":"0.017"}',)
+    broker.journal.db.execute.return_value.fetchone.side_effect = [(0,), ('{"fees_dollars":"0.017"}',)]
 
     def submit(client_id, *, quote_provider):
         assert client_id == CLIENT_ID
