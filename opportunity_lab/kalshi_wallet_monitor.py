@@ -64,17 +64,25 @@ def clock_bounds(read=public_get):
 
 
 def read_buys(wallet, since, read=public_get):
+    return [trade for trade in read_trades(wallet, since, read) if trade["side"] == "BUY"]
+
+
+def read_trades(wallet, since, read=public_get, *, condition=None):
     params = {"user": wallet, "type": "TRADE", "limit": 100, "start": int(since)}
-    buys, cursors = [], set()
+    if condition is not None:
+        params["condition"] = condition
+    trades, cursors = [], set()
     for _ in range(3):
         page, _, received, _, _ = read(ACTIVITY, params)
         for row in page["data"]:
             if row.get("proxy_wallet", "").lower() != wallet:
                 raise ValueError("wallet_identity_mismatch")
-            if row.get("type") != "TRADE" or row.get("side") != "BUY":
+            if row.get("type") != "TRADE" or row.get("side") not in ("BUY", "SELL"):
                 continue
             trade = {key: row.get(key) for key in FIELDS}
             trade["proxy_wallet"] = wallet
+            if condition is not None and trade["condition_id"] != condition:
+                raise ValueError("wallet_activity_condition_mismatch")
             if (type(trade["timestamp"]) is not int or not DIGEST.fullmatch(str(trade["transaction_hash"])[2:])
                     or not str(trade["transaction_hash"]).startswith("0x")
                     or not WALLET.fullmatch(str(trade["proxy_wallet"]))
@@ -82,10 +90,10 @@ def read_buys(wallet, since, read=public_get):
                     or not re.fullmatch(r"[0-9]{1,78}", str(trade["token_id"]))):
                 raise ValueError("invalid_wallet_trade_identity")
             trade["observed_at"] = received
-            buys.append(trade)
+            trades.append(trade)
         cursor = page["pagination"]["next_cursor"]
         if not cursor:
-            return buys
+            return trades
         if cursor in cursors:
             break
         cursors.add(cursor)
@@ -198,7 +206,7 @@ def _read_trade_quote(trade, mapping, base, read):
 def monitor_tick(db, wallets, mappings, since, read, *, sports_wallets=()):
     errors, scheduled = {}, {}
     with ThreadPoolExecutor(max_workers=4) as source_pool, ThreadPoolExecutor(max_workers=8) as quote_pool:
-        sources = {source_pool.submit(read_buys, wallet, since, read): wallet for wallet in wallets}
+        sources = {source_pool.submit(read_trades, wallet, since, read): wallet for wallet in wallets}
         for source in as_completed(sources):
             try:
                 trades = source.result()
@@ -207,6 +215,9 @@ def monitor_tick(db, wallets, mappings, since, read, *, sports_wallets=()):
                 continue
             for trade in sorted(trades, key=lambda row: (row["observed_at"], trade_key(row))):
                 key = trade_key(trade)
+                if trade["side"] == "SELL":
+                    db.execute("INSERT OR IGNORE INTO sells VALUES(?,?)", (key, json.dumps(trade)))
+                    continue
                 if not db.execute("INSERT OR IGNORE INTO buys VALUES(?,?,'pending',NULL)",
                                   (key, json.dumps(trade))).rowcount:
                     continue
@@ -256,6 +267,7 @@ def capture(root, policy_path, *, stop=None, duration=86400, read=public_get):
                 PRAGMA max_page_count=4096;
                 CREATE TABLE IF NOT EXISTS registration(id INTEGER PRIMARY KEY, digest TEXT, started REAL, expires REAL);
                 CREATE TABLE IF NOT EXISTS buys(id TEXT PRIMARY KEY, trade TEXT NOT NULL, state TEXT NOT NULL, evidence TEXT);
+                CREATE TABLE IF NOT EXISTS sells(id TEXT PRIMARY KEY, trade TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS health(id INTEGER PRIMARY KEY, at REAL, detail TEXT);
                 CREATE TABLE IF NOT EXISTS health_changes(at REAL PRIMARY KEY, detail TEXT NOT NULL);
             """)
