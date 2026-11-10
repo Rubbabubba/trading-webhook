@@ -60,6 +60,7 @@ def test_live_fill_settlement_and_restart(outcome, tmp_path):
     path = tmp_path / "live.db"
     j = LiveBinaryJournal(path, grant(), approval_verifier=lambda digest: True)
     x = LiveExchange(j); b = LiveBinaryBroker(j, x)
+    assert b.test_inventory is None
     j.reserve("one", "T", 1, 8, 1, event_id="EVENT", outcome=outcome, action="buy", account_snapshot=b.snapshot())
     assert b.submit("one", quote_snapshot=live_quote(j, "one"))["state"] == "terminal"
     assert b.reconcile_positions()["positions_match"]

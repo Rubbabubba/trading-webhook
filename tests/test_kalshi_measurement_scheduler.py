@@ -63,7 +63,7 @@ def run_flat_cycle(tmp_path, monkeypatch, now):
     monkeypatch.setattr(worker, 'DemoClient', lambda *a: object())
     monkeypatch.setattr(worker, 'release_legacy_uncertainty_stop', lambda *a: None)
     monkeypatch.setattr(worker, 'check_exchange', lambda *a: None)
-    monkeypatch.setattr(worker, 'recover_or_report', lambda *a: True)
+    monkeypatch.setattr(worker, 'recover_or_report', lambda *a, test_inventory_receipt=None: True)
     monkeypatch.setattr(worker, 'log_event', lambda *a, **k: None)
     monkeypatch.setattr(worker.time, 'time', lambda: now)
     monkeypatch.setattr(worker, 'ContinuingCapture', lambda *a: SimpleNamespace(close=lambda: None))

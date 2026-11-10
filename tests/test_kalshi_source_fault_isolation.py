@@ -52,7 +52,7 @@ def test_real_loop_keeps_reconciliation_and_other_collectors_after_optional_500(
     monkeypatch.setattr(worker,'DemoClient',lambda *a:object())
     monkeypatch.setattr(worker,'release_legacy_uncertainty_stop',lambda *a:None)
     monkeypatch.setattr(worker,'check_exchange',lambda *a:None)
-    monkeypatch.setattr(worker,'recover_or_report',lambda *a:True)
+    monkeypatch.setattr(worker,'recover_or_report',lambda *a,test_inventory_receipt=None:True)
     monkeypatch.setattr(worker,'log_event',lambda *a,**k:None)
     monkeypatch.setattr(worker,'measurement_optional',lambda *a:True)
     monkeypatch.setattr(worker,'factory_eligible_candidate',lambda *a,**k:None)
@@ -101,7 +101,7 @@ def test_real_working_order_loop_preserves_original_ttl_during_book_outage(tmp_p
     monkeypatch.setattr(worker,'DemoClient',lambda *a:SimpleNamespace(request=request))
     monkeypatch.setattr(worker,'release_legacy_uncertainty_stop',lambda *a:None)
     monkeypatch.setattr(worker,'check_exchange',lambda *a:None)
-    monkeypatch.setattr(worker,'recover_or_report',lambda *a:True)
+    monkeypatch.setattr(worker,'recover_or_report',lambda *a,test_inventory_receipt=None:True)
     monkeypatch.setattr(worker,'log_event',lambda *a,**k:None)
     monkeypatch.setattr(worker,'refresh_cohort',lambda *a,**k:([],0))
     active={'payload':{'client_order_id':'owned','ticker':'A'},'broker_id':'actual-broker-id','state':'working','filled':0}
