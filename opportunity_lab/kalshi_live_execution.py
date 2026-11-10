@@ -186,6 +186,8 @@ class LiveBinaryBroker(BinaryDemoBroker):
         if not isinstance(journal, LiveBinaryJournal) or not isinstance(client, LiveClient):
             raise ValueError("isolated_live_transport_and_journal_required")
         self.journal, self.client = journal, client
+        # Demo inventory receipts must never relax live account reconciliation.
+        self.test_inventory = None
         self.quarantined_reserve_cents = 0
 
     def _check_other_journals(self):
