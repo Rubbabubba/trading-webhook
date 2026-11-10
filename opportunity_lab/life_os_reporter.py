@@ -6,6 +6,8 @@ import json
 import os
 import threading
 import time
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -35,6 +37,11 @@ def publish(packet: dict, *, url: str | None = None, token: str | None = None) -
         history = {"schema":"kalshi_historical_diagnostics_v1_20261101",
                    "coverage_error":type(error).__name__}
     packet = dict(packet, historical_diagnostics=history)
+    revision=os.getenv('RENDER_GIT_COMMIT','')
+    service=os.getenv('RENDER_SERVICE_ID','')
+    if re.fullmatch('[0-9a-f]{40}',revision) and service=='srv-dalhjqv40ujc73e2km1g':
+        packet['workforce_runtime']={'revision':revision,'service_id':service,
+                                     'reported_at':datetime.now(timezone.utc).isoformat()}
     body = json.dumps(packet, separators=(",", ":")).encode("utf-8")
     if len(body) > 200_000:
         raise ValueError("Life OS Kalshi report exceeds the intake limit")
