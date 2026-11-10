@@ -19,6 +19,14 @@ class Accepted:
 
 
 class ReporterTests(unittest.TestCase):
+    def test_reports_actual_host_revision_without_mutating_monitor_packet(self):
+        packet={'worker':{'environment':'demo','production_execution_enabled':False}}
+        with patch.dict('os.environ',{'RENDER_GIT_COMMIT':'a'*40,'RENDER_SERVICE_ID':'srv-dalhjqv40ujc73e2km1g'}), patch('opportunity_lab.life_os_reporter.urlopen',return_value=Accepted()) as call:
+            publish(packet,url='https://life.example/ingest/kalshi',token='intake-token')
+        sent=json.loads(call.call_args.args[0].data)
+        self.assertEqual(sent['workforce_runtime']['revision'],'a'*40)
+        self.assertNotIn('workforce_runtime',packet)
+
     def test_demo_report_uses_intake_only_token(self):
         packet = {"worker": {"environment": "demo", "production_execution_enabled": False}}
         with patch("opportunity_lab.life_os_reporter.urlopen", return_value=Accepted()) as call:
