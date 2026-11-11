@@ -188,7 +188,9 @@ class BinaryJournal(Journal):
             if row is None or intent is None or quote is None:
                 raise ValueError('uncertain_quarantine_not_allowed')
             economic=json.loads(intent[0]); submitted=json.loads(quote[0]).get('observed_at')
-            if (economic.get('order_mode')!='post_only_gtc'
+            wallet_entry = (client_id.startswith('wallet-copy-') and economic.get('order_mode') == 'ioc'
+                            and economic.get('action') == 'buy' and economic.get('count') == 1)
+            if (economic.get('order_mode')!='post_only_gtc' and not wallet_entry
                     or type(submitted) not in (int,float) or now-submitted<minimum_age_seconds):
                 raise ValueError('uncertain_quarantine_not_allowed')
             self.db.execute('INSERT INTO uncertain_quarantine VALUES(?,?,?,?,?)',
