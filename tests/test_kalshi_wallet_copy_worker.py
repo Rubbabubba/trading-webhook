@@ -8,7 +8,8 @@ import pytest
 from opportunity_lab import kalshi_wallet_copy_worker as copy
 from opportunity_lab.kalshi_binary_broker import BinaryDemoBroker
 from opportunity_lab.kalshi_demo_test_inventory import DemoTestInventory
-from test_kalshi_binary_journal import Exchange
+from test_kalshi_binary_journal import Exchange, quote, snapshot
+from opportunity_lab.kalshi_binary_journal import BinaryJournal
 
 
 @pytest.mark.parametrize("outcome,side,source,expected", [
@@ -22,6 +23,41 @@ def test_five_cent_band_uses_executable_outcome_price(outcome, side, source, exp
     assert copy.executable({"side": side, "price": source}, {"side": outcome}, quote) == expected
     with pytest.raises(ValueError, match="outside_five_cent_band"):
         copy.executable({"side": side, "price": ".20"}, {"side": outcome}, quote)
+
+
+def test_uncertain_wallet_entry_requires_two_flat_broker_reads_and_never_resends(tmp_path):
+    now = int(time.time())
+    clock = lambda: now
+    journal = BinaryJournal(tmp_path / 'journal.db', clock=lambda: datetime.fromtimestamp(clock(), timezone.utc))
+    class FlatExchange(Exchange):
+        def pages(self, path, field, **params):
+            if field == 'fills':
+                return []
+            return super().pages(path, field, **params)
+    exchange = FlatExchange(journal)
+    exchange.timeout = True
+    broker = BinaryDemoBroker(journal, exchange)
+    with sqlite3.connect(':memory:', isolation_level=None) as db:
+        worker = copy.WalletCopy(tmp_path, db, broker, clock=clock)
+        key = 'a' * 64
+        cid = 'wallet-copy-' + key
+        db.execute('INSERT INTO signals VALUES(?,?,?,?,?,?)',
+                   (key, now, 'BUY', '{}', 'submission_unresolved', '{"ticker":"GAME"}'))
+        journal.reserve(cid, 'GAME', 1, 30, 2, outcome='yes', action='buy', account_snapshot=snapshot(journal))
+        with pytest.raises(TimeoutError):
+            broker.submit(cid, quote_snapshot=quote(journal, cid))
+        now += 301
+        with pytest.raises(ValueError, match='submission_unresolved'):
+            worker.recover()
+        assert journal.get(cid)['state'] == 'uncertain'
+        now += 61
+        worker.recover()
+        assert journal.records() == []
+        assert db.execute('SELECT state FROM signals').fetchone()[0] == 'quarantined_zero_fill'
+        proof = json.loads(journal.db.execute('SELECT evidence FROM uncertain_quarantine').fetchone()[0])
+        assert len(proof['negative_observations']) == 2
+        assert exchange.posts == 1
+    journal.close()
 
 
 def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, monkeypatch):

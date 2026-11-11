@@ -116,6 +116,7 @@ class WalletCopy:
             CREATE TABLE IF NOT EXISTS signals(id TEXT PRIMARY KEY, at INTEGER NOT NULL,
               side TEXT NOT NULL, trade TEXT NOT NULL, state TEXT NOT NULL, mapping TEXT);
             CREATE INDEX IF NOT EXISTS signals_by_day ON signals(side, at);
+            CREATE TABLE IF NOT EXISTS uncertain_checks(client_id TEXT PRIMARY KEY, evidence TEXT NOT NULL);
         """)
         db.execute("INSERT OR IGNORE INTO start VALUES(1, ?)", (int(clock()) + 1,))
         self.started = db.execute("SELECT at FROM start WHERE id=1").fetchone()[0]
@@ -136,6 +137,9 @@ class WalletCopy:
         return owners
 
     def recover(self):
+        if not self.startup_recovered:
+            for (client_id,) in self.journal.db.execute('SELECT id FROM uncertain_quarantine'):
+                self.record_quarantined_signal(client_id)
         for record in self.journal.records():
             client_id = record["payload"]["client_order_id"]
             if record["state"] == "terminal" and self.startup_recovered:
@@ -144,7 +148,13 @@ class WalletCopy:
                 self.journal.abandon_reserved(client_id)
                 state = "interrupted_before_submission"
             elif record["state"] != "terminal":
-                record = self.broker.refresh(client_id)
+                try:
+                    record = self.broker.refresh(client_id)
+                except ValueError as error:
+                    if str(error) != 'submission_unresolved' or not self.quarantine_unmatched_entry(record):
+                        raise
+                    self.record_quarantined_signal(client_id)
+                    continue
                 if record["state"] != "terminal":
                     raise ValueError("wallet_ioc_unresolved")
                 state = "filled" if record["filled"] else "ioc_no_fill"
@@ -157,6 +167,55 @@ class WalletCopy:
         if self.journal.accounting()["positions"] and self.clock() >= self.next_settlement:
             self.broker.reconcile_settlements()
             self.next_settlement = self.clock() + 60
+
+    def record_quarantined_signal(self, client_id):
+        self.db.execute("UPDATE signals SET state='quarantined_zero_fill' WHERE id=? "
+                        "AND state IN ('submitting','submission_unresolved')", (client_id.removeprefix('wallet-copy-'),))
+
+    def quarantine_unmatched_entry(self, record):
+        payload, intent = record['payload'], record['intent']
+        client_id, ticker = payload['client_order_id'], payload['ticker']
+        if (record['state'] != 'uncertain' or record['broker_id'] is not None or record['filled']
+                or not client_id.startswith('wallet-copy-') or intent.get('order_mode') != 'ioc'
+                or intent.get('action') != 'buy' or intent.get('count') != 1):
+            return False
+        signal = self.db.execute('SELECT side,state,mapping FROM signals WHERE id=?',
+                                 (client_id.removeprefix('wallet-copy-'),)).fetchone()
+        quote = self.journal.db.execute('SELECT detail FROM submission_quotes WHERE client_id=?', (client_id,)).fetchone()
+        submitted = json.loads(quote[0]).get('observed_at') if quote else None
+        if (not signal or signal[0] != 'BUY' or signal[1] not in ('submitting','submission_unresolved')
+                or json.loads(signal[2] or '{}').get('ticker') != ticker
+                or type(submitted) not in (int,float) or self.clock() - submitted < 300):
+            return False
+        prior = self.db.execute('SELECT evidence FROM uncertain_checks WHERE client_id=?', (client_id,)).fetchone()
+        previous = json.loads(prior[0]) if prior else None
+        if previous and self.clock() - previous['observed_at'] < 60:
+            return False
+        client = self.broker.client
+        current = client.pages('/portfolio/orders','orders',ticker=ticker,subaccount=0)
+        archived = client.pages('/historical/orders','orders',ticker=ticker)
+        fills = client.pages('/portfolio/fills','fills',ticker=ticker,subaccount=0)
+        archived_fills = client.pages('/historical/fills','fills',ticker=ticker)
+        positions = client.pages('/portfolio/positions','market_positions',subaccount=0,count_filter='position')
+        resting = client.pages('/portfolio/orders','orders',subaccount=0,status='resting')
+        known = {row['broker_id'] for row in self.journal.records() if row['broker_id']}
+        counts = dict(current_exact_orders=sum(row.get('client_order_id') == client_id for row in current),
+                      historical_exact_orders=sum(row.get('client_order_id') == client_id for row in archived),
+                      ticker_unattributed_current_fills=sum(row.get('order_id') not in known for row in fills),
+                      ticker_unattributed_historical_fills=sum(row.get('order_id') not in known for row in archived_fills),
+                      ticker_positions=sum(row.get('ticker') == ticker for row in positions),
+                      all_positions=len(positions), all_resting_orders=len(resting))
+        if any(counts.values()):
+            self.db.execute('DELETE FROM uncertain_checks WHERE client_id=?', (client_id,))
+            return False
+        proof = dict(counts, environment='demo', observed_at=self.clock())
+        if not previous or proof['observed_at'] - previous['observed_at'] > 180:
+            self.db.execute('INSERT INTO uncertain_checks VALUES(?,?) ON CONFLICT(client_id) DO UPDATE SET '
+                            'evidence=excluded.evidence', (client_id, json.dumps(proof)))
+            return False
+        self.journal.quarantine_uncertain_zero_fill(client_id, dict(proof, negative_observations=[previous, proof]))
+        self.db.execute('DELETE FROM uncertain_checks WHERE client_id=?', (client_id,))
+        return True
 
     def require_demo_hold(self):
         status = json.loads((self.root / "status.json").read_bytes())
@@ -173,7 +232,8 @@ class WalletCopy:
                 return "wallet_outside_current_cohort"
             since = datetime.fromisoformat(day(self.clock())).replace(tzinfo=timezone.utc).timestamp()
             buys = self.db.execute(
-                "SELECT count(*) FROM signals WHERE side='BUY' AND at>=? AND state IN ('filled','ioc_no_fill','submitting','submission_unresolved')",
+                "SELECT count(*) FROM signals WHERE side='BUY' AND at>=? AND state IN "
+                "('filled','ioc_no_fill','submitting','submission_unresolved','quarantined_zero_fill')",
                 (since,)).fetchone()[0]
             if len(owners) >= MAX_OPEN or buys >= MAX_DAILY_BUYS:
                 return "demo_entry_limit"
