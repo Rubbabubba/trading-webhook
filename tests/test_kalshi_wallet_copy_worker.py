@@ -130,5 +130,12 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
     assert journal.records()[-1]["payload"]["reduce_only"] is True
     assert worker.tick()["signals"] == final["signals"]
     assert exchange.posts == 2
+    exchange.timeout = True
+    signals.append(trade(wallets[0], 5, 'BUY'))
+    unresolved = worker.tick()
+    assert unresolved['execution_error'] == 'submission_unresolved'
+    assert unresolved['last_submission_failure'] == {'reason':'TimeoutError','observed_at':now+15}
+    assert worker.tick()['last_submission_failure'] == unresolved['last_submission_failure']
+    assert exchange.posts == 3
     journal.close()
     db.close()

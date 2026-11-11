@@ -13,7 +13,7 @@ import time
 from .kalshi_binary_accounting import reconcile_positions
 from .kalshi_binary_broker import BinaryDemoBroker
 from .kalshi_binary_journal import BinaryJournal
-from .kalshi_demo_broker import DemoClient
+from .kalshi_demo_broker import BrokerError, DemoClient
 from .kalshi_process_lock import acquire
 from .kalshi_wallet_monitor import DEMO, WALLET, price_book, public_get, read_fee, read_quote, read_trades, trade_key
 from .kalshi_wallet_sports import discover
@@ -117,6 +117,8 @@ class WalletCopy:
               side TEXT NOT NULL, trade TEXT NOT NULL, state TEXT NOT NULL, mapping TEXT);
             CREATE INDEX IF NOT EXISTS signals_by_day ON signals(side, at);
             CREATE TABLE IF NOT EXISTS uncertain_checks(client_id TEXT PRIMARY KEY, evidence TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS submission_failures(
+              signal_id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL, detail TEXT NOT NULL);
         """)
         db.execute("INSERT OR IGNORE INTO start VALUES(1, ?)", (int(clock()) + 1,))
         self.started = db.execute("SELECT at FROM start WHERE id=1").fetchone()[0]
@@ -278,8 +280,13 @@ class WalletCopy:
 
         try:
             result = self.broker.submit(client_id, quote_provider=fresh_quote)
-        except Exception:
+        except Exception as error:
             if self.journal.get(client_id)["state"] != "reserved":
+                detail = {'reason':error_code(error)}
+                if isinstance(error, BrokerError):
+                    detail['broker_code'] = error.diagnostics.get('code')
+                self.db.execute('INSERT OR IGNORE INTO submission_failures VALUES(?,?,?)',
+                                (key, int(self.clock()), json.dumps(detail)))
                 return "submission_unresolved"
             self.journal.abandon_reserved(client_id)
             raise
@@ -348,9 +355,12 @@ class WalletCopy:
                 if state == "filled":
                     accounting = self.journal.accounting()
                     owners = self.active_owners(accounting)
+        failure = self.db.execute('SELECT observed_at,detail FROM submission_failures '
+                                  'ORDER BY observed_at DESC, rowid DESC LIMIT 1').fetchone()
         return {
             "ranked_wallets": len(cohort), "wallets_polled": len(wallets),
             "source_errors": list(source_errors.values()), "execution_error": execution_error,
+            "last_submission_failure": dict(json.loads(failure[1]), observed_at=failure[0]) if failure else None,
             "open_positions": None if execution_error == "missing_accounting_evidence" else len(owners),
             "signals": {f"{side.lower()}:{state}": count for side, state, count in self.db.execute(
                 "SELECT side,state,count(*) FROM signals GROUP BY side,state")},
