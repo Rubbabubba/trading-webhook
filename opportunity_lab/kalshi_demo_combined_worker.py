@@ -8,6 +8,7 @@ import time
 
 from .kalshi_demo_v5_maker_worker import run as run_maker
 from .kalshi_external_sleeves_worker import run as run_research_sleeves
+from .kalshi_wallet_copy_worker import supervise as wallet_copy_supervisor
 from .sports_persistent_passive_worker import run as run_sports
 
 
@@ -45,12 +46,13 @@ def run(data_root, cycles=None):
     if cycles is None:
         threading.Thread(target=sports_supervisor, args=(root,), daemon=True).start()
         threading.Thread(target=research_sleeves_supervisor, args=(root,), daemon=True).start()
+        threading.Thread(target=wallet_copy_supervisor, args=(root,), daemon=True).start()
     else:
         # Bounded validation runs exercise both services without a background
         # thread surviving the test process.
         run_sports(root/'sports-challenger', cycles=cycles)
         run_research_sleeves(root, cycles=cycles)
-    run_maker(root, cycles=cycles)
+    run_maker(root, cycles=cycles, wallet_copy_inventory=cycles is None)
 
 
 def main(argv=None):

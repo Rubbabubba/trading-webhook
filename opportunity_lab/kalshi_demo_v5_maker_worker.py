@@ -1770,12 +1770,17 @@ def write_status(path, state, journal, **values):
         log_event("deterministic_monitor_error", error_code=safe_cycle_error(exc))
 
 
-def recover_or_report(root, state, journal, broker, *, test_inventory_receipt=None):
+def recover_or_report(root, state, journal, broker, *, test_inventory_receipt=None,
+                      wallet_copy_inventory=False):
     """Reconcile once, remaining alive and read-only while evidence is incomplete."""
     try:
         if test_inventory_receipt is not None and broker.test_inventory is None:
             from .kalshi_demo_test_inventory import verify_test_inventory
-            broker.test_inventory = verify_test_inventory(test_inventory_receipt, broker.client)
+            baseline = verify_test_inventory(test_inventory_receipt, broker.client)
+            if wallet_copy_inventory:
+                from .kalshi_wallet_copy_worker import SharedDemoInventory
+                baseline = SharedDemoInventory(baseline, root)
+            broker.test_inventory = baseline
         recover(state, journal, broker)
         return True
     except Exception as exc:
@@ -1794,7 +1799,7 @@ def recover_or_report(root, state, journal, broker, *, test_inventory_receipt=No
         return False
 
 
-def run(data_root, *, cycles=None):
+def run(data_root, *, cycles=None, wallet_copy_inventory=False):
     root = Path(data_root).resolve(); root.mkdir(parents=True, exist_ok=True)
     lock = acquire(root / "worker.lock"); state = MakerState(root / "worker.sqlite3")
     journal = BinaryJournal(root / "journal.sqlite3", order_limit_cents=ORDER_LIMIT_CENTS,
@@ -1831,7 +1836,8 @@ def run(data_root, *, cycles=None):
         if inventory_receipt is None:
             release_legacy_uncertainty_stop(state, journal)
         check_exchange(client)
-        while not recover_or_report(root, state, journal, broker, test_inventory_receipt=inventory_receipt):
+        while not recover_or_report(root, state, journal, broker, test_inventory_receipt=inventory_receipt,
+                                    wallet_copy_inventory=wallet_copy_inventory):
             cycle += 1
             if cycles is not None and cycle >= cycles:
                 return
@@ -2116,6 +2122,7 @@ def run(data_root, *, cycles=None):
                             except Exception:pass
                 hold_status = {} if test_inventory is None else {
                     "new_submissions_enabled": False,
+                    "wallet_copy_inventory_ledger": wallet_copy_inventory,
                     "separate_demo_test_inventory": {
                         "positions": test_inventory.positions,
                         "receipt_sha256": test_inventory.receipt_sha256,
