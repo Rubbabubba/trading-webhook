@@ -1770,14 +1770,13 @@ def write_status(path, state, journal, **values):
         log_event("deterministic_monitor_error", error_code=safe_cycle_error(exc))
 
 
-def recover_or_report(root, state, journal, broker, *, test_inventory_receipt=None,
-                      wallet_copy_inventory=False):
+def recover_or_report(root, state, journal, broker, *, test_inventory_receipt=None):
     """Reconcile once, remaining alive and read-only while evidence is incomplete."""
     try:
         if test_inventory_receipt is not None and broker.test_inventory is None:
             from .kalshi_demo_test_inventory import verify_test_inventory
             baseline = verify_test_inventory(test_inventory_receipt, broker.client)
-            if wallet_copy_inventory:
+            if getattr(state, "wallet_copy_inventory", False):
                 from .kalshi_wallet_copy_worker import SharedDemoInventory
                 baseline = SharedDemoInventory(baseline, root)
             broker.test_inventory = baseline
@@ -1802,6 +1801,7 @@ def recover_or_report(root, state, journal, broker, *, test_inventory_receipt=No
 def run(data_root, *, cycles=None, wallet_copy_inventory=False):
     root = Path(data_root).resolve(); root.mkdir(parents=True, exist_ok=True)
     lock = acquire(root / "worker.lock"); state = MakerState(root / "worker.sqlite3")
+    state.wallet_copy_inventory = wallet_copy_inventory
     journal = BinaryJournal(root / "journal.sqlite3", order_limit_cents=ORDER_LIMIT_CENTS,
                             capital_limit_cents=CAPITAL_LIMIT_CENTS, daily_loss_cents=DAILY_LOSS_CENTS)
     client = DemoClient(os.environ["KALSHI_DEMO_API_KEY_ID"], os.environ["KALSHI_DEMO_PRIVATE_KEY_PATH"])
@@ -1836,8 +1836,7 @@ def run(data_root, *, cycles=None, wallet_copy_inventory=False):
         if inventory_receipt is None:
             release_legacy_uncertainty_stop(state, journal)
         check_exchange(client)
-        while not recover_or_report(root, state, journal, broker, test_inventory_receipt=inventory_receipt,
-                                    wallet_copy_inventory=wallet_copy_inventory):
+        while not recover_or_report(root, state, journal, broker, test_inventory_receipt=inventory_receipt):
             cycle += 1
             if cycles is not None and cycle >= cycles:
                 return

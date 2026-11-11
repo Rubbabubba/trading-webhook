@@ -7,6 +7,7 @@ import pytest
 
 from opportunity_lab import kalshi_wallet_copy_worker as copy
 from opportunity_lab.kalshi_binary_broker import BinaryDemoBroker
+from opportunity_lab.kalshi_demo_test_inventory import DemoTestInventory
 from test_kalshi_binary_journal import Exchange
 
 
@@ -52,7 +53,7 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
         return [trade for trade in signals if trade["proxy_wallet"] == wallet]
 
     def quote(mapping, base, read):
-        at = time.time()
+        at = time.time() - .01
         return dict(environment="demo", ticker=mapping["ticker"], started_at=at, observed_at=at,
                     orderbook_fp={"yes_dollars": [[".44", "2"]], "no_dollars": [[".50", "2"]]})
 
@@ -70,9 +71,13 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
     signals.extend([trade(wallets[0], 0, "BUY"), trade(wallets[0], 1, "BUY")])
     first = worker.tick()
     assert first["ranked_wallets"] == 4
-    assert first["open_positions"] == 1
+    assert first["open_positions"] == 1, first
     assert first["signals"] == {"buy:filled": 1}
     assert exchange.posts == 1
+    inventory = copy.SharedDemoInventory(DemoTestInventory({}, "test-receipt"), tmp_path)
+    inventory.reconcile({"positions": {}}, [{"ticker": "GAME", "position_fp": "1.00"}])
+    with pytest.raises(ValueError, match="external_or_unreconciled_position"):
+        inventory.reconcile({"positions": {}}, [{"ticker": "UNOWNED", "position_fp": "1.00"}])
 
     journal.close()
     journal = copy.open_journal(tmp_path)
@@ -85,6 +90,7 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
     assert final["signals"] == {"buy:filled": 1, "sell:filled": 1,
                                 "sell:no_owned_contract_for_wallet_sell": 2}
     assert final["open_positions"] == 0
+    inventory.reconcile({"positions": {}}, [])
     assert journal.records()[-1]["payload"]["reduce_only"] is True
     assert worker.tick()["signals"] == final["signals"]
     assert exchange.posts == 2
