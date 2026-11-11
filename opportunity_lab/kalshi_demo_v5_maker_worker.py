@@ -1775,7 +1775,11 @@ def recover_or_report(root, state, journal, broker, *, test_inventory_receipt=No
     try:
         if test_inventory_receipt is not None and broker.test_inventory is None:
             from .kalshi_demo_test_inventory import verify_test_inventory
-            broker.test_inventory = verify_test_inventory(test_inventory_receipt, broker.client)
+            baseline = verify_test_inventory(test_inventory_receipt, broker.client)
+            if getattr(state, "wallet_copy_inventory", False):
+                from .kalshi_wallet_copy_worker import SharedDemoInventory
+                baseline = SharedDemoInventory(baseline, root)
+            broker.test_inventory = baseline
         recover(state, journal, broker)
         return True
     except Exception as exc:
@@ -1794,9 +1798,10 @@ def recover_or_report(root, state, journal, broker, *, test_inventory_receipt=No
         return False
 
 
-def run(data_root, *, cycles=None):
+def run(data_root, *, cycles=None, wallet_copy_inventory=False):
     root = Path(data_root).resolve(); root.mkdir(parents=True, exist_ok=True)
     lock = acquire(root / "worker.lock"); state = MakerState(root / "worker.sqlite3")
+    state.wallet_copy_inventory = wallet_copy_inventory
     journal = BinaryJournal(root / "journal.sqlite3", order_limit_cents=ORDER_LIMIT_CENTS,
                             capital_limit_cents=CAPITAL_LIMIT_CENTS, daily_loss_cents=DAILY_LOSS_CENTS)
     client = DemoClient(os.environ["KALSHI_DEMO_API_KEY_ID"], os.environ["KALSHI_DEMO_PRIVATE_KEY_PATH"])
@@ -2116,6 +2121,7 @@ def run(data_root, *, cycles=None):
                             except Exception:pass
                 hold_status = {} if test_inventory is None else {
                     "new_submissions_enabled": False,
+                    "wallet_copy_inventory_ledger": wallet_copy_inventory,
                     "separate_demo_test_inventory": {
                         "positions": test_inventory.positions,
                         "receipt_sha256": test_inventory.receipt_sha256,
