@@ -183,10 +183,9 @@ def test_source_faults_remain_visible_when_process_and_reconciliation_are_runnin
 
 def test_frozen_stream_time_limits_keep_missing_outcomes_visible():
     status = healthy()
-    stream = {'state': 'capacity_stop', 'new_source_inputs_active': False,
+    stream = {'state': 'capacity_stop',
               'storage_stop_reason': 'lifetime_time_cap',
-              'formula_comparison': {'state': 'capacity_stop', 'stop_reason': 'admission_time_cap',
-                                     'source_input_state': 'source_capacity_stop'},
+              'formula_comparison': {'state': 'capacity_stop', 'stop_reason': 'admission_time_cap'},
               'comparison_outcomes': {'missed': 1}}
     status['evidence']['demo_stream_source'] = stream
     packet, _, _ = check(status, {}, REGISTRATION, now=1790013601, v12_registration=V12_REGISTRATION)
