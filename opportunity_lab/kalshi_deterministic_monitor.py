@@ -590,10 +590,9 @@ def faults(status, *, now):
         result.append('demo_orderbook_source_fault')
     stream = evidence.get('demo_stream_source') or {}
     comparison = stream.get('formula_comparison') or {}
-    source_time_limit = (stream.get('new_source_inputs_active') is False
-                         and stream.get('storage_stop_reason') == 'lifetime_time_cap')
-    comparison_time_limit = (comparison.get('stop_reason') == 'admission_time_cap'
-                             and comparison.get('source_input_state') == 'source_capacity_stop')
+    source_time_limit = (stream.get('storage_stop_reason') == 'lifetime_time_cap'
+                         and stream.get('new_source_inputs_active') is not True)
+    comparison_time_limit = comparison.get('stop_reason') == 'admission_time_cap'
     if (stream.get('state') in ('initialization_fault', 'source_or_transport_fault')
             or stream.get('state') == 'capacity_stop' and not source_time_limit):
         result.append('demo_stream_source_fault')
