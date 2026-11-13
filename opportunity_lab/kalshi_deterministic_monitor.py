@@ -588,12 +588,20 @@ def faults(status, *, now):
         result.append('continuing_capture_blocked')
     if (evidence.get('market_read_health') or {}).get('state') == 'source_fault':
         result.append('demo_orderbook_source_fault')
-    if (evidence.get('demo_stream_source') or {}).get('state') in ('initialization_fault','source_or_transport_fault','capacity_stop'):
+    stream = evidence.get('demo_stream_source') or {}
+    comparison = stream.get('formula_comparison') or {}
+    source_time_limit = (stream.get('new_source_inputs_active') is False
+                         and stream.get('storage_stop_reason') == 'lifetime_time_cap')
+    comparison_time_limit = (comparison.get('stop_reason') == 'admission_time_cap'
+                             and comparison.get('source_input_state') == 'source_capacity_stop')
+    if (stream.get('state') in ('initialization_fault', 'source_or_transport_fault')
+            or stream.get('state') == 'capacity_stop' and not source_time_limit):
         result.append('demo_stream_source_fault')
-    if (((evidence.get('demo_stream_source') or {}).get('formula_comparison') or {}).get('state') in ('initialization_fault','capacity_stop','storage_fault')
-            or (evidence.get('demo_stream_source') or {}).get('comparison_error_class')):
+    if (comparison.get('state') in ('initialization_fault', 'storage_fault')
+            or comparison.get('state') == 'capacity_stop' and not comparison_time_limit
+            or stream.get('comparison_error_class')):
         result.append('demo_stream_formula_fault')
-    outcomes=(evidence.get('demo_stream_source') or {}).get('comparison_outcomes') or {}
+    outcomes = stream.get('comparison_outcomes') or {}
     if outcomes.get('state')=='storage_or_runner_fault':
         result.append('demo_stream_outcome_runner_fault')
     if outcomes.get('missed',0)>0:

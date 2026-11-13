@@ -181,6 +181,26 @@ def test_source_faults_remain_visible_when_process_and_reconciliation_are_runnin
     assert packet['demo_stream_source']['execution_enabled'] is False
 
 
+def test_frozen_stream_time_limits_keep_missing_outcomes_visible():
+    status = healthy()
+    stream = {'state': 'capacity_stop', 'new_source_inputs_active': False,
+              'storage_stop_reason': 'lifetime_time_cap',
+              'formula_comparison': {'state': 'capacity_stop', 'stop_reason': 'admission_time_cap',
+                                     'source_input_state': 'source_capacity_stop'},
+              'comparison_outcomes': {'missed': 1}}
+    status['evidence']['demo_stream_source'] = stream
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601, v12_registration=V12_REGISTRATION)
+    assert 'demo_stream_source_fault' not in packet['health']['faults']
+    assert 'demo_stream_formula_fault' not in packet['health']['faults']
+    assert 'demo_stream_missing_outcomes' in packet['health']['faults']
+    assert packet['demo_stream_source']['storage_stop_reason'] == 'lifetime_time_cap'
+    stream['storage_stop_reason'] = 'sqlite_page_cap'
+    stream['formula_comparison']['state'] = 'storage_fault'
+    packet, _, _ = check(status, {}, REGISTRATION, now=1790013601, v12_registration=V12_REGISTRATION)
+    assert 'demo_stream_source_fault' in packet['health']['faults']
+    assert 'demo_stream_formula_fault' in packet['health']['faults']
+
+
 def test_compact_packet_reports_completed_market_discovery():
     status = healthy()
     status["evidence"]["market_discovery"] = {
