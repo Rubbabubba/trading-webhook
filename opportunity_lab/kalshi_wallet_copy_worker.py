@@ -133,6 +133,29 @@ def error_code(exc):
 
 
 class WalletCopy:
+    def lifecycle(self):
+        """No broker request, control mutation, or reinterpretation of historic fills."""
+        from .kalshi_execution_risk import display
+        state=self.journal.accounting();records=self.journal.records()
+        since=datetime.fromisoformat(day(self.clock())).replace(tzinfo=timezone.utc).timestamp()
+        attempts=self.db.execute("SELECT count(*) FROM signals WHERE side='BUY' AND at>=? AND state IN "
+            "('filled','ioc_no_fill','submitting','submission_unresolved','quarantined_zero_fill')",(since,)).fetchone()[0]
+        unresolved=sum(r['state']!='terminal' for r in records)
+        positions=len(state['positions'])
+        return {'state':'pending_reconciliation' if unresolved else 'reconciled',
+                'budget_session_utc':day(self.clock()),'pnl_session_central':state['day'],
+                'buy_attempts_today':attempts,'remaining_buy_attempts':max(0,MAX_DAILY_BUYS-attempts),
+                'max_daily_buys':MAX_DAILY_BUYS,'max_open_positions':MAX_OPEN,
+                'admission':'pending_reconciliation' if unresolved else 'open_position_limit' if positions>=MAX_OPEN else
+                            'daily_attempt_limit' if attempts>=MAX_DAILY_BUYS else 'admitted',
+                'entries_filled':sum(r['intent']['action']=='buy' and bool(r['filled']) for r in records),
+                'exits_filled':sum(r['intent']['action']=='sell' and bool(r['filled']) for r in records),
+                'settlements':self.journal.db.execute('SELECT count(*) FROM settlements').fetchone()[0],
+                'unresolved_orders':unresolved,
+                **{out:display(state[key]) for out,key in (
+                    ('realized_net_usd','realized'),('daily_realized_net_usd','daily_realized'),
+                    ('fees_usd','fees'),('open_basis_usd','open_basis'),('pending_reserves_usd','pending_reserves'))}}
+
     def __init__(self, root, db, broker, *, read=public_get, clock=time.time):
         self.root, self.db, self.broker, self.read, self.clock = root, db, broker, read, clock
         self.journal = broker.journal
@@ -385,11 +408,14 @@ class WalletCopy:
                     owners = self.active_owners(accounting)
         failure = self.db.execute('SELECT observed_at,detail FROM submission_failures '
                                   'ORDER BY observed_at DESC, rowid DESC LIMIT 1').fetchone()
+        try:lifecycle=self.lifecycle()
+        except Exception:lifecycle={'state':'unavailable','admission':'unavailable'}
         return {
             "ranked_wallets": len(cohort), "wallets_polled": len(wallets),
             "source_errors": list(source_errors.values()), "execution_error": execution_error,
             "last_submission_failure": dict(json.loads(failure[1]), observed_at=failure[0]) if failure else None,
             "open_positions": None if execution_error == "missing_accounting_evidence" else len(owners),
+            "lifecycle":lifecycle,
             "signals": {f"{side.lower()}:{state}": count for side, state, count in self.db.execute(
                 "SELECT side,state,count(*) FROM signals GROUP BY side,state")},
         }
