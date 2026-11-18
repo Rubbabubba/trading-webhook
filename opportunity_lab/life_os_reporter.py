@@ -47,6 +47,9 @@ def wallet_copy_status(path=Path('/var/data/kalshi-demo-v9/ranked-wallet-copy-v1
         result['source_error_count'] = len(source_errors) if isinstance(source_errors, list) else None
         result['current_error_present'] = bool(data.get('error') or data.get('execution_error'))
         result['current_error'] = {'code':code(data.get('error') or data.get('execution_error')), 'at':at.isoformat()}
+        if 'lifecycle' in data:
+            from .kalshi_wallet_lifecycle import normalize
+            result['lifecycle']=normalize(data['lifecycle'])
         failure = data.get('last_submission_failure')
         if isinstance(failure, dict):
             stamp = failure.get('observed_at')
