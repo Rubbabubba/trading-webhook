@@ -18,6 +18,44 @@ _last_scheduled = 0.0
 _inflight = False
 
 
+def wallet_copy_status(path=Path('/var/data/kalshi-demo-v9/ranked-wallet-copy-v1/status.json'), *, now=None):
+    """Bounded optional read-only health; absent inventory stays unknown."""
+    now = now or datetime.now(timezone.utc)
+    invalid = {'state': 'invalid', 'at': now.isoformat()}
+    try:
+        with Path(path).open('rb') as stream:
+            raw = stream.read(32769)
+        if len(raw) > 32768:
+            return invalid
+        data = json.loads(raw)
+        if not isinstance(data, dict) or data.get('environment') != 'demo':
+            return invalid
+        at = datetime.fromisoformat(data['at'].replace('Z', '+00:00'))
+        age = (now - at).total_seconds()
+        if age < -30:
+            return invalid
+        result = dict(state='stale' if age > 180 else 'observed', at=at.isoformat(), environment='demo')
+        def count(value):
+            return value if type(value) is int and 0 <= value <= 1000000000 else None
+        for key in ('ranked_wallets', 'wallets_polled', 'open_positions'):
+            result[key] = count(data.get(key))
+        signals = data.get('signals')
+        result['signal_counts_lifetime'] = {key: count(value) for key, value in list(signals.items())[:64] if isinstance(key, str) and re.fullmatch(r'(buy|sell):[a-z_]{1,64}', key) and count(value) is not None} if isinstance(signals, dict) else {}
+        def code(value):
+            return value if isinstance(value, str) and re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_]{0,79}', value) else None
+        result['current_error'] = {'code':code(data.get('error') or data.get('execution_error')), 'at':at.isoformat()}
+        failure = data.get('last_submission_failure')
+        if isinstance(failure, dict):
+            stamp = failure.get('observed_at')
+            stamp = datetime.fromtimestamp(stamp, timezone.utc) if type(stamp) in (int, float) else datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+            result['latest_submission_error'] = {'code':code(failure.get('error')), 'at':stamp.isoformat()}
+        return result
+    except FileNotFoundError:
+        return {'state':'missing', 'at':now.isoformat()}
+    except Exception:
+        return invalid
+
+
 def publish(packet: dict, *, url: str | None = None, token: str | None = None) -> bool:
     target = url if url is not None else os.getenv("LIFE_OS_KALSHI_INGEST_URL", "")
     credential = token if token is not None else os.getenv("LIFE_OS_KALSHI_INGEST_TOKEN", "")
@@ -36,7 +74,11 @@ def publish(packet: dict, *, url: str | None = None, token: str | None = None) -
         # Optional historical recovery cannot stop the original monitor export.
         history = {"schema":"kalshi_historical_diagnostics_v1_20261101",
                    "coverage_error":type(error).__name__}
-    packet = dict(packet, historical_diagnostics=history)
+    try:
+        copier = wallet_copy_status()
+    except Exception:
+        copier = {'state':'invalid', 'at':datetime.now(timezone.utc).isoformat()}
+    packet = dict(packet, historical_diagnostics=history, wallet_copy=copier)
     revision=os.getenv('RENDER_GIT_COMMIT','')
     service=os.getenv('RENDER_SERVICE_ID','')
     if re.fullmatch('[0-9a-f]{40}',revision) and service=='srv-dalhjqv40ujc73e2km1g':
@@ -78,7 +120,7 @@ def fetch_ideas(destination: str | Path, *, url: str | None = None,
     return len(ideas["ideas"])
 
 
-def schedule(packet_path: str | Path, *, urgent: bool = False, interval_seconds: int = 900) -> bool:
+def schedule(packet_path: str | Path, *, urgent: bool = False, interval_seconds: int = 60) -> bool:
     """Never make the worker's trading loop wait for Life OS or its network."""
     global _last_scheduled, _inflight
     if not os.getenv("LIFE_OS_KALSHI_INGEST_URL"):

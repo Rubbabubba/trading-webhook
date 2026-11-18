@@ -58,3 +58,30 @@ class ReporterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WalletCopyTelemetryRegressionTests(unittest.TestCase):
+    def test_read_states_and_unknown_inventory(self):
+        from datetime import datetime, timezone, timedelta
+        from opportunity_lab.life_os_reporter import wallet_copy_status
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'status.json'
+            self.assertEqual(wallet_copy_status(path, now=now)['state'], 'missing')
+            for payload in ('{', json.dumps({'environment':'live','at':now.isoformat()})):
+                path.write_text(payload)
+                self.assertEqual(wallet_copy_status(path, now=now)['state'], 'invalid')
+            path.write_text(json.dumps({'environment':'demo','at':now.isoformat(), 'wallet_id':'secret', 'error':'Bearer secret', 'signals':{'buy:observed':3}}))
+            result = wallet_copy_status(path, now=now)
+            self.assertEqual(result['state'], 'observed')
+            self.assertIsNone(result['open_positions'])
+            self.assertNotIn('secret', json.dumps(result))
+            self.assertEqual(result['signal_counts_lifetime'], {'buy:observed':3})
+            self.assertEqual(wallet_copy_status(path, now=now+timedelta(seconds=181))['state'], 'stale')
+
+    def test_optional_failure_isolated(self):
+        packet = {'worker':{'environment':'demo','production_execution_enabled':False}}
+        with patch('opportunity_lab.life_os_reporter.wallet_copy_status', side_effect=RuntimeError), patch('opportunity_lab.life_os_reporter.urlopen', return_value=Accepted()) as call:
+            self.assertTrue(publish(packet, url='https://life.example/ingest/kalshi', token='intake-token'))
+        self.assertEqual(json.loads(call.call_args.args[0].data)['wallet_copy']['state'], 'invalid')
+        self.assertNotIn('wallet_copy', packet)
