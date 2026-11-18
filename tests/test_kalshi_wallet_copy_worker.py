@@ -139,3 +139,62 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
     assert exchange.posts == 3
     journal.close()
     db.close()
+
+
+from unittest import TestCase
+
+
+class WalletClientOrderIdTests(TestCase):
+    def test_lossless_legal_distinct_ids(self):
+        import re
+        keys = ['00' * 32, 'ff' * 32, 'ab' * 31 + 'ac']
+        ids = [copy.client_order_id(key) for key in keys]
+        self.assertEqual(len(set(ids)), len(keys))
+        for key, cid in zip(keys, ids):
+            self.assertEqual(len(cid), 55)
+            self.assertLessEqual(len(cid), 64)
+            self.assertIsNotNone(re.fullmatch(r'[A-Za-z0-9_-]+', cid))
+            self.assertEqual(copy.signal_key(cid), key)
+            self.assertEqual(copy.signal_key('wallet-copy-' + key), key)
+
+    def test_strict_canonical_validation(self):
+        good = copy.client_order_id('00' * 32)
+        for bad in [None, '', good + '=', good[:-1], good[:-1] + 'B',
+                    good.replace('wallet-copy-', 'other-'),
+                    'wallet-copy-' + 'A' * 64, 'wallet-copy-' + '+' * 43]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                copy.signal_key(bad)
+        for bad in [None, '', 'AA' * 32, 'a' * 63, 'g' * 64]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                copy.client_order_id(bad)
+
+    def test_restart_and_quarantine_keep_full_key(self):
+        from types import SimpleNamespace
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), sqlite3.connect(':memory:') as db:
+                key = 'ab' * 32
+                other = 'ab' * 31 + 'ac'
+                cid = 'wallet-copy-' + key if legacy else copy.client_order_id(key)
+                class Journal:
+                    def __init__(self):
+                        self.db = sqlite3.connect(':memory:')
+                        self.db.execute('CREATE TABLE uncertain_quarantine(id TEXT)')
+                    def records(self):
+                        return [dict(payload=dict(client_order_id=cid), state='terminal', filled=0)]
+                    def accounting(self):
+                        return {'positions': {}}
+                journal = Journal()
+                broker = SimpleNamespace(journal=journal)
+                worker = copy.WalletCopy(None, db, broker, clock=lambda: 100)
+                for value in (key, other):
+                    db.execute('INSERT INTO signals VALUES(?,?,?,?,?,?)',
+                               (value, 100, 'BUY', '{}', 'submission_unresolved', '{}'))
+                worker.recover()
+                self.assertEqual(db.execute('SELECT state FROM signals WHERE id=?', (key,)).fetchone()[0], 'ioc_no_fill')
+                db.execute("UPDATE signals SET state='submission_unresolved' WHERE id=?", (key,))
+                journal.db.execute('INSERT INTO uncertain_quarantine VALUES(?)', (cid,))
+                restarted = copy.WalletCopy(None, db, broker, clock=lambda: 101)
+                restarted.recover()
+                self.assertEqual(db.execute('SELECT state FROM signals WHERE id=?', (key,)).fetchone()[0], 'quarantined_zero_fill')
+                self.assertEqual(db.execute('SELECT state FROM signals WHERE id=?', (other,)).fetchone()[0], 'submission_unresolved')
+                journal.db.close()
