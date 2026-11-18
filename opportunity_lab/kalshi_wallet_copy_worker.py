@@ -70,7 +70,15 @@ class SharedDemoInventory:
             journal.close()
         if self.baseline.positions.keys() & wallet_positions.keys():
             raise ValueError("demo_inventory_overlap")
-        return self.baseline.positions | wallet_positions
+        normalized = {}
+        for ticker, quantity in wallet_positions.items():
+            if type(quantity) is int:
+                normalized[ticker] = quantity
+            elif type(quantity) is Fraction and quantity.denominator == 1:
+                normalized[ticker] = quantity.numerator
+            else:
+                raise ValueError("invalid_wallet_inventory_quantity")
+        return self.baseline.positions | normalized
 
     def reconcile(self, accounting, rows):
         if accounting["positions"]:

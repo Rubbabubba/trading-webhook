@@ -198,3 +198,68 @@ class WalletClientOrderIdTests(TestCase):
                 self.assertEqual(db.execute('SELECT state FROM signals WHERE id=?', (key,)).fetchone()[0], 'quarantined_zero_fill')
                 self.assertEqual(db.execute('SELECT state FROM signals WHERE id=?', (other,)).fetchone()[0], 'submission_unresolved')
                 journal.db.close()
+
+
+class SharedDemoInventoryQuantityTests(TestCase):
+    def inventory(self, root, positions, baseline=None):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        state = root / copy.DIRECTORY
+        state.mkdir(exist_ok=True)
+        (state / 'journal.sqlite3').touch()
+        journal = SimpleNamespace(accounting=lambda: {'positions': positions}, close=lambda: None)
+        self.patch = patch.object(copy, 'open_journal', return_value=journal)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        return copy.SharedDemoInventory(DemoTestInventory(baseline or {}, 'receipt'), root)
+
+    def test_whole_fractions_are_json_safe_and_reconcile_exactly(self):
+        from fractions import Fraction
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            original = {'YES': Fraction(2), 'NO': Fraction(-3)}
+            inventory = self.inventory(Path(directory), original, {'BASE': 1})
+            positions = inventory.positions
+            self.assertEqual(json.loads(json.dumps(positions)), {'BASE': 1, 'YES': 2, 'NO': -3})
+            self.assertTrue(all(type(value) is int for value in positions.values()))
+            self.assertTrue(all(type(value) is Fraction for value in original.values()))
+            rows = [{'ticker': ticker, 'position_fp': str(value)} for ticker, value in positions.items()]
+            inventory.reconcile({'positions': {}}, rows)
+            with self.assertRaises(ValueError):
+                inventory.reconcile({'positions': {}}, rows[:-1])
+            with self.assertRaisesRegex(ValueError, 'maker_inventory_not_flat'):
+                inventory.reconcile({'positions': {'MAKER': 1}}, rows)
+            self.assertEqual(inventory.receipt_sha256, 'receipt')
+
+    def test_overlap_remains_a_hold(self):
+        from fractions import Fraction
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            inventory = self.inventory(Path(directory), {'BASE': Fraction(1)}, {'BASE': 1})
+            with self.assertRaisesRegex(ValueError, 'demo_inventory_overlap'):
+                inventory.positions
+
+    def test_unknown_and_nonintegral_quantities_fail_closed(self):
+        from fractions import Fraction
+        from decimal import Decimal
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        for quantity in (Fraction(1, 2), Fraction(-3, 2), None, '1', 1.0, True, Decimal('1'), object()):
+            with self.subTest(quantity=quantity), TemporaryDirectory() as directory:
+                inventory = self.inventory(Path(directory), {'WALLET': quantity})
+                with self.assertRaisesRegex(ValueError, 'invalid_wallet_inventory_quantity'):
+                    inventory.positions
+
+    def test_baseline_only_does_not_open_wallet_journal(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+        with TemporaryDirectory() as directory, patch.object(copy, 'open_journal') as opened:
+            baseline = DemoTestInventory({'BASE': -2}, 'baseline-receipt')
+            inventory = copy.SharedDemoInventory(baseline, Path(directory))
+            self.assertIs(inventory.positions, baseline.positions)
+            self.assertEqual(json.loads(json.dumps(inventory.positions)), {'BASE': -2})
+            inventory.reconcile({'positions': {}}, [{'ticker': 'BASE', 'position_fp': '-2'}])
+            opened.assert_not_called()
