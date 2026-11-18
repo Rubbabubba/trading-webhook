@@ -43,6 +43,9 @@ def wallet_copy_status(path=Path('/var/data/kalshi-demo-v9/ranked-wallet-copy-v1
         result['signal_counts_lifetime'] = {key: count(value) for key, value in list(signals.items())[:64] if isinstance(key, str) and re.fullmatch(r'(buy|sell):[a-z_]{1,64}', key) and count(value) is not None} if isinstance(signals, dict) else {}
         def code(value):
             return value if isinstance(value, str) and re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_]{0,79}', value) else None
+        source_errors = data.get('source_errors')
+        result['source_error_count'] = len(source_errors) if isinstance(source_errors, list) else None
+        result['current_error_present'] = bool(data.get('error') or data.get('execution_error'))
         result['current_error'] = {'code':code(data.get('error') or data.get('execution_error')), 'at':at.isoformat()}
         failure = data.get('last_submission_failure')
         if isinstance(failure, dict):

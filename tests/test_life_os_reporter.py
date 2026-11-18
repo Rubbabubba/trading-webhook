@@ -85,3 +85,46 @@ class WalletCopyTelemetryRegressionTests(unittest.TestCase):
             self.assertTrue(publish(packet, url='https://life.example/ingest/kalshi', token='intake-token'))
         self.assertEqual(json.loads(call.call_args.args[0].data)['wallet_copy']['state'], 'invalid')
         self.assertNotIn('wallet_copy', packet)
+
+
+class WalletCopyHealthRepairRegressionTests(unittest.TestCase):
+    def test_source_error_count_regression(self):
+        from datetime import datetime, timezone
+        from opportunity_lab.life_os_reporter import wallet_copy_status
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'status.json'
+            for extra, expected in (({}, None), ({'source_errors': []}, 0),
+                                    ({'source_errors': ['private detail', 'other']}, 2),
+                                    ({'source_errors': 'private detail'}, None),
+                                    ({'source_errors': {}}, None),
+                                    ({'source_errors': None}, None)):
+                with self.subTest(extra=extra):
+                    path.write_text(json.dumps(dict(environment='demo', at=now.isoformat(), **extra)))
+                    result = wallet_copy_status(path, now=now)
+                    self.assertEqual(result['source_error_count'], expected)
+                    self.assertIs(result['current_error_present'], False)
+                    self.assertNotIn('private detail', json.dumps(result))
+
+    def test_redacted_current_error_presence_regression(self):
+        from datetime import datetime, timezone
+        from opportunity_lab.life_os_reporter import wallet_copy_status
+        now = datetime.now(timezone.utc)
+        packet = {'worker': {'environment': 'demo', 'production_execution_enabled': False}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'status.json'
+            for field in ('error', 'execution_error'):
+                with self.subTest(field=field):
+                    path.write_text(json.dumps({'environment': 'demo', 'at': now.isoformat(),
+                                                field: 'private error text / not_a_code'}))
+                    result = wallet_copy_status(path, now=now)
+                    self.assertIs(result['current_error_present'], True)
+                    self.assertIsNone(result['current_error']['code'])
+                    with patch('opportunity_lab.life_os_reporter.wallet_copy_status', return_value=result), patch('opportunity_lab.life_os_reporter.urlopen', return_value=Accepted()) as call:
+                        self.assertTrue(publish(packet, url='https://life.example/ingest/kalshi', token='intake-token'))
+                    exported = call.call_args.args[0].data.decode()
+                    self.assertNotIn('private error text', exported)
+                    self.assertIs(json.loads(exported)['wallet_copy']['current_error_present'], True)
+            path.write_text(json.dumps({'environment': 'demo', 'at': now.isoformat(),
+                                        'error': '', 'execution_error': ''}))
+            self.assertIs(wallet_copy_status(path, now=now)['current_error_present'], False)
