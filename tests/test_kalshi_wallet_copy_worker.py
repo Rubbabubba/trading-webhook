@@ -139,3 +139,57 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
     assert exchange.posts == 3
     journal.close()
     db.close()
+
+
+from unittest import TestCase
+import tempfile
+from pathlib import Path
+import re
+
+
+class WalletClientOrderIdTests(TestCase):
+    def test_lossless_legal_distinct_and_legacy(self):
+        keys = ['0' * 64, 'f' * 64, 'a' * 63 + '0', 'a' * 63 + '1']
+        ids = [copy.client_order_id(key) for key in keys]
+        self.assertEqual(len(set(ids)), len(keys))
+        for key, cid in zip(keys, ids):
+            self.assertEqual(len(cid), 55)
+            self.assertLessEqual(len(cid), 64)
+            self.assertIsNotNone(re.fullmatch(r'[A-Za-z0-9_-]+', cid))
+            self.assertEqual(copy.signal_key(cid), key)
+            self.assertEqual(copy.signal_key('wallet-copy-' + key), key)
+
+    def test_canonical_validation(self):
+        cid = copy.client_order_id('0' * 64)
+        for bad in [None, '', cid + '=', cid[:-1], cid[:-1] + 'B',
+                    cid.replace('wallet-copy-', ''), 'wallet-copy-' + 'A' * 64,
+                    cid[:-1] + '/', cid + '\n']:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                copy.signal_key(bad)
+        for bad in [None, 'a' * 63, 'A' * 64, 'z' * 64]:
+            with self.assertRaises(ValueError):
+                copy.client_order_id(bad)
+
+    def test_restart_and_quarantine_keep_full_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            journal = copy.open_journal(root)
+            db = sqlite3.connect(':memory:', isolation_level=None)
+            worker = copy.WalletCopy(root, db, BinaryDemoBroker(journal, Exchange(journal)))
+            for index, legacy in enumerate((False, True)):
+                key = format(index + 1, '064x')
+                cid = 'wallet-copy-' + key if legacy else copy.client_order_id(key)
+                db.execute('INSERT INTO signals VALUES(?,?,?,?,?,?)',
+                           (key, 1, 'BUY', '{}', 'submitting', '{}'))
+                journal.reserve(cid, 'GAME', 1, 30, 2, outcome='yes', action='buy',
+                                account_snapshot=snapshot(journal))
+                worker = copy.WalletCopy(root, db, BinaryDemoBroker(journal, Exchange(journal)))
+                worker.recover()
+                self.assertEqual(db.execute('SELECT state FROM signals WHERE id=?',
+                                            (key,)).fetchone()[0], 'interrupted_before_submission')
+                db.execute("UPDATE signals SET state='submission_unresolved' WHERE id=?", (key,))
+                worker.record_quarantined_signal(cid)
+                self.assertEqual(db.execute('SELECT state FROM signals WHERE id=?',
+                                            (key,)).fetchone()[0], 'quarantined_zero_fill')
+            journal.close()
+            db.close()

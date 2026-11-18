@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from fractions import Fraction
+import base64
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,26 @@ LEADERBOARD = "https://data-api.polymarket.com/v2/leaderboard"
 SIGNAL_SECONDS = 90
 MAX_OPEN = 5
 MAX_DAILY_BUYS = 10
+
+
+def client_order_id(key):
+    if not isinstance(key, str) or not re.fullmatch(r'[0-9a-f]{64}', key):
+        raise ValueError('invalid_signal_key')
+    return 'wallet-copy-' + base64.urlsafe_b64encode(bytes.fromhex(key)).decode('ascii').rstrip('=')
+
+
+def signal_key(client_id):
+    if not isinstance(client_id, str) or not client_id.startswith('wallet-copy-'):
+        raise ValueError('invalid_wallet_client_order_id')
+    suffix = client_id[len('wallet-copy-'):]
+    if re.fullmatch(r'[0-9a-f]{64}', suffix):
+        return suffix
+    if not re.fullmatch(r'[A-Za-z0-9_-]{43}', suffix):
+        raise ValueError('invalid_wallet_client_order_id')
+    key = base64.urlsafe_b64decode(suffix + '=').hex()
+    if client_order_id(key) != client_id:
+        raise ValueError('invalid_wallet_client_order_id')
+    return key
 
 
 def open_journal(root):
@@ -130,7 +151,7 @@ class WalletCopy:
             if ticker not in accounting["positions"] or record["intent"]["action"] != "buy" or not record["filled"]:
                 continue
             row = self.db.execute("SELECT trade,mapping FROM signals WHERE id=?",
-                                  (record["payload"]["client_order_id"].removeprefix("wallet-copy-"),)).fetchone()
+                                  (signal_key(record["payload"]["client_order_id"]),)).fetchone()
             if row is None or row[1] is None:
                 raise ValueError("wallet_fill_owner_missing")
             owners[ticker] = tuple(json.loads(item) for item in row)
@@ -163,7 +184,7 @@ class WalletCopy:
             else:
                 state = "filled" if record["filled"] else "ioc_no_fill"
             self.db.execute("UPDATE signals SET state=? WHERE id=? AND state IN ('submitting','submission_unresolved')",
-                            (state, client_id.removeprefix("wallet-copy-")))
+                            (state, signal_key(client_id)))
         self.db.execute("UPDATE signals SET state='interrupted_before_submission' WHERE state='submitting'")
         self.startup_recovered = True
         if self.journal.accounting()["positions"] and self.clock() >= self.next_settlement:
@@ -172,7 +193,7 @@ class WalletCopy:
 
     def record_quarantined_signal(self, client_id):
         self.db.execute("UPDATE signals SET state='quarantined_zero_fill' WHERE id=? "
-                        "AND state IN ('submitting','submission_unresolved')", (client_id.removeprefix('wallet-copy-'),))
+                        "AND state IN ('submitting','submission_unresolved')", (signal_key(client_id),))
 
     def quarantine_unmatched_entry(self, record):
         payload, intent = record['payload'], record['intent']
@@ -182,7 +203,7 @@ class WalletCopy:
                 or intent.get('action') != 'buy' or intent.get('count') != 1):
             return False
         signal = self.db.execute('SELECT side,state,mapping FROM signals WHERE id=?',
-                                 (client_id.removeprefix('wallet-copy-'),)).fetchone()
+                                 (signal_key(client_id),)).fetchone()
         quote = self.journal.db.execute('SELECT detail FROM submission_quotes WHERE client_id=?', (client_id,)).fetchone()
         submitted = json.loads(quote[0]).get('observed_at') if quote else None
         if (not signal or signal[0] != 'BUY' or signal[1] not in ('submitting','submission_unresolved')
@@ -261,7 +282,7 @@ class WalletCopy:
         fee = read_fee(quote, DEMO, self.read)
         # Reserve the modeled fee at its maximum across any improvement to the limit.
         reserve = int((Decimal("1.75") * Decimal(fee["fee_multiplier"])).to_integral_value(rounding=ROUND_CEILING))
-        client_id = "wallet-copy-" + key
+        client_id = client_order_id(key)
         snapshot = self.broker.snapshot()
         self.db.execute("UPDATE signals SET state='submitting',mapping=? WHERE id=?",
                         (json.dumps(mapping), key))
