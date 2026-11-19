@@ -90,6 +90,7 @@ def test_scheduler_tick_collects_quotes_resolves_and_persists_decision(tmp_path,
     worker.read=lambda *a:({'market':{'ticker':'GAME','event_ticker':'EVENT','status':'finalized','result':'yes'}},)
     now[0]+=2;result=worker.tick()
     assert result['modeled_entries']==1 and result['resolved']==1 and result['selected_wallets']==[]
+    assert result['observation_state_counts_lifetime']=={'modeled_entry':1}
     assert result['scores'][0]['training']['net_cents']==0  # Same-session evidence cannot qualify.
     now[0]+=86400;assert worker.report()['scores'][0]['training']['net_cents']==48
     assert worker.db.execute('SELECT count(*) FROM decisions').fetchone()[0]==2
