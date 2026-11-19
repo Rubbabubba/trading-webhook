@@ -142,3 +142,23 @@ class WalletCopyTimestampRegressionTests(unittest.TestCase):
                     path.write_text(json.dumps({'environment': 'demo',
                         'at': (now + timedelta(seconds=seconds)).isoformat()}))
                     self.assertEqual(wallet_copy_status(path, now=now)['state'], expected)
+
+
+class WalletCopyOptionalTimestampRepairTests(unittest.TestCase):
+    def test_malformed_optional_timestamp_retains_coverage(self):
+        from datetime import datetime, timezone, timedelta
+        from opportunity_lab.life_os_reporter import wallet_copy_status
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'status.json'
+            for stamp in (None, 'bad', '2026-01-01T00:00:00',
+                          (now + timedelta(seconds=30)).isoformat(), {}, 1e300):
+                with self.subTest(stamp=stamp):
+                    path.write_text(json.dumps(dict(environment='demo', at=now.isoformat(),
+                        ranked_wallets=4, last_submission_failure=dict(
+                            error='private detail', observed_at=stamp))))
+                    result = wallet_copy_status(path, now=now)
+                    self.assertEqual(result['state'], 'observed')
+                    self.assertEqual(result['ranked_wallets'], 4)
+                    self.assertNotIn('latest_submission_error', result)
+                    self.assertNotIn('private detail', json.dumps(result))
