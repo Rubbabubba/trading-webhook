@@ -41,3 +41,33 @@ def test_lifecycle_export_strips_private_fields_and_keeps_unknowns_unknown():
                      'realized_net_usd':'nan','buy_attempts_today':True})
     assert value['realized_net_usd'] is None and value['buy_attempts_today'] is None
     assert 'api_key' not in value
+
+
+def test_attempt_day_uses_durable_submission_clock_across_midnight(tmp_path):
+    from opportunity_lab.kalshi_wallet_copy_worker import client_order_id
+    import json
+    midnight=datetime(2026,11,19,tzinfo=timezone.utc).timestamp()
+    ledger=sqlite3.connect(':memory:')
+    ledger.execute('CREATE TABLE submission_quotes(client_id TEXT,detail TEXT)')
+    key='a'*64
+    ledger.execute('INSERT INTO submission_quotes VALUES(?,?)',
+                   (client_order_id(key),json.dumps({'observed_at':midnight+2})))
+    journal=SimpleNamespace(db=ledger)
+    with sqlite3.connect(':memory:',isolation_level=None) as db:
+        # A source trade before midnight was actually submitted after midnight.
+        db.execute('CREATE TABLE signals(id TEXT PRIMARY KEY,at INTEGER,side TEXT,trade TEXT,state TEXT,mapping TEXT)')
+        db.execute('INSERT INTO signals VALUES(?,?,?,?,?,NULL)',
+                   (key,int(midnight-20),'BUY','{}','filled'))
+        worker=WalletCopy(tmp_path,db,SimpleNamespace(journal=journal),clock=lambda:midnight+30)
+        before=list(db.iterdump())
+        assert worker.buy_attempts(midnight)==1
+        assert list(db.iterdump())==before
+        # Unknown and zero-fill attempts still consume the same ten-attempt cap.
+        db.execute("UPDATE signals SET state='quarantined_zero_fill'")
+        assert worker.buy_attempts(midnight)==1
+        assert worker.buy_attempts(midnight+86400)==0
+        # A legacy row without a verifiable submit timestamp keeps its old day.
+        db.execute('INSERT INTO signals VALUES(?,?,?,?,?,NULL)',
+                   ('legacy',int(midnight+1),'BUY','{}','submission_unresolved'))
+        assert worker.buy_attempts(midnight)==2
+    ledger.close()

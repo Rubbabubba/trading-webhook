@@ -133,13 +133,21 @@ def error_code(exc):
 
 
 class WalletCopy:
+    def buy_attempts(self, since):
+        # Admission is keyed to this worker's attempt, not the copied wallet's
+        # earlier trade. Legacy rows retain their original day if no journal
+        # submission receipt exists; no uncertain attempt is forgiven.
+        return self.db.execute("SELECT count(*) FROM signals s LEFT JOIN buy_attempts a "
+            "ON a.signal_id=s.id WHERE s.side='BUY' AND coalesce(a.attempted_at,s.at)>=? "
+            "AND s.state IN ('filled','ioc_no_fill','submitting','submission_unresolved',"
+            "'quarantined_zero_fill')", (since,)).fetchone()[0]
+
     def lifecycle(self):
         """No broker request, control mutation, or reinterpretation of historic fills."""
         from .kalshi_execution_risk import display
         state=self.journal.accounting();records=self.journal.records()
         since=datetime.fromisoformat(day(self.clock())).replace(tzinfo=timezone.utc).timestamp()
-        attempts=self.db.execute("SELECT count(*) FROM signals WHERE side='BUY' AND at>=? AND state IN "
-            "('filled','ioc_no_fill','submitting','submission_unresolved','quarantined_zero_fill')",(since,)).fetchone()[0]
+        attempts=self.buy_attempts(since)
         unresolved=sum(r['state']!='terminal' for r in records)
         positions=len(state['positions'])
         return {'state':'pending_reconciliation' if unresolved else 'reconciled',
@@ -170,7 +178,20 @@ class WalletCopy:
             CREATE TABLE IF NOT EXISTS uncertain_checks(client_id TEXT PRIMARY KEY, evidence TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS submission_failures(
               signal_id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL, detail TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS buy_attempts(
+              signal_id TEXT PRIMARY KEY, attempted_at INTEGER NOT NULL);
         """)
+        # Submission quotes survive both settlement and zero-fill quarantine.
+        # Backfill only those durable receipts, without changing a signal or
+        # economic journal. Future attempts record their own start clock.
+        if self.journal.db.execute("SELECT 1 FROM sqlite_master WHERE name='submission_quotes'").fetchone():
+            for client_id, detail in self.journal.db.execute('SELECT client_id,detail FROM submission_quotes'):
+                if not client_id.startswith('wallet-copy-'):
+                    continue
+                observed = json.loads(detail).get('observed_at')
+                if type(observed) in (int, float) and 0 <= observed < 1e12:
+                    db.execute('INSERT OR IGNORE INTO buy_attempts VALUES(?,?)',
+                               (signal_key(client_id), int(observed)))
         db.execute("INSERT OR IGNORE INTO start VALUES(1, ?)", (int(clock()) + 1,))
         self.started = db.execute("SELECT at FROM start WHERE id=1").fetchone()[0]
 
@@ -284,10 +305,7 @@ class WalletCopy:
             if trade["proxy_wallet"] not in cohort:
                 return "wallet_outside_current_cohort"
             since = datetime.fromisoformat(day(self.clock())).replace(tzinfo=timezone.utc).timestamp()
-            buys = self.db.execute(
-                "SELECT count(*) FROM signals WHERE side='BUY' AND at>=? AND state IN "
-                "('filled','ioc_no_fill','submitting','submission_unresolved','quarantined_zero_fill')",
-                (since,)).fetchone()[0]
+            buys = self.buy_attempts(since)
             if len(owners) >= MAX_OPEN or buys >= MAX_DAILY_BUYS:
                 return "demo_entry_limit"
             mapping = discover(trade, DEMO, self.read)
@@ -318,6 +336,8 @@ class WalletCopy:
                         (json.dumps(mapping), key))
         self.journal.reserve(client_id, mapping["ticker"], 1, price, reserve, outcome=mapping["side"],
                              action=trade["side"].lower(), account_snapshot=snapshot)
+        if buying:
+            self.db.execute('INSERT OR IGNORE INTO buy_attempts VALUES(?,?)', (key, int(self.clock())))
 
         def fresh_quote(_):
             self.require_demo_hold()
