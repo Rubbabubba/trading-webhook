@@ -19,12 +19,12 @@ def test_budget_rollover_and_after_cost_lifecycle_are_read_only(tmp_path):
     journal=SimpleNamespace(db=ledger,records=lambda:records,accounting=lambda:accounting)
     with sqlite3.connect(':memory:',isolation_level=None) as db:
         worker=WalletCopy(tmp_path,db,SimpleNamespace(journal=journal),clock=lambda:now)
-        for i in range(10):db.execute('INSERT INTO signals VALUES(?,?,?,?,?,NULL)',
+        for i in range(50):db.execute('INSERT INTO signals VALUES(?,?,?,?,?,NULL)',
             (str(i),int(now),'BUY','{}','quarantined_zero_fill' if i else 'filled'))
         before=list(db.iterdump())
         result=worker.lifecycle()
         assert result['admission']=='daily_attempt_limit'
-        assert result['buy_attempts_today']==10 and result['remaining_buy_attempts']==0
+        assert result['buy_attempts_today']==50 and result['remaining_buy_attempts']==0
         assert result['entries_filled']==1 and result['exits_filled']==1 and result['settlements']==1
         assert result['realized_net_usd']=='-0.07' and result['fees_usd']=='0.02'
         exported=normalize(result)
@@ -35,8 +35,8 @@ def test_budget_rollover_and_after_cost_lifecycle_are_read_only(tmp_path):
         now+=120
         result=worker.lifecycle()
         assert result['budget_session_utc']=='2026-11-19'
-        assert result['buy_attempts_today']==0 and result['remaining_buy_attempts']==10
-        assert db.execute('SELECT count(*) FROM signals').fetchone()[0]==10
+        assert result['buy_attempts_today']==0 and result['remaining_buy_attempts']==50
+        assert db.execute('SELECT count(*) FROM signals').fetchone()[0]==50
     ledger.close()
 
 

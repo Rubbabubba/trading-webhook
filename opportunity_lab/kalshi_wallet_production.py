@@ -42,6 +42,19 @@ class WalletOwnerAuthority(OwnerAuthority):
         super().__init__(parsed._replace(path='/execution/kalshi/grant').geturl(),token)
         self.url=url
 
+    def qualified(self,wallet):
+        from urllib.request import Request
+        from urllib.parse import urlparse
+        from .wallet_qualification import validate_report
+        try:
+            url=urlparse(self.url)._replace(path="/execution/kalshi/wallet/selection").geturl()
+            with self.opener.open(Request(url,headers={"Authorization":"Bearer "+self.token}),timeout=5) as response:raw=response.read(16001)
+            if len(raw)>16000:return False
+            value=json.loads(raw)
+            if value.get("schema")!="kalshi_wallet_selection_v1":return False
+            return wallet in validate_report(value.get("research"))["selected_wallets"]
+        except Exception:return False
+
     def report(self,value):
         # Retain detailed wallet lifecycle locally; the hosted production
         # status protocol accepts the bounded account/strategy summary.
@@ -63,9 +76,10 @@ def validate(grant):
 
 
 class WalletProductionJournal(LiveBinaryJournal):
-    def __init__(self,path,grant,*,signals,approval_verifier,clock=None):
+    def __init__(self,path,grant,*,signals,approval_verifier,clock=None,qualification_verifier=None):
         self.grant=validate(grant);self.signals=signals;self.approval_verifier=approval_verifier
         self.live_limits=grant['limits'];self._signal_context=None
+        self.qualification_verifier=qualification_verifier or (lambda wallet:False)
         # An existing exact journal may manage owned exits after revocation.
         existing=Path(path).exists()
         if not callable(approval_verifier):raise ValueError('wallet_authority_verifier_required')
@@ -137,6 +151,7 @@ class WalletProductionJournal(LiveBinaryJournal):
                     or self.clock()>=datetime.fromisoformat(self.grant['expires_at'].replace('Z','+00:00'))):
                 raise ValueError('wallet_entry_authority_expired_or_revoked')
             _,trade,_=self.source(context[0])
+            if self.qualification_verifier(trade['proxy_wallet']) is not True:raise ValueError('wallet_not_profit_qualified')
             cohort=self.signals.execute('SELECT wallets FROM cohort WHERE day=?',(self.clock().date().isoformat(),)).fetchone()
             if not cohort or trade['proxy_wallet'] not in json.loads(cohort[0]):raise ValueError('wallet_current_cohort_required')
             since=self.clock().replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
@@ -193,6 +208,7 @@ class WalletProductionBroker(LiveBinaryBroker):
 
 
 class ProductionWalletCopy(WalletCopy):
+    max_submissions=10  # Production approval remains ten submissions, never the Demo research allowance.
     market_base=WalletProductionClient.BASE_URL
 
     def __init__(self,root,db,broker,*,read=public_get,clock=None):
@@ -243,7 +259,7 @@ def run(root,*,once=False):
                             validate(grant)
                             db=sqlite3.connect(root/'signals.sqlite3',isolation_level=None)
                             recovering=(root/'journal.sqlite3').exists()
-                            journal=WalletProductionJournal(root/'journal.sqlite3',grant,signals=db,approval_verifier=authority.verify)
+                            journal=WalletProductionJournal(root/'journal.sqlite3',grant,signals=db,approval_verifier=authority.verify,qualification_verifier=authority.qualified)
                             client=WalletProductionClient(os.environ.get('KALSHI_LIVE_API_KEY_ID',''),os.environ.get('KALSHI_LIVE_PRIVATE_KEY_PATH',''),
                                 grant,approval_verifier=authority.verify,recovery_only=recovering,demo_key_id=os.environ.get('KALSHI_DEMO_API_KEY_ID'))
                             worker=ProductionWalletCopy(root,db,WalletProductionBroker(journal,client))

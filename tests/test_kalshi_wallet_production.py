@@ -36,7 +36,7 @@ class ProductionExchange(Exchange,p.WalletProductionClient):
 def setup(tmp_path):
     now=datetime.now(timezone.utc);db=sqlite3.connect(':memory:',isolation_level=None)
     approved=[True]
-    j=p.WalletProductionJournal(tmp_path/'production.db',grant(now),signals=db,clock=lambda:now,approval_verifier=lambda _:approved[0])
+    j=p.WalletProductionJournal(tmp_path/'production.db',grant(now),signals=db,clock=lambda:now,approval_verifier=lambda _:approved[0],qualification_verifier=lambda _:True)
     x=ProductionExchange(j);broker=p.WalletProductionBroker(j,x)
     worker=p.ProductionWalletCopy(tmp_path,db,broker,clock=lambda:now.timestamp())
     db.execute('INSERT INTO cohort VALUES(?,?)',(now.date().isoformat(),json.dumps(['0x'+'1'*40])))
@@ -70,7 +70,7 @@ def test_production_buy_restart_owned_sell_after_revocation(outcome,tmp_path):
         db.execute("INSERT INTO signals VALUES(?,?,'BUY','{}','ioc_no_fill',NULL)",(f'budget-{index}',int(now.timestamp())))
     path=j.path if hasattr(j,'path') else tmp_path/'production.db'
     j.close();approved[0]=False
-    j=p.WalletProductionJournal(path,grant(now),signals=db,clock=lambda:now,approval_verifier=lambda _:approved[0])
+    j=p.WalletProductionJournal(path,grant(now),signals=db,clock=lambda:now,approval_verifier=lambda _:approved[0],qualification_verifier=lambda _:True)
     x.j=j;b=p.WalletProductionBroker(j,x)
     key,cid=signal(db,now,'SELL',outcome,number=2)
     j.reserve(cid,'GAME',1,50,2,outcome=outcome,action='sell',account_snapshot=b.snapshot())
@@ -137,4 +137,24 @@ def test_live_guards_never_retry_unknown_or_accept_bad_evidence(failure,tmp_path
             with pytest.raises(ValueError):b.submit(cid,quote_snapshot=q)
             assert x.posts==1
         else:assert x.posts==0
+    j.close();db.close()
+
+
+def test_profit_selection_is_rechecked_before_actual_submission_and_cannot_block_owned_exit(tmp_path):
+    now,db,j,x,b,w,approved=setup(tmp_path)
+    qualified=[True];j.qualification_verifier=lambda _:qualified[0]
+    key,cid=signal(db,now,'BUY')
+    j.reserve(cid,'GAME',1,50,2,outcome='yes',action='buy',account_snapshot=b.snapshot())
+    qualified[0]=False
+    with pytest.raises(ValueError,match='not_profit_qualified'):b.submit(cid,quote_snapshot=production_quote(j,cid,key))
+    assert x.posts==0
+    assert j.get(cid)['state']=='reserved'
+    qualified[0]=True
+    assert b.submit(cid,quote_snapshot=production_quote(j,cid,key))['filled']==1
+    db.execute("UPDATE signals SET state='filled' WHERE id=?",(key,))
+    qualified[0]=False
+    key,cid=signal(db,now,'SELL',number=2)
+    j.reserve(cid,'GAME',1,50,2,outcome='yes',action='sell',account_snapshot=b.snapshot())
+    assert b.submit(cid,quote_snapshot=production_quote(j,cid,key))['filled']==1
+    assert j.accounting()['positions']=={} and x.posts==2
     j.close();db.close()
