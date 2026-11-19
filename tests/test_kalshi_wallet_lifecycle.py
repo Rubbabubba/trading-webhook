@@ -27,6 +27,10 @@ def test_budget_rollover_and_after_cost_lifecycle_are_read_only(tmp_path):
         assert result['buy_attempts_today']==10 and result['remaining_buy_attempts']==0
         assert result['entries_filled']==1 and result['exits_filled']==1 and result['settlements']==1
         assert result['realized_net_usd']=='-0.07' and result['fees_usd']=='0.02'
+        exported=normalize(result)
+        assert exported['sell_attempts']==1 and exported['sell_signals_observed']==0
+        assert exported['sell_verification']=='broker_fill_verified'
+        assert exported['sell_admission']=='eligible_owned_sells_only'
         assert list(db.iterdump())==before
         now+=120
         result=worker.lifecycle()
