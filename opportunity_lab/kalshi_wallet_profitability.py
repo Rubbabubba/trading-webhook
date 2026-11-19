@@ -128,7 +128,8 @@ class Research:
             policy_hash=POLICY_HASH,policy=POLICY,mode='prospective_shadow',actual_fills=False,
             state='error' if errors else 'observed',errors=errors or [],scores=scores,
             selected_wallets=selected if not errors else [],observations=self.db.execute('SELECT count(*) FROM observations').fetchone()[0],
-            modeled_entries=len(rows),resolved=sum(r['net_cents'] is not None for r in rows))
+            modeled_entries=len(rows),resolved=sum(r['net_cents'] is not None for r in rows),
+            observation_state_counts_lifetime=dict(self.db.execute('SELECT state,count(*) FROM observations GROUP BY state ORDER BY count(*) DESC,state LIMIT 32').fetchall()))
         encoded=json.dumps(result,sort_keys=True)
         self.db.execute('INSERT OR IGNORE INTO decisions VALUES(?,?)',(self.clock(),encoded))
         tmp=self.root/'status.tmp';tmp.write_text(encoded,encoding='utf-8');tmp.replace(self.root/'status.json')
