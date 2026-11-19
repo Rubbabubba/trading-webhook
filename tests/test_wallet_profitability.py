@@ -27,6 +27,7 @@ def test_forward_cycle_costs_holdout_restart_and_selection(tmp_path,monkeypatch)
             assert worker.process(trade_key(key),key)=='modeled_entry'
             now[0]+=2;side[0]='SELL';price[0]='.65' if w==wallet or i<20 else '.35'
             assert worker.process('sell',t(w,i,'SELL',price[0]))=='modeled_exit'
+    now[0]+=86400  # Today's open observations cannot withdraw a prior-session qualification.
     report=worker.report()
     assert report['selected_wallets']==[wallet]
     assert report['modeled_entries']==80 and report['resolved']==80
@@ -35,9 +36,11 @@ def test_forward_cycle_costs_holdout_restart_and_selection(tmp_path,monkeypatch)
     assert report['scores'][0]['holdout']['net_cents']==220
     assert report['scores'][1]['qualified'] is False
     assert validate_report(report,now=datetime.fromtimestamp(now[0],timezone.utc))==report
+    side[0]='BUY';worker.process('fresh-open',t(wallet,99,'BUY','.50'))
+    assert worker.report()['selected_wallets']==[wallet]
     worker.db.close();again=r.Research(tmp_path,clock=lambda:now[0])
     assert again.report()['selected_wallets']==[wallet]
-    assert again.db.execute('SELECT count(*) FROM trades').fetchone()[0]==80
+    assert again.db.execute('SELECT count(*) FROM trades').fetchone()[0]==81
     assert again.process('duplicate',t(wallet,0,'BUY','.50'))=='duplicate_event'
     again.db.close()
 
@@ -87,8 +90,9 @@ def test_scheduler_tick_collects_quotes_resolves_and_persists_decision(tmp_path,
     worker.read=lambda *a:({'market':{'ticker':'GAME','event_ticker':'EVENT','status':'finalized','result':'yes'}},)
     now[0]+=2;result=worker.tick()
     assert result['modeled_entries']==1 and result['resolved']==1 and result['selected_wallets']==[]
-    assert result['scores'][0]['training']['net_cents']==48
-    assert worker.db.execute('SELECT count(*) FROM decisions').fetchone()[0]==1
-    now[0]+=30;assert worker.tick()['modeled_entries']==1
+    assert result['scores'][0]['training']['net_cents']==0  # Same-session evidence cannot qualify.
+    now[0]+=86400;assert worker.report()['scores'][0]['training']['net_cents']==48
     assert worker.db.execute('SELECT count(*) FROM decisions').fetchone()[0]==2
+    now[0]+=30;assert worker.tick()['modeled_entries']==1
+    assert worker.db.execute('SELECT count(*) FROM decisions').fetchone()[0]==3
     worker.db.close()

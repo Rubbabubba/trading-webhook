@@ -11,7 +11,7 @@ import time
 
 from .wallet_qualification import POLICY,POLICY_HASH,score,validate_report
 
-DIRECTORY = 'wallet-profitability-v1'
+DIRECTORY = 'wallet-profitability-v2'
 
 
 def fee(price, multiplier):
@@ -117,9 +117,11 @@ class Research:
         wallets=json.loads(candidates[0]) if candidates else []
         scores=[]
         for wallet in wallets:
-            owned=[r for r in rows if r['wallet']==wallet];v=score(owned)
+            all_owned=[r for r in rows if r['wallet']==wallet]
+            cutoff=datetime.fromtimestamp(self.clock(),timezone.utc).date().isoformat()
+            owned=[r for r in all_owned if r['day']<cutoff];v=score(owned)
             held=[r['settled_hold_net_cents'] for r in owned if r.get('settled_hold_net_cents') is not None]
-            scores.append(dict(wallet=wallet,**v,open=sum(r['net_cents'] is None for r in owned),
+            scores.append(dict(wallet=wallet,**v,assessment_before_utc_day=cutoff,current_open=sum(r['net_cents'] is None for r in all_owned),open=sum(r['net_cents'] is None for r in owned),
                 hold_resolved=len(held),hold_net_cents=sum(held)))
         selected=[r['wallet'] for r in sorted(scores,key=lambda r:r['holdout']['event_mean_lower_cents'] or -1e9,reverse=True) if r['qualified']][:4]
         result=dict(schema='wallet_profitability_v1',at=datetime.fromtimestamp(self.clock(),timezone.utc).isoformat(),
