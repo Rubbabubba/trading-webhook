@@ -128,3 +128,17 @@ class WalletCopyHealthRepairRegressionTests(unittest.TestCase):
             path.write_text(json.dumps({'environment': 'demo', 'at': now.isoformat(),
                                         'error': '', 'execution_error': ''}))
             self.assertIs(wallet_copy_status(path, now=now)['current_error_present'], False)
+
+
+class WalletCopyTimestampRegressionTests(unittest.TestCase):
+    def test_future_timestamp_matches_intake_tolerance(self):
+        from datetime import datetime, timezone, timedelta
+        from opportunity_lab.life_os_reporter import wallet_copy_status
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'status.json'
+            for seconds, expected in ((4, 'observed'), (6, 'invalid'), (30, 'invalid')):
+                with self.subTest(seconds=seconds):
+                    path.write_text(json.dumps({'environment': 'demo',
+                        'at': (now + timedelta(seconds=seconds)).isoformat()}))
+                    self.assertEqual(wallet_copy_status(path, now=now)['state'], expected)

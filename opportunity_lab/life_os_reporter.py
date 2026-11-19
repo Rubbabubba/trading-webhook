@@ -32,7 +32,7 @@ def wallet_copy_status(path=Path('/var/data/kalshi-demo-v9/ranked-wallet-copy-v1
             return invalid
         at = datetime.fromisoformat(data['at'].replace('Z', '+00:00'))
         age = (now - at).total_seconds()
-        if age < -30:
+        if age < -5:
             return invalid
         result = dict(state='stale' if age > 180 else 'observed', at=at.isoformat(), environment='demo')
         def count(value):
