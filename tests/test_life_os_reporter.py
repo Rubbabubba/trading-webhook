@@ -162,3 +162,21 @@ class WalletCopyOptionalTimestampRepairTests(unittest.TestCase):
                     self.assertEqual(result['ranked_wallets'], 4)
                     self.assertNotIn('latest_submission_error', result)
                     self.assertNotIn('private detail', json.dumps(result))
+
+
+class WalletCopyReadTimeRegressionTests(unittest.TestCase):
+    def test_same_file_ages_without_inventing_inventory(self):
+        from datetime import datetime, timezone, timedelta
+        from opportunity_lab.life_os_reporter import wallet_copy_status
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'status.json'
+            self.assertEqual(wallet_copy_status(path, now=now)['state'], 'missing')
+            path.write_text(json.dumps({'environment': 'demo', 'at': now.isoformat(),
+                                       'wallet_id': 'private-wallet', 'orders': [{'secret': 'private-order'}]}))
+            fresh = wallet_copy_status(path, now=now)
+            self.assertEqual(fresh['state'], 'observed')
+            self.assertIsNone(fresh['open_positions'])
+            self.assertEqual(wallet_copy_status(path, now=now + timedelta(seconds=181))['state'], 'stale')
+            self.assertNotIn('private-wallet', json.dumps(fresh))
+            self.assertNotIn('private-order', json.dumps(fresh))
