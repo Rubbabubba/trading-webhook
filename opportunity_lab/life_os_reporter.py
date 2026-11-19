@@ -90,8 +90,8 @@ def publish(packet: dict, *, url: str | None = None, token: str | None = None) -
     except Exception:
         copier = {'state':'invalid', 'at':datetime.now(timezone.utc).isoformat()}
     try:
-        from .kalshi_wallet_profitability import read_report
-        copier["profitability"]=read_report(Path("/var/data/kalshi-demo-v9/wallet-profitability-v1/status.json"))
+        from .kalshi_wallet_profitability import read_report,DIRECTORY as research_directory
+        copier["profitability"]=read_report(Path("/var/data/kalshi-demo-v9")/research_directory/"status.json")
     except Exception:
         copier["profitability"]=None
     packet = dict(packet, historical_diagnostics=history, wallet_copy=copier)

@@ -2,12 +2,12 @@
 from datetime import datetime,timezone
 import hashlib,json,math,re,statistics
 WALLET=re.compile(r"0x[a-f0-9]{40}")
-POLICY = dict(version='wallet_forward_costs_v1', training_entries=20,
+POLICY = dict(version='wallet_forward_costs_v2', training_entries=20,
     minimum_resolved=20, minimum_events=10, minimum_days=3,
     confidence_multiplier=3, stress_cents_per_leg=1, maximum_selected=4,
     maximum_quote_age_seconds=5, maximum_signal_seconds=90,
     execution='one_contract_executable_bid_ask', fees='conservative_quadratic_whole_cent',
-    holdout='all_entries_after_first_20_per_wallet', maximum_report_age_seconds=180)
+    holdout='all_entries_after_first_20_per_wallet', evaluation_cutoff='prior_utc_sessions_only', maximum_report_age_seconds=180)
 POLICY_HASH = hashlib.sha256(json.dumps(POLICY,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
 def score(rows):
@@ -49,6 +49,7 @@ def validate_report(value,*,now=None):
     for r in rows:
         if not isinstance(r,dict):raise ValueError('invalid_wallet_score')
         if not isinstance(r.get('reasons'),list) or len(r['reasons'])>20 or any(not isinstance(x,str) or len(x)>80 for x in r['reasons']):raise ValueError('invalid_wallet_reasons')
+        if r.get('assessment_before_utc_day')!=now.astimezone(timezone.utc).date().isoformat():raise ValueError('invalid_wallet_assessment_cutoff')
         w=r.get('wallet')
         if not isinstance(w,str) or not WALLET.fullmatch(w) or w in seen:raise ValueError('invalid_wallet_selection')
         seen.add(w)
