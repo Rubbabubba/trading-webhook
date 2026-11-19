@@ -133,6 +133,15 @@ def error_code(exc):
 
 
 class WalletCopy:
+    market_base = DEMO
+
+    def excluded_tickers(self):
+        receipt = json.loads((self.root / "separate-demo-test-inventory-v1.json").read_bytes())
+        return {entry['ticker'] for entry in receipt['positions']}
+
+    def quote(self, mapping):
+        return read_quote(mapping, self.market_base, self.read)
+
     def buy_attempts(self, since):
         # Admission is keyed to this worker's attempt, not the copied wallet's
         # earlier trade. Legacy rows retain their original day if no journal
@@ -316,9 +325,8 @@ class WalletCopy:
             buys = self.buy_attempts(since)
             if len(owners) >= MAX_OPEN or buys >= MAX_DAILY_BUYS:
                 return "demo_entry_limit"
-            mapping = discover(trade, DEMO, self.read)
-            receipt = json.loads((self.root / "separate-demo-test-inventory-v1.json").read_bytes())
-            if any(entry["ticker"] == mapping["ticker"] for entry in receipt["positions"]):
+            mapping = discover(trade, self.market_base, self.read)
+            if mapping['ticker'] in self.excluded_tickers():
                 return "legacy_demo_inventory_market"
             if (mapping["ticker"] in owners
                     or any(source_identity(entry) == source_identity(trade) for entry, _ in owners.values())):
@@ -333,9 +341,9 @@ class WalletCopy:
                 return "no_owned_contract_for_wallet_sell"
             (_, mapping), = match
         self.require_demo_hold()
-        quote = read_quote(mapping, DEMO, self.read)
+        quote = self.quote(mapping)
         price = executable(trade, mapping, quote)
-        fee = read_fee(quote, DEMO, self.read)
+        fee = read_fee(quote, self.market_base, self.read)
         # Reserve the modeled fee at its maximum across any improvement to the limit.
         reserve = int((Decimal("1.75") * Decimal(fee["fee_multiplier"])).to_integral_value(rounding=ROUND_CEILING))
         client_id = client_order_id(key)
@@ -349,13 +357,16 @@ class WalletCopy:
 
         def fresh_quote(_):
             self.require_demo_hold()
-            frame = read_quote(mapping, DEMO, self.read)
+            frame = self.quote(mapping)
             fresh = executable(trade, mapping, frame)
             if (fresh > price if buying else fresh < price):
                 raise ValueError("wallet_quote_moved")
             if self.clock() - trade["timestamp"] > SIGNAL_SECONDS:
                 raise ValueError("wallet_signal_expired")
-            return dict(frame, wallet_signal_id=key, fee_basis=fee)
+            fresh_fee = read_fee(frame, self.market_base, self.read)
+            fresh_reserve = int((Decimal('1.75') * Decimal(fresh_fee['fee_multiplier'])).to_integral_value(rounding=ROUND_CEILING))
+            if fresh_reserve > reserve:raise ValueError('wallet_fee_changed_replan_required')
+            return dict(frame, wallet_signal_id=key, fee_basis=fresh_fee)
 
         try:
             result = self.broker.submit(client_id, quote_provider=fresh_quote)

@@ -103,6 +103,10 @@ def price_book(frame, side):
 def read_quote(mapping, base, read=public_get):
     if base != DEMO:
         raise ValueError("wallet_demo_quote_required")
+    return _read_quote(mapping, base, read, environment='demo')
+
+
+def _read_quote(mapping, base, read, *, environment):
     ticker = mapping["ticker"]
     if not TICKER.fullmatch(ticker):
         raise ValueError("invalid_wallet_mapping")
@@ -120,7 +124,7 @@ def read_quote(mapping, base, read=public_get):
             "http_age": age, "http_date": date, "ask": str(Decimal(ask.numerator) / ask.denominator),
             "depth": str(Decimal(depth.numerator) / depth.denominator),
             "bid": str(Decimal(bid.numerator) / bid.denominator),
-            "environment": "demo"}
+            "environment": environment}
 
 
 def read_fee(quote, base, read=public_get):
