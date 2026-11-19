@@ -89,6 +89,11 @@ def publish(packet: dict, *, url: str | None = None, token: str | None = None) -
         copier = wallet_copy_status()
     except Exception:
         copier = {'state':'invalid', 'at':datetime.now(timezone.utc).isoformat()}
+    try:
+        from .kalshi_wallet_profitability import read_report
+        copier["profitability"]=read_report(Path("/var/data/kalshi-demo-v9/wallet-profitability-v1/status.json"))
+    except Exception:
+        copier["profitability"]=None
     packet = dict(packet, historical_diagnostics=history, wallet_copy=copier)
     revision=os.getenv('RENDER_GIT_COMMIT','')
     service=os.getenv('RENDER_SERVICE_ID','')

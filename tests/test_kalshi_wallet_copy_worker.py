@@ -126,14 +126,14 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
     # monitored, and a full daily BUY allowance cannot strand an owned SELL.
     db.execute('UPDATE cohort SET wallets=?',(json.dumps([*wallets[1:],'0x'+'9'*40]),))
     if buy_budget_exhausted:
-        for index in range(copy.MAX_DAILY_BUYS-1):
+        for index in range(copy.MAX_DEMO_SUBMISSIONS-1):
             db.execute("INSERT INTO signals VALUES(?,?,?,'{}','ioc_no_fill',NULL)",
                        (f'budget-{index}',now,'BUY'))
     signals.extend([trade(wallets[1], 2, "SELL"), trade(wallets[0], 3, "SELL", token="999"),
                     trade(wallets[0], 4, "SELL")])
     final = worker.tick()
     expected={"buy:filled":1,"sell:filled":1,"sell:no_owned_contract_for_wallet_sell":2}
-    if buy_budget_exhausted:expected['buy:ioc_no_fill']=copy.MAX_DAILY_BUYS-1
+    if buy_budget_exhausted:expected['buy:ioc_no_fill']=copy.MAX_DEMO_SUBMISSIONS-1
     assert final['signals']==expected
     assert final['wallets_polled']==5
     assert final["open_positions"] == 0

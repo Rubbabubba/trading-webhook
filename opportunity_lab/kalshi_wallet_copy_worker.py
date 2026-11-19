@@ -25,6 +25,7 @@ LEADERBOARD = "https://data-api.polymarket.com/v2/leaderboard"
 SIGNAL_SECONDS = 90
 MAX_OPEN = 5
 MAX_DAILY_BUYS = 10
+MAX_DEMO_SUBMISSIONS = 50
 
 
 def client_order_id(key):
@@ -134,6 +135,18 @@ def error_code(exc):
 
 class WalletCopy:
     market_base = DEMO
+    max_submissions = MAX_DEMO_SUBMISSIONS
+
+    def filled_buys(self,since):
+        return self.db.execute("SELECT count(*) FROM signals s LEFT JOIN buy_attempts a ON a.signal_id=s.id WHERE s.side='BUY' AND s.state='filled' AND coalesce(a.attempted_at,s.at)>=?",(since,)).fetchone()[0]
+
+    def entry_admission(self,since):
+        if self.filled_buys(since)>=MAX_DAILY_BUYS:return 'daily_filled_entry_limit'
+        if self.buy_attempts(since)>=self.max_submissions:return 'daily_attempt_limit'
+        if self.market_base==DEMO:
+            last=self.db.execute("SELECT max(a.attempted_at) FROM buy_attempts a JOIN signals s ON s.id=a.signal_id WHERE s.state IN ('ioc_no_fill','quarantined_zero_fill')").fetchone()[0]
+            if last is not None and self.clock()-last<60:return 'submission_cooldown'
+        return None
 
     def excluded_tickers(self):
         receipt = json.loads((self.root / "separate-demo-test-inventory-v1.json").read_bytes())
@@ -156,17 +169,18 @@ class WalletCopy:
         from .kalshi_execution_risk import display
         state=self.journal.accounting();records=self.journal.records()
         since=datetime.fromisoformat(day(self.clock())).replace(tzinfo=timezone.utc).timestamp()
-        attempts=self.buy_attempts(since)
+        attempts=self.buy_attempts(since);admission=self.entry_admission(since)
         unresolved=sum(r['state']!='terminal' for r in records)
         sells=[r for r in records if r['intent']['action']=='sell']
         filled_sells=sum(bool(r['filled']) for r in sells)
         positions=len(state['positions'])
         return {'state':'pending_reconciliation' if unresolved else 'reconciled',
                 'budget_session_utc':day(self.clock()),'pnl_session_central':state['day'],
-                'buy_attempts_today':attempts,'remaining_buy_attempts':max(0,MAX_DAILY_BUYS-attempts),
-                'max_daily_buys':MAX_DAILY_BUYS,'max_open_positions':MAX_OPEN,
+                'buy_attempts_today':attempts,'remaining_buy_attempts':max(0,self.max_submissions-attempts),
+                'max_daily_buys':self.max_submissions,'max_open_positions':MAX_OPEN,
+                'filled_buys_today':self.filled_buys(since),'max_daily_filled_buys':MAX_DAILY_BUYS,
                 'admission':'pending_reconciliation' if unresolved else 'open_position_limit' if positions>=MAX_OPEN else
-                            'daily_attempt_limit' if attempts>=MAX_DAILY_BUYS else 'admitted',
+                            admission or 'admitted',
                 'entries_filled':sum(r['intent']['action']=='buy' and bool(r['filled']) for r in records),
                 'exits_filled':filled_sells,
                 'sell_attempts':len(sells),
@@ -323,8 +337,9 @@ class WalletCopy:
                 return "wallet_outside_current_cohort"
             since = datetime.fromisoformat(day(self.clock())).replace(tzinfo=timezone.utc).timestamp()
             buys = self.buy_attempts(since)
-            if len(owners) >= MAX_OPEN or buys >= MAX_DAILY_BUYS:
-                return "demo_entry_limit"
+            if len(owners) >= MAX_OPEN:return "demo_entry_limit"
+            admission=self.entry_admission(since)
+            if admission:return admission
             mapping = discover(trade, self.market_base, self.read)
             if mapping['ticker'] in self.excluded_tickers():
                 return "legacy_demo_inventory_market"

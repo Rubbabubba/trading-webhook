@@ -40,6 +40,15 @@ def research_sleeves_supervisor(root):
             time.sleep(60)
 
 
+def wallet_research_supervisor(root):
+    from .kalshi_wallet_profitability import run
+    while True:
+        try:run(root)
+        except Exception as e:
+            print(json.dumps(dict(event="wallet_research_restart",error_type=type(e).__name__)),flush=True)
+            time.sleep(30)
+
+
 def run(data_root, cycles=None):
     root = Path(data_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -47,6 +56,7 @@ def run(data_root, cycles=None):
         threading.Thread(target=sports_supervisor, args=(root,), daemon=True).start()
         threading.Thread(target=research_sleeves_supervisor, args=(root,), daemon=True).start()
         threading.Thread(target=wallet_copy_supervisor, args=(root,), daemon=True).start()
+        threading.Thread(target=wallet_research_supervisor, args=(root,), daemon=True).start()
     else:
         # Bounded validation runs exercise both services without a background
         # thread surviving the test process.
