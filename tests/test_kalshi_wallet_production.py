@@ -18,6 +18,17 @@ def test_new_production_transport_requires_current_owner_authority_before_key_lo
         p.WalletProductionClient('production-test','missing-test-key.pem',grant(datetime.now(timezone.utc)),approval_verifier=lambda _:False)
 
 
+def test_wallet_authority_uses_dedicated_origin_path_and_compatible_summary(monkeypatch):
+    from opportunity_lab.kalshi_live_worker import OwnerAuthority
+    with pytest.raises(ValueError):p.WalletOwnerAuthority('https://example.com/execution/kalshi/wallet/grant','test')
+    authority=p.WalletOwnerAuthority('https://personal-life-os-ia5e.onrender.com/execution/kalshi/wallet/grant','test')
+    assert authority.url.endswith('/execution/kalshi/wallet/grant')
+    captured=[]
+    monkeypatch.setattr(OwnerAuthority,'report',lambda self,value:captured.append(value))
+    authority.report({'schema':'kalshi_live_status_v1','wallet_copy':{'detail':'local only'},'open_positions':1})
+    assert captured==[{'schema':'kalshi_live_status_v1','open_positions':1}]
+
+
 class ProductionExchange(Exchange,p.WalletProductionClient):
     def __init__(self,journal):Exchange.__init__(self,journal);self.key_id='production-test'
 
@@ -76,7 +87,7 @@ def test_missing_wallet_authority_never_initializes_broker_or_journal(tmp_path,m
         def __init__(self,*args):pass
         def fetch(self):return None
         def report(self,result):pass
-    monkeypatch.setattr(kalshi_live_worker,'OwnerAuthority',NoGrant)
+    monkeypatch.setattr(p,'WalletOwnerAuthority',NoGrant)
     result=p.run(tmp_path,once=True)
     assert result['state']=='awaiting_owner_grant'
     assert result['new_entries'] is False

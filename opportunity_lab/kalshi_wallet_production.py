@@ -18,6 +18,7 @@ from .kalshi_demo_broker import DemoClient
 from .kalshi_live_execution import LiveBinaryJournal, LiveBinaryBroker, LiveClient, grant_hash
 from .kalshi_wallet_copy_worker import WalletCopy, signal_key, executable, source_identity
 from .kalshi_wallet_monitor import _read_quote, public_get, trade_key
+from .kalshi_live_worker import OwnerAuthority
 
 LIMITS = dict(capital_cents=10000, daily_loss_cents=500, total_loss_cents=1000,
               event_exposure_cents=210, portfolio_exposure_cents=525,
@@ -29,6 +30,22 @@ POLICY = dict(version='ranked_wallet_production_v1', signal_seconds=90,
               fee_schedule='kalshi_binary_taker_2026-07-07_provisional',
               fee_schedule_reference='https://kalshi.com/docs/kalshi-fee-schedule.pdf')
 POLICY_HASH = grant_hash(POLICY)
+
+
+class WalletOwnerAuthority(OwnerAuthority):
+    def __init__(self,url,token):
+        from urllib.parse import urlparse
+        parsed=urlparse(url)
+        if (parsed.scheme!='https' or parsed.netloc!='personal-life-os-ia5e.onrender.com'
+                or parsed.path!='/execution/kalshi/wallet/grant' or parsed.query or parsed.fragment):
+            raise ValueError('dedicated_wallet_owner_authority_required')
+        super().__init__(parsed._replace(path='/execution/kalshi/grant').geturl(),token)
+        self.url=url
+
+    def report(self,value):
+        # Retain detailed wallet lifecycle locally; the hosted production
+        # status protocol accepts the bounded account/strategy summary.
+        return super().report({k:v for k,v in value.items() if k!='wallet_copy'})
 
 
 def validate(grant):
@@ -200,10 +217,10 @@ class ProductionWalletCopy(WalletCopy):
 def run(root,*,once=False):
     """Separate deployment entrypoint. Missing/old strategy grants send no orders."""
     import os,time
-    from .kalshi_live_worker import OwnerAuthority,write_json
+    from .kalshi_live_worker import write_json,ProductionMarkets
     from .kalshi_process_lock import acquire
     root=Path(root)/'wallet-production-v1';root.mkdir(parents=True,exist_ok=True)
-    authority=OwnerAuthority(os.environ.get('LIFE_OS_KALSHI_LIVE_GRANT_URL',''),os.environ.get('LIFE_OS_KALSHI_LIVE_TOKEN',''))
+    authority=WalletOwnerAuthority(os.environ.get('LIFE_OS_KALSHI_WALLET_GRANT_URL',''),os.environ.get('LIFE_OS_KALSHI_LIVE_TOKEN',''))
     with acquire(root/'worker.lock'):
         worker=journal=db=None
         try:
@@ -213,6 +230,11 @@ def run(root,*,once=False):
                         cached=root/'owner-grant.json'
                         grant=json.loads(cached.read_text()) if cached.exists() else authority.fetch()
                         if grant is None:
+                            if os.environ.get('KALSHI_LIVE_API_KEY_ID') and os.environ.get('KALSHI_LIVE_PRIVATE_KEY_PATH'):
+                                from .kalshi_live_preflight import run as preflight
+                                proof=preflight(os.environ['KALSHI_LIVE_API_KEY_ID'],os.environ['KALSHI_LIVE_PRIVATE_KEY_PATH'],ProductionMarkets(),
+                                    progress_file=root/'preflight-catalog.json')
+                                write_json(root/'preflight.json',proof);authority.report(proof)
                             result={'state':'awaiting_owner_grant','new_entries':False}
                         else:
                             validate(grant)
@@ -228,6 +250,8 @@ def run(root,*,once=False):
                     if worker:
                         result['new_entries']=authority.verify(grant_hash(journal.grant)) and datetime.now(timezone.utc)<datetime.fromisoformat(journal.grant['expires_at'].replace('Z','+00:00'))
                         result.update(open_positions=len(journal.accounting()['positions']),unresolved_orders=sum(r['state']!='terminal' for r in journal.records()))
+                        ledger=journal.accounting()
+                        result.update(net_pnl_cents=round(float(ledger['realized']*100),2),fees_cents=round(float(ledger['fees']*100),2))
                 except Exception as error:
                     result={'state':'blocked','new_entries':False,'error_type':type(error).__name__}
                     if worker is None:
