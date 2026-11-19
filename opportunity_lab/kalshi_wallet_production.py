@@ -220,9 +220,10 @@ def run(root,*,once=False):
     from .kalshi_live_worker import write_json,ProductionMarkets
     from .kalshi_process_lock import acquire
     root=Path(root)/'wallet-production-v1';root.mkdir(parents=True,exist_ok=True)
-    authority=WalletOwnerAuthority(os.environ.get('LIFE_OS_KALSHI_WALLET_GRANT_URL',''),os.environ.get('LIFE_OS_KALSHI_LIVE_TOKEN',''))
+    authority=WalletOwnerAuthority(os.environ.get('LIFE_OS_KALSHI_WALLET_GRANT_URL',
+        'https://personal-life-os-ia5e.onrender.com/execution/kalshi/wallet/grant'),os.environ.get('LIFE_OS_KALSHI_LIVE_TOKEN',''))
     with acquire(root/'worker.lock'):
-        worker=journal=db=None
+        worker=journal=db=None;last_preflight=0
         try:
             while True:
                 try:
@@ -230,7 +231,9 @@ def run(root,*,once=False):
                         cached=root/'owner-grant.json'
                         grant=json.loads(cached.read_text()) if cached.exists() else authority.fetch()
                         if grant is None:
-                            if os.environ.get('KALSHI_LIVE_API_KEY_ID') and os.environ.get('KALSHI_LIVE_PRIVATE_KEY_PATH'):
+                            if (os.environ.get('KALSHI_LIVE_API_KEY_ID') and os.environ.get('KALSHI_LIVE_PRIVATE_KEY_PATH')
+                                    and time.monotonic()-last_preflight>=60):
+                                last_preflight=time.monotonic()
                                 from .kalshi_live_preflight import run as preflight
                                 proof=preflight(os.environ['KALSHI_LIVE_API_KEY_ID'],os.environ['KALSHI_LIVE_PRIVATE_KEY_PATH'],ProductionMarkets(),
                                     progress_file=root/'preflight-catalog.json')

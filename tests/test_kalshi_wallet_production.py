@@ -94,6 +94,20 @@ def test_missing_wallet_authority_never_initializes_broker_or_journal(tmp_path,m
     assert not (tmp_path/'wallet-production-v1'/'journal.sqlite3').exists()
 
 
+def test_existing_service_uses_dedicated_wallet_endpoint_without_new_secrets(tmp_path,monkeypatch):
+    from opportunity_lab.kalshi_live_worker import OwnerAuthority
+    monkeypatch.delenv('LIFE_OS_KALSHI_WALLET_GRANT_URL',raising=False)
+    monkeypatch.setenv('LIFE_OS_KALSHI_LIVE_TOKEN','test-existing-token')
+    monkeypatch.delenv('KALSHI_LIVE_API_KEY_ID',raising=False)
+    seen=[]
+    monkeypatch.setattr(p.WalletOwnerAuthority,'fetch',lambda self:seen.append(self.url))
+    monkeypatch.setattr(OwnerAuthority,'report',lambda *a:None)
+    result=p.run(tmp_path,once=True)
+    assert result['state']=='awaiting_owner_grant'
+    assert seen==['https://personal-life-os-ia5e.onrender.com/execution/kalshi/wallet/grant']
+    assert not (tmp_path/'wallet-production-v1'/'journal.sqlite3').exists()
+
+
 @pytest.mark.parametrize('failure',['revoked','foreign_owner','demo_quote','stale_quote','changed_source','fee_increase','unknown_write'])
 def test_live_guards_never_retry_unknown_or_accept_bad_evidence(failure,tmp_path):
     now,db,j,x,b,w,approved=setup(tmp_path)
