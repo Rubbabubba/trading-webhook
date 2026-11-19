@@ -60,7 +60,9 @@ def test_uncertain_wallet_entry_requires_two_flat_broker_reads_and_never_resends
     journal.close()
 
 
-def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, monkeypatch):
+@pytest.mark.parametrize('outcome',['yes','no'])
+@pytest.mark.parametrize('buy_budget_exhausted',[False,True])
+def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, monkeypatch,outcome,buy_budget_exhausted):
     wallets = ["0x" + str(index) * 40 for index in range(1, 5)]
     now = int(time.time())
     state = tmp_path / copy.DIRECTORY
@@ -96,10 +98,10 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
     def trade(wallet, number, side, token="123"):
         return dict(proxy_wallet=wallet, transaction_hash=f"0x{number:064x}", type="TRADE",
                     condition_id="0x" + "a" * 64, token_id=token,
-                    timestamp=now + number, side=side, price=".47", size="1")
+                    timestamp=now + number, side=side, price=".47" if outcome=='yes' else '.53', size="1")
 
     monkeypatch.setattr(copy, "read_trades", activity)
-    monkeypatch.setattr(copy, "discover", lambda *_: {"ticker": "GAME", "side": "yes"})
+    monkeypatch.setattr(copy, "discover", lambda *_: {"ticker": "GAME", "side": outcome})
     monkeypatch.setattr(copy, "read_quote", quote)
     monkeypatch.setattr(copy, "read_fee", lambda *_: {"fee_multiplier": "1"})
     worker = copy.WalletCopy(tmp_path, db, broker, read=leaderboard, clock=lambda: now)
@@ -111,7 +113,7 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
     assert first["signals"] == {"buy:filled": 1}
     assert exchange.posts == 1
     inventory = copy.SharedDemoInventory(DemoTestInventory({}, "test-receipt"), tmp_path)
-    inventory.reconcile({"positions": {}}, [{"ticker": "GAME", "position_fp": "1.00"}])
+    inventory.reconcile({"positions": {}}, [{"ticker": "GAME", "position_fp": "1.00" if outcome=='yes' else '-1.00'}])
     with pytest.raises(ValueError, match="external_or_unreconciled_position"):
         inventory.reconcile({"positions": {}}, [{"ticker": "UNOWNED", "position_fp": "1.00"}])
 
@@ -120,18 +122,37 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
     exchange.j = journal
     worker = copy.WalletCopy(tmp_path, db, BinaryDemoBroker(journal, exchange),
                              read=leaderboard, clock=lambda: now + 15)
+    # The original owner drops out of the new ranking. Its fills must still be
+    # monitored, and a full daily BUY allowance cannot strand an owned SELL.
+    db.execute('UPDATE cohort SET wallets=?',(json.dumps([*wallets[1:],'0x'+'9'*40]),))
+    if buy_budget_exhausted:
+        for index in range(copy.MAX_DAILY_BUYS-1):
+            db.execute("INSERT INTO signals VALUES(?,?,?,'{}','ioc_no_fill',NULL)",
+                       (f'budget-{index}',now,'BUY'))
     signals.extend([trade(wallets[1], 2, "SELL"), trade(wallets[0], 3, "SELL", token="999"),
                     trade(wallets[0], 4, "SELL")])
     final = worker.tick()
-    assert final["signals"] == {"buy:filled": 1, "sell:filled": 1,
-                                "sell:no_owned_contract_for_wallet_sell": 2}
+    expected={"buy:filled":1,"sell:filled":1,"sell:no_owned_contract_for_wallet_sell":2}
+    if buy_budget_exhausted:expected['buy:ioc_no_fill']=copy.MAX_DAILY_BUYS-1
+    assert final['signals']==expected
+    assert final['wallets_polled']==5
     assert final["open_positions"] == 0
     inventory.reconcile({"positions": {}}, [])
     assert journal.records()[-1]["payload"]["reduce_only"] is True
     assert worker.tick()["signals"] == final["signals"]
     assert exchange.posts == 2
+    assert final['lifecycle']['sell_verification']=='broker_fill_verified'
+    assert final['lifecycle']['sell_attempts']==1
+    assert final['lifecycle']['sell_signals_observed']==3
+    assert final['lifecycle']['unresolved_orders']==0
+    from fractions import Fraction
+    assert journal.accounting()['realized']==Fraction(-8,100)
+    if buy_budget_exhausted:
+        assert final['lifecycle']['remaining_buy_attempts']==0
+        assert final['lifecycle']['sell_admission']=='eligible_owned_sells_only'
+        journal.close();db.close();return
     exchange.timeout = True
-    signals.append(trade(wallets[0], 5, 'BUY'))
+    signals.append(trade(wallets[1], 5, 'BUY'))
     unresolved = worker.tick()
     assert unresolved['execution_error'] == 'submission_unresolved'
     assert unresolved['last_submission_failure'] == {'reason':'TimeoutError','observed_at':now+15}

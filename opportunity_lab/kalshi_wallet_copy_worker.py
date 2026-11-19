@@ -149,6 +149,8 @@ class WalletCopy:
         since=datetime.fromisoformat(day(self.clock())).replace(tzinfo=timezone.utc).timestamp()
         attempts=self.buy_attempts(since)
         unresolved=sum(r['state']!='terminal' for r in records)
+        sells=[r for r in records if r['intent']['action']=='sell']
+        filled_sells=sum(bool(r['filled']) for r in sells)
         positions=len(state['positions'])
         return {'state':'pending_reconciliation' if unresolved else 'reconciled',
                 'budget_session_utc':day(self.clock()),'pnl_session_central':state['day'],
@@ -157,7 +159,13 @@ class WalletCopy:
                 'admission':'pending_reconciliation' if unresolved else 'open_position_limit' if positions>=MAX_OPEN else
                             'daily_attempt_limit' if attempts>=MAX_DAILY_BUYS else 'admitted',
                 'entries_filled':sum(r['intent']['action']=='buy' and bool(r['filled']) for r in records),
-                'exits_filled':sum(r['intent']['action']=='sell' and bool(r['filled']) for r in records),
+                'exits_filled':filled_sells,
+                'sell_attempts':len(sells),
+                'sell_signals_observed':self.db.execute("SELECT count(*) FROM signals WHERE side='SELL'").fetchone()[0],
+                'sell_admission':'pending_reconciliation' if unresolved else 'eligible_owned_sells_only',
+                'sell_verification':('awaiting_broker_resolution' if any(r['state']!='terminal' for r in sells) else
+                    'broker_fill_verified' if filled_sells else 'eligible_sell_attempt_unfilled' if sells else
+                    'awaiting_matching_owned_wallet_sell'),
                 'settlements':self.journal.db.execute('SELECT count(*) FROM settlements').fetchone()[0],
                 'unresolved_orders':unresolved,
                 **{out:display(state[key]) for out,key in (
