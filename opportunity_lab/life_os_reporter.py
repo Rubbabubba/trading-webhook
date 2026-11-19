@@ -52,9 +52,14 @@ def wallet_copy_status(path=Path('/var/data/kalshi-demo-v9/ranked-wallet-copy-v1
             result['lifecycle']=normalize(data['lifecycle'])
         failure = data.get('last_submission_failure')
         if isinstance(failure, dict):
-            stamp = failure.get('observed_at')
-            stamp = datetime.fromtimestamp(stamp, timezone.utc) if type(stamp) in (int, float) else datetime.fromisoformat(stamp.replace('Z', '+00:00'))
-            result['latest_submission_error'] = {'code':code(failure.get('error')), 'at':stamp.isoformat()}
+            try:
+                stamp = failure.get('observed_at')
+                stamp = datetime.fromtimestamp(stamp, timezone.utc) if type(stamp) in (int, float) else datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+                if stamp.tzinfo is not None and (now - stamp).total_seconds() >= -5:
+                    result['latest_submission_error'] = {'code':code(failure.get('error')), 'at':stamp.isoformat()}
+            except (ValueError, TypeError, AttributeError, OverflowError, OSError):
+                # Invalid optional errors must not discard valid health coverage.
+                pass
         return result
     except FileNotFoundError:
         return {'state':'missing', 'at':now.isoformat()}
