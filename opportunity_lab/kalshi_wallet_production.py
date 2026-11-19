@@ -158,11 +158,13 @@ class WalletProductionJournal(LiveBinaryJournal):
 
 
 class WalletProductionClient(LiveClient):
-    def __init__(self,key_id,key_path,grant,*,approval_verifier,demo_key_id=None,**kwargs):
+    def __init__(self,key_id,key_path,grant,*,approval_verifier,demo_key_id=None,recovery_only=False,**kwargs):
         validate(grant)
         if key_id==demo_key_id or hashlib.sha256(key_id.encode()).hexdigest()!=grant['account_key_sha256']:
             raise ValueError('separate_wallet_production_key_required')
         if not callable(approval_verifier):raise ValueError('wallet_authority_verifier_required')
+        if not recovery_only and approval_verifier(grant_hash(grant)) is not True:
+            raise ValueError('verified_owner_approval_required')
         DemoClient.__init__(self,key_id,key_path,**kwargs)
 
 
@@ -215,9 +217,10 @@ def run(root,*,once=False):
                         else:
                             validate(grant)
                             db=sqlite3.connect(root/'signals.sqlite3',isolation_level=None)
+                            recovering=(root/'journal.sqlite3').exists()
                             journal=WalletProductionJournal(root/'journal.sqlite3',grant,signals=db,approval_verifier=authority.verify)
                             client=WalletProductionClient(os.environ.get('KALSHI_LIVE_API_KEY_ID',''),os.environ.get('KALSHI_LIVE_PRIVATE_KEY_PATH',''),
-                                grant,approval_verifier=authority.verify,demo_key_id=os.environ.get('KALSHI_DEMO_API_KEY_ID'))
+                                grant,approval_verifier=authority.verify,recovery_only=recovering,demo_key_id=os.environ.get('KALSHI_DEMO_API_KEY_ID'))
                             worker=ProductionWalletCopy(root,db,WalletProductionBroker(journal,client))
                             write_json(cached,grant)
                             result={'state':'running','new_entries':False,'wallet_copy':worker.tick()}

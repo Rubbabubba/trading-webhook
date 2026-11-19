@@ -13,6 +13,11 @@ def grant(now):
         expires_at=(now+timedelta(days=1)).isoformat(),limits=dict(p.LIMITS))
 
 
+def test_new_production_transport_requires_current_owner_authority_before_key_loading():
+    with pytest.raises(ValueError,match='verified_owner_approval_required'):
+        p.WalletProductionClient('production-test','missing-test-key.pem',grant(datetime.now(timezone.utc)),approval_verifier=lambda _:False)
+
+
 class ProductionExchange(Exchange,p.WalletProductionClient):
     def __init__(self,journal):Exchange.__init__(self,journal);self.key_id='production-test'
 
