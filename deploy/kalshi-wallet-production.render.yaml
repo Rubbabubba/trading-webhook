@@ -1,0 +1,28 @@
+# Reuse the existing suspended kalshi-live-pilot service, production-only keys
+# and disk. This manifest is review material; applying it must not create a
+# duplicate service or resume billing without the owner's final action.
+services:
+  - type: worker
+    name: kalshi-live-pilot
+    runtime: python
+    plan: starter
+    autoDeploy: false
+    branch: codex/kalshi-demo-v4-20260916
+    buildCommand: pip install -r deploy/kalshi-demo-v4.requirements.txt
+    startCommand: python -m opportunity_lab.kalshi_wallet_production --root /var/data/kalshi-live-pilot
+    numInstances: 1
+    disk:
+      name: kalshi-live-pilot-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: LIFE_OS_KALSHI_WALLET_GRANT_URL
+        value: https://personal-life-os-ia5e.onrender.com/execution/kalshi/wallet/grant
+      - key: LIFE_OS_KALSHI_LIVE_TOKEN
+        sync: false
+      - key: KALSHI_LIVE_API_KEY_ID
+        sync: false
+      - key: KALSHI_LIVE_PRIVATE_KEY_PATH
+        value: /etc/secrets/kalshi-live-private.pem
