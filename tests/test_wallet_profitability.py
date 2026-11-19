@@ -96,3 +96,24 @@ def test_scheduler_tick_collects_quotes_resolves_and_persists_decision(tmp_path,
     now[0]+=30;assert worker.tick()['modeled_entries']==1
     assert worker.db.execute('SELECT count(*) FROM decisions').fetchone()[0]==3
     worker.db.close()
+
+
+def test_newest_first_activity_is_processed_in_source_order(tmp_path,monkeypatch):
+    now=[2000000000];wallet='0x'+'1'*40;worker=r.Research(tmp_path,clock=lambda:now[0])
+    worker.db.execute('INSERT INTO cohort VALUES(1,?,?)',(now[0],json.dumps([wallet])))
+    monkeypatch.setattr(worker,'candidates',lambda:[wallet])
+    entry=dict(proxy_wallet=wallet,transaction_hash='0x'+'a'*64,type='TRADE',condition_id='0x'+'b'*64,token_id='123',timestamp=now[0]+1,side='BUY',price='.50',size='1')
+    exit=dict(entry,transaction_hash='0x'+'c'*64,timestamp=now[0]+2,side='SELL',price='.65')
+    monkeypatch.setattr('opportunity_lab.kalshi_wallet_monitor.read_trades',lambda *a:[exit,entry])
+    monkeypatch.setattr('opportunity_lab.kalshi_wallet_sports.discover',lambda *a:dict(ticker='GAME',event_ticker='EVENT',side='yes'))
+    quotes=iter([('.44','.50'),('.65','.20')])
+    def q(m):
+        bid,opposite=next(quotes)
+        return {'observed_at':now[0],'orderbook_fp':{'yes_dollars':[[bid,'2']],'no_dollars':[[opposite,'2']]}},{'fee_multiplier':'1'}
+    monkeypatch.setattr(worker,'quote',q)
+    worker.read=lambda *a:({'market':{'ticker':'GAME','event_ticker':'EVENT','status':'active'}},)
+    now[0]+=3;result=worker.tick()
+    assert result['modeled_entries']==1 and result['resolved']==1
+    detail=json.loads(worker.db.execute('SELECT detail FROM trades').fetchone()[0])
+    assert detail['exit_kind']=='wallet_sell' and detail['net_cents']==11
+    worker.db.close()

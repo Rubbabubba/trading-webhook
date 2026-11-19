@@ -146,7 +146,7 @@ class Research:
                 for t in read_trades(wallet,max(self.started,self.clock()-90),self.read):self.observe(t)
             except Exception as e:errors.append(error_code(e))
         self.db.execute("UPDATE observations SET state='late' WHERE state='observed' AND at<?",(self.clock()-90,))
-        for key,raw in self.db.execute("SELECT id,detail FROM observations WHERE state='observed' ORDER BY at,rowid LIMIT 8").fetchall():
+        for key,raw in self.db.execute("SELECT id,detail FROM observations WHERE state='observed' ORDER BY json_extract(detail,'$.timestamp'),json_extract(detail,'$.side'),rowid LIMIT 8").fetchall():
             try:state=self.process(key,json.loads(raw))
             except Exception as e:state=error_code(e)
             self.db.execute('UPDATE observations SET state=? WHERE id=?',(state,key))
