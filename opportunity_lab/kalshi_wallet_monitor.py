@@ -130,7 +130,7 @@ def _read_quote(mapping, base, read, *, environment):
 def read_fee(quote, base, read=public_get):
     from datetime import datetime, timezone
     exchange_index = quote["market"].get("exchange_index", 0)
-    if exchange_index != 0:
+    if type(exchange_index) is not int or not 0<=exchange_index<=2147483647:
         raise ValueError("wallet_fee_exchange_unverified")
     event_id = quote["market"]["event_ticker"]
     if not TICKER.fullmatch(event_id):
@@ -143,4 +143,4 @@ def read_fee(quote, base, read=public_get):
     return fee_basis({"event_id": event_id, "price_cents": cents(price_book(quote, quote["side"])[1]),
                       "market_type": "binary", "exchange_index": exchange_index,
                       "observed_at": datetime.fromtimestamp(quote["observed_at"], timezone.utc).isoformat()},
-                     event, data["series"], fetched_at=received)
+                      event, data["series"], fetched_at=received,wallet_ioc=True)

@@ -38,6 +38,7 @@ class Research:
         from .kalshi_wallet_pool import ensure
         ensure(self.db)
         self.discovery_errors=[]
+        self.collection={}
         self.db.executescript('CREATE INDEX IF NOT EXISTS wallet_observation_lookup ON observations(wallet,at);CREATE INDEX IF NOT EXISTS wallet_trade_lookup ON trades(wallet,event);')
 
     def candidates(self):
@@ -165,6 +166,7 @@ class Research:
             selected_wallets=selected if not errors else [],observations=self.db.execute('SELECT count(*) FROM observations').fetchone()[0],
             modeled_entries=total,resolved=resolved or 0,
             observation_state_counts_lifetime=dict(self.db.execute('SELECT state,count(*) FROM observations GROUP BY state ORDER BY count(*) DESC,state LIMIT 32').fetchall()))
+        if self.collection:result['collection']=self.collection
         if registry:
             from .wallet_pool_audit import snapshot,bound_report
             result.update(discovery=summary(self.db,self.clock()),discovery_errors=self.discovery_errors,
@@ -179,7 +181,7 @@ class Research:
     def tick(self):
         from .kalshi_wallet_monitor import read_trades
         from .kalshi_wallet_copy_worker import error_code
-        errors=[]
+        errors=[];started=time.monotonic()
         try:wallets=self.candidates()
         except Exception as e:return self.report([error_code(e)])
         owners={w for w, in self.db.execute("SELECT DISTINCT wallet FROM trades WHERE json_extract(detail,'$.net_cents') IS NULL")}
@@ -194,6 +196,7 @@ class Research:
                     self.db.execute('UPDATE wallet_pool SET last_polled=? WHERE wallet=?',(self.clock(),wallet))
                 except Exception as e:errors.append(error_code(e))
         stale=self.db.execute("SELECT detail FROM observations WHERE state='observed' AND json_extract(detail,'$.timestamp')<?",(self.clock()-90,)).fetchall()
+        poll_elapsed=time.monotonic()-started
         for raw, in stale:self.coverage_gap(json.loads(raw))
         self.db.execute("UPDATE observations SET state='late' WHERE state='observed' AND json_extract(detail,'$.timestamp')<?",(self.clock()-90,))
         groups={}
@@ -205,7 +208,7 @@ class Research:
         for _ in range(2):
             for wallet in names:
                 if groups[wallet]:fair.append(groups[wallet].pop(0))
-        deadline=self.clock()+20
+        deadline=self.clock()+20;processed=0
         for key,raw in fair[:24]:
             if self.clock()>deadline:break
             trade=json.loads(raw)
@@ -215,8 +218,14 @@ class Research:
                 state=error_code(e)
                 if trade['side']=='SELL':self.coverage_gap(trade)
             self.db.execute('UPDATE observations SET state=? WHERE id=?',(state,key))
+            processed+=1
         try:self.settle()
         except Exception as e:errors.append(error_code(e))
+        self.collection=dict(at=self.clock(),tick_work_seconds=round(time.monotonic()-started,3),
+            discovery_and_poll_seconds=round(poll_elapsed,3),processed=processed,
+            polled_wallets=len(set(wallets)|owners),pending_observations=self.db.execute(
+                "SELECT count(*) FROM observations WHERE state='observed'").fetchone()[0],
+            target_cycle_seconds=30,minimum_pause_seconds=5,maximum_signal_seconds=90)
         return self.report(errors)
 
 
@@ -227,9 +236,13 @@ def run(root):
         worker=Research(root)
         try:
             while True:
+                began=time.monotonic()
                 try:worker.tick()
                 except Exception as error:worker.report([type(error).__name__])
-                time.sleep(30)
+                # Work belongs inside the 30-second cadence, rather than adding
+                # another 30 seconds after slow mapping/poll work. Never spin or
+                # accumulate catch-up requests when a cycle overruns.
+                time.sleep(max(5,30-(time.monotonic()-began)))
         finally:worker.db.close()
 
 

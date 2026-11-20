@@ -29,9 +29,19 @@ def _decimal(value):
     return result
 
 
-def fee_basis(row, event, series, *, fetched_at):
+def fee_basis(row, event, series, *, fetched_at, wallet_ioc=False):
     """Calculate a conservative whole-cent model estimate, never an actual fee."""
-    if (row.get("market_type") != "binary" or row.get("exchange_index") != 0
+    exchange=row.get('exchange_index')
+    exchange_ok=exchange==0
+    if wallet_ioc:
+        # ExchangeIndex is a routing shard, not a separate fee model. Wallet
+        # IOC takers must join the same shard across market, event and series.
+        exchange_ok=(type(exchange) is int and 0<=exchange<=2147483647
+                     and type(event.get('exchange_index',0)) is int
+                     and type(series.get('exchange_index',0)) is int
+                     and event.get('exchange_index',0)==exchange
+                     and series.get('exchange_index',0)==exchange)
+    if (row.get("market_type") != "binary" or not exchange_ok
             or event.get("event_ticker") != row.get("event_id")
             or series.get("ticker") != event.get("series_ticker")):
         raise ValueError("fee_market_identity_mismatch")
@@ -48,7 +58,8 @@ def fee_basis(row, event, series, *, fetched_at):
         fee_type = series.get("fee_type")
         multiplier = series.get("fee_multiplier")
         source = "series"
-    if fee_type != "quadratic":
+    accepted={'quadratic','quadratic_with_maker_fees','quadratic_with_combo_maker_fees'} if wallet_ioc else {'quadratic'}
+    if fee_type not in accepted:
         raise ValueError("unsupported_fee_type")
     factor = _decimal(multiplier)
     price = Decimal(str(row["price_cents"])) / 100
@@ -59,7 +70,7 @@ def fee_basis(row, event, series, *, fetched_at):
     # one-contract order. Actual fees may differ with fill and account rules.
     modeled_cents = Decimal(7) * factor * price * (1 - price)
     upper_cents = int(modeled_cents.to_integral_value(rounding=ROUND_CEILING))
-    return {"schema": "kalshi_fee_basis_probe_v1", "schedule_id": SCHEDULE_ID,
+    result={"schema": "kalshi_fee_basis_probe_v1", "schedule_id": SCHEDULE_ID,
             "schedule_url": SCHEDULE_URL, "fee_source": source,
             "series_ticker": series["ticker"], "event_ticker": row["event_id"],
             "fee_type": fee_type, "fee_multiplier": str(factor),
@@ -68,6 +79,8 @@ def fee_basis(row, event, series, *, fetched_at):
             "model_fee_upper_bound_cents": upper_cents,
             "modeled_entry_cost_cents": row["price_cents"] + upper_cents,
             "actual_fee_verified": False, "fill_assumed": False}
+    if wallet_ioc:result.update(exchange_index=exchange,liquidity='taker_ioc')
+    return result
 
 
 def init(db):
