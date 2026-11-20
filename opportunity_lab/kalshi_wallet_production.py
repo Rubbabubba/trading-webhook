@@ -183,7 +183,13 @@ class WalletProductionJournal(LiveBinaryJournal):
         price=executable(trade,mapping,quote_snapshot);record=self.get(cid)
         fee=quote_snapshot.get('fee_basis') or {}
         if (fee.get('schema')!='kalshi_fee_basis_probe_v1' or fee.get('schedule_id')!=POLICY['fee_schedule']
-                or fee.get('event_ticker')!=mapping['event_ticker'] or fee.get('fee_type')!='quadratic'):
+                or fee.get('event_ticker')!=mapping['event_ticker'] or fee.get('fee_type') not in
+                    {'quadratic','quadratic_with_maker_fees','quadratic_with_combo_maker_fees'}):
+            raise ValueError('wallet_fresh_fee_identity_required')
+        shard=quote_snapshot['market'].get('exchange_index',0)
+        if (shard!=mapping.get('exchange_index',0) or
+                (shard!=0 or fee['fee_type']!='quadratic') and
+                (fee.get('liquidity')!='taker_ioc' or fee.get('exchange_index')!=shard)):
             raise ValueError('wallet_fresh_fee_identity_required')
         reserve=int((Decimal('1.75')*Decimal(str(fee['fee_multiplier']))).to_integral_value(rounding=ROUND_CEILING))
         if (quote_snapshot.get('wallet_signal_id')!=key or quote_snapshot['market'].get('event_ticker')!=mapping['event_ticker']
