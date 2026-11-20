@@ -165,7 +165,11 @@ class Research:
             selected_wallets=selected if not errors else [],observations=self.db.execute('SELECT count(*) FROM observations').fetchone()[0],
             modeled_entries=total,resolved=resolved or 0,
             observation_state_counts_lifetime=dict(self.db.execute('SELECT state,count(*) FROM observations GROUP BY state ORDER BY count(*) DESC,state LIMIT 32').fetchall()))
-        if registry:result.update(discovery=summary(self.db,self.clock()),discovery_errors=self.discovery_errors)
+        if registry:
+            from .wallet_pool_audit import snapshot,bound_report
+            result.update(discovery=summary(self.db,self.clock()),discovery_errors=self.discovery_errors,
+                pool_audit=snapshot(self.db,all_scores,self.clock()))
+            bound_report(result,self.clock())
         encoded=json.dumps(result,sort_keys=True)
         if len(encoded.encode())>16000:raise ValueError('research_report_too_large')
         self.db.execute('INSERT OR IGNORE INTO decisions VALUES(?,?)',(self.clock(),encoded))
