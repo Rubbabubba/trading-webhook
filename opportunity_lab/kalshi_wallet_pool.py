@@ -17,6 +17,8 @@ def discover(db,read,now):
     ensure(db)
     old=db.execute('SELECT at,detail FROM wallet_pool_discovery WHERE id=1').fetchone()
     if old and now-old[0]<POLICY['refresh_seconds']:return json.loads(old[1])
+    from .wallet_pool_audit import begin,changed
+    before=begin(db,now)
     found={};errors=[]
     for category in POLICY['categories']:
         for period in POLICY['periods']:
@@ -43,11 +45,14 @@ def discover(db,read,now):
     detail={'policy':POLICY,'policy_hash':HASH,'at':now,'successful_lists':4-len(errors),'errors':errors}
     # Retry a failed list next cycle; successful discovery remains bounded hourly.
     if not errors:db.execute('INSERT INTO wallet_pool_discovery VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET at=excluded.at,detail=excluded.detail',(now,json.dumps(detail)))
+    changed(db,before,now,'discovery_refresh')
     return detail
 
 
 def admit(db,now,scores):
     ensure(db)
+    from .wallet_pool_audit import begin,changed
+    before=begin(db,now)
     # Bootstrap retained v2 candidates without discarding any observations/trades.
     prior=db.execute('SELECT wallets FROM cohort WHERE id=1').fetchone()
     if prior:
@@ -85,6 +90,7 @@ def admit(db,now,scores):
         if w in selected:
             db.execute("UPDATE wallet_pool SET state='active',active_since=? WHERE wallet=?",(r['since'] if r['state']=='active' else now,w))
         elif r['state']=='active':db.execute("UPDATE wallet_pool SET state='queued',active_since=0 WHERE wallet=?",(w,))
+    changed(db,before,now,'coverage_activity_and_frozen_score_admission')
     return selected
 
 
