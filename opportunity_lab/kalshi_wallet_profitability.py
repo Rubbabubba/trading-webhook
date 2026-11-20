@@ -35,14 +35,19 @@ class Research:
         saved=self.db.execute('SELECT hash,started FROM protocol WHERE id=1').fetchone()
         if saved[0]!=POLICY_HASH:raise ValueError('research_protocol_changed')
         self.started=saved[1]
+        from .kalshi_wallet_pool import ensure
+        ensure(self.db)
+        self.discovery_errors=[]
+        self.db.executescript('CREATE INDEX IF NOT EXISTS wallet_observation_lookup ON observations(wallet,at);CREATE INDEX IF NOT EXISTS wallet_trade_lookup ON trades(wallet,event);')
 
     def candidates(self):
-        from .kalshi_wallet_copy_worker import ranked_wallets
-        saved=self.db.execute('SELECT at,wallets FROM cohort WHERE id=1').fetchone()
-        if not saved or self.clock()-saved[0]>=3600:
-            wallets=ranked_wallets(self.read)
-            self.db.execute('INSERT INTO cohort VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET at=excluded.at,wallets=excluded.wallets',(self.clock(),json.dumps(wallets)))
-        else:wallets=json.loads(saved[1])
+        from .kalshi_wallet_pool import admit,discover
+        scores=self.score_all()
+        admit(self.db,self.clock(),scores)  # Import retained v2 cohort before enlarging discovery.
+        result=discover(self.db,self.read,self.clock());self.discovery_errors=result.get('errors',[])
+        wallets=admit(self.db,self.clock(),self.score_all())
+        if not self.db.execute('SELECT 1 FROM wallet_pool WHERE last_seen>=?',(self.clock()-86400,)).fetchone():raise ValueError('wallet_discovery_unavailable')
+        self.db.execute('INSERT INTO cohort VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET at=excluded.at,wallets=excluded.wallets',(self.clock(),json.dumps(wallets)))
         return wallets
 
     def observe(self,trade):
@@ -68,6 +73,9 @@ class Research:
         from .kalshi_live_execution import LiveClient
         if self.clock()-trade['timestamp']>90:raise ValueError('research_signal_expired')
         if trade['side']=='BUY':
+            from .wallet_pool_policy import POLICY as POOL
+            owners={w for w, in self.db.execute("SELECT DISTINCT wallet FROM trades WHERE json_extract(detail,'$.net_cents') IS NULL")}
+            if len(owners)>=POOL['maximum_shadow_owners'] and trade['proxy_wallet'] not in owners:return 'shadow_owner_limit'
             # At most one observation per wallet/event; repeated source fills cannot inflate evidence.
             mapping=discover(trade,LiveClient.BASE_URL,self.read)
             if self.db.execute('SELECT 1 FROM trades WHERE wallet=? AND event=?',(trade['proxy_wallet'],mapping['event_ticker'])).fetchone():return 'duplicate_event'
@@ -96,6 +104,15 @@ class Research:
             return 'modeled_exit'
         return 'no_shadow_owner'
 
+    def coverage_gap(self,trade):
+        if trade.get('side')!='SELL':return
+        from .kalshi_wallet_copy_worker import source_identity
+        for ident,raw in self.db.execute("SELECT id,detail FROM trades WHERE wallet=? AND json_extract(detail,'$.net_cents') IS NULL",(trade['proxy_wallet'],)).fetchall():
+            detail=json.loads(raw)
+            if 'condition_id' in trade and (source_identity(detail['trade'])!=source_identity(trade) or detail['trade']['timestamp']>trade['timestamp']):continue
+            detail['coverage_gap']=True
+            self.db.execute('UPDATE trades SET detail=? WHERE id=?',(json.dumps(detail),ident))
+
     def settle(self):
         from .kalshi_live_execution import LiveClient
         for ident,raw in self.db.execute("SELECT id,detail FROM trades WHERE json_extract(detail,'$.settled_hold_net_cents') IS NULL ORDER BY checked,id LIMIT 4").fetchall():
@@ -111,26 +128,46 @@ class Research:
             d['settlement']=row
             self.db.execute('UPDATE trades SET detail=? WHERE id=?',(json.dumps(d),ident))
 
-    def report(self,errors=None):
-        rows=[dict(zip(('wallet','event','day','phase','net_cents','exit_kind','settled_hold_net_cents'),row)) for row in self.db.execute("SELECT wallet,event,day,phase,json_extract(detail,'$.net_cents'),json_extract(detail,'$.exit_kind'),json_extract(detail,'$.settled_hold_net_cents') FROM trades ORDER BY rowid")]
-        candidates=self.db.execute('SELECT wallets FROM cohort WHERE id=1').fetchone()
-        wallets=json.loads(candidates[0]) if candidates else []
-        scores=[]
+    def score_all(self):
+        from .wallet_pool_policy import adjusted
+        rows=[dict(zip(('wallet','event','day','phase','net_cents','exit_kind','settled_hold_net_cents','coverage_gap'),row)) for row in self.db.execute("SELECT wallet,event,day,phase,json_extract(detail,'$.net_cents'),json_extract(detail,'$.exit_kind'),json_extract(detail,'$.settled_hold_net_cents'),json_extract(detail,'$.coverage_gap') FROM trades ORDER BY rowid")]
+        registry=[w for w, in self.db.execute('SELECT wallet FROM wallet_pool ORDER BY first_seen,wallet')]
+        prior=self.db.execute('SELECT wallets FROM cohort WHERE id=1').fetchone()
+        wallets=registry or (json.loads(prior[0]) if prior else [])
+        grouped={}
+        for r in rows:grouped.setdefault(r['wallet'],[]).append(r)
+        cutoff=datetime.fromtimestamp(self.clock(),timezone.utc).date().isoformat();scores={}
         for wallet in wallets:
-            all_owned=[r for r in rows if r['wallet']==wallet]
-            cutoff=datetime.fromtimestamp(self.clock(),timezone.utc).date().isoformat()
-            owned=[r for r in all_owned if r['day']<cutoff];v=score(owned)
+            all_owned=grouped.get(wallet,[]);owned=[r for r in all_owned if r['day']<cutoff];v=score(owned)
             held=[r['settled_hold_net_cents'] for r in owned if r.get('settled_hold_net_cents') is not None]
-            scores.append(dict(wallet=wallet,**v,assessment_before_utc_day=cutoff,current_open=sum(r['net_cents'] is None for r in all_owned),open=sum(r['net_cents'] is None for r in owned),
-                hold_resolved=len(held),hold_net_cents=sum(held)))
-        selected=[r['wallet'] for r in sorted(scores,key=lambda r:r['holdout']['event_mean_lower_cents'] or -1e9,reverse=True) if r['qualified']][:4]
+            row=dict(wallet=wallet,**v,coverage_gaps=sum(bool(r.get('coverage_gap')) for r in owned),assessment_before_utc_day=cutoff,current_open=sum(r['net_cents'] is None for r in all_owned),open=sum(r['net_cents'] is None for r in owned),hold_resolved=len(held),hold_net_cents=sum(held))
+            if registry:row=adjusted(row)
+            scores[wallet]=row
+        return scores
+
+    def report(self,errors=None):
+        from .kalshi_wallet_pool import summary
+        all_scores=self.score_all();registry=bool(self.db.execute('SELECT 1 FROM wallet_pool').fetchone())
+        for wallet,row in all_scores.items():
+            self.db.execute('INSERT INTO wallet_pool_scores VALUES(?,?,?) ON CONFLICT(wallet) DO UPDATE SET at=excluded.at,detail=excluded.detail',(wallet,self.clock(),json.dumps(row)))
+        current={w for w, in self.db.execute("SELECT wallet FROM wallet_pool WHERE state!='archived' AND last_seen>=?",(self.clock()-86400,))} if registry else set(all_scores)
+        field='pool_event_lower_cents' if registry else 'event_mean_lower_cents'
+        ranked=sorted((r for w,r in all_scores.items() if w in current),key=lambda r:r['holdout'].get(field) or -1e9,reverse=True)
+        selected=[r['wallet'] for r in ranked if r['qualified']][:4]
+        # All scores remain durable; only eight are transported. Selected wallets always appear.
+        rest=[r for r in ranked if r['wallet'] not in selected]
+        offset=(int(self.clock())//30*4)%len(rest) if rest else 0
+        featured=[all_scores[w] for w in selected]+(rest[offset:]+rest[:offset])[:8-len(selected)]
+        total,resolved=self.db.execute("SELECT count(*),sum(CASE WHEN json_extract(detail,'$.net_cents') IS NOT NULL THEN 1 ELSE 0 END) FROM trades").fetchone()
         result=dict(schema='wallet_profitability_v1',at=datetime.fromtimestamp(self.clock(),timezone.utc).isoformat(),
             policy_hash=POLICY_HASH,policy=POLICY,mode='prospective_shadow',actual_fills=False,
-            state='error' if errors else 'observed',errors=errors or [],scores=scores,
+            state='error' if errors else 'observed',errors=errors or [],scores=featured,
             selected_wallets=selected if not errors else [],observations=self.db.execute('SELECT count(*) FROM observations').fetchone()[0],
-            modeled_entries=len(rows),resolved=sum(r['net_cents'] is not None for r in rows),
+            modeled_entries=total,resolved=resolved or 0,
             observation_state_counts_lifetime=dict(self.db.execute('SELECT state,count(*) FROM observations GROUP BY state ORDER BY count(*) DESC,state LIMIT 32').fetchall()))
+        if registry:result.update(discovery=summary(self.db,self.clock()),discovery_errors=self.discovery_errors)
         encoded=json.dumps(result,sort_keys=True)
+        if len(encoded.encode())>16000:raise ValueError('research_report_too_large')
         self.db.execute('INSERT OR IGNORE INTO decisions VALUES(?,?)',(self.clock(),encoded))
         tmp=self.root/'status.tmp';tmp.write_text(encoded,encoding='utf-8');tmp.replace(self.root/'status.json')
         return result
@@ -142,14 +179,37 @@ class Research:
         try:wallets=self.candidates()
         except Exception as e:return self.report([error_code(e)])
         owners={w for w, in self.db.execute("SELECT DISTINCT wallet FROM trades WHERE json_extract(detail,'$.net_cents') IS NULL")}
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            tasks={w:pool.submit(read_trades,w,max(self.started,self.clock()-90),self.read) for w in sorted(set(wallets)|owners)}
+            for wallet,task in tasks.items():
+                try:
+                    last=self.db.execute('SELECT last_polled FROM wallet_pool WHERE wallet=?',(wallet,)).fetchone()
+                    if last and last[0] and self.clock()-last[0]>90:self.coverage_gap({'side':'SELL','proxy_wallet':wallet})
+                    for t in task.result():self.observe(t)
+                    self.db.execute('UPDATE wallet_pool SET last_polled=? WHERE wallet=?',(self.clock(),wallet))
+                except Exception as e:errors.append(error_code(e))
+        stale=self.db.execute("SELECT detail FROM observations WHERE state='observed' AND json_extract(detail,'$.timestamp')<?",(self.clock()-90,)).fetchall()
+        for raw, in stale:self.coverage_gap(json.loads(raw))
+        self.db.execute("UPDATE observations SET state='late' WHERE state='observed' AND json_extract(detail,'$.timestamp')<?",(self.clock()-90,))
+        groups={}
         for wallet in sorted(set(wallets)|owners):
+            pending=self.db.execute("SELECT id,detail FROM observations WHERE state='observed' AND wallet=? ORDER BY json_extract(detail,'$.timestamp'),json_extract(detail,'$.side'),rowid LIMIT 2",(wallet,)).fetchall()
+            if pending:groups[wallet]=pending
+        names=list(groups);offset=(int(self.clock())//30*12)%len(names) if names else 0
+        names=names[offset:]+names[:offset];fair=[]
+        for _ in range(2):
+            for wallet in names:
+                if groups[wallet]:fair.append(groups[wallet].pop(0))
+        deadline=self.clock()+20
+        for key,raw in fair[:24]:
+            if self.clock()>deadline:break
+            trade=json.loads(raw)
             try:
-                for t in read_trades(wallet,max(self.started,self.clock()-90),self.read):self.observe(t)
-            except Exception as e:errors.append(error_code(e))
-        self.db.execute("UPDATE observations SET state='late' WHERE state='observed' AND at<?",(self.clock()-90,))
-        for key,raw in self.db.execute("SELECT id,detail FROM observations WHERE state='observed' ORDER BY json_extract(detail,'$.timestamp'),json_extract(detail,'$.side'),rowid LIMIT 8").fetchall():
-            try:state=self.process(key,json.loads(raw))
-            except Exception as e:state=error_code(e)
+                state='wallet_outside_active_research' if trade['side']=='BUY' and trade['proxy_wallet'] not in wallets else self.process(key,trade)
+            except Exception as e:
+                state=error_code(e)
+                if trade['side']=='SELL':self.coverage_gap(trade)
             self.db.execute('UPDATE observations SET state=? WHERE id=?',(state,key))
         try:self.settle()
         except Exception as e:errors.append(error_code(e))

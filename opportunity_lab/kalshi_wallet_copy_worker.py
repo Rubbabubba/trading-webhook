@@ -400,6 +400,13 @@ class WalletCopy:
         return "filled" if result["filled"] else "ioc_no_fill"
 
     def current_cohort(self,today):
+        # Prioritize research-qualified wallets for actual Demo execution proof.
+        # Existing owned wallets remain polled by tick even after selection changes.
+        try:
+            from .kalshi_wallet_profitability import read_report,DIRECTORY as RESEARCH
+            selected=read_report(self.root/RESEARCH/'status.json',datetime.fromtimestamp(self.clock(),timezone.utc))['selected_wallets']
+            if selected:return selected
+        except (OSError,ValueError,KeyError,TypeError):pass
         saved=self.db.execute('SELECT wallets FROM cohort WHERE day=?',(today,)).fetchone()
         if saved:return json.loads(saved[0])
         wallets=ranked_wallets(self.read)

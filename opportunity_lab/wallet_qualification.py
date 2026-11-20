@@ -18,6 +18,8 @@ def score(rows):
         clusters={}
         for r in part:clusters.setdefault(r['event'],[]).append(r['net_cents'])
         values=[sum(v)/len(v) for v in clusters.values()]
+        mean=statistics.mean(values) if values else None
+        se=statistics.stdev(values)/math.sqrt(len(values)) if len(values)>1 else None
         lower=(statistics.mean(values)-POLICY['confidence_multiplier']*statistics.stdev(values)/math.sqrt(len(values))) if len(values)>1 else None
         days=len({r['day'] for r in part});net=sum(r['net_cents'] for r in part)
         stressed=sum(r['net_cents']-POLICY['stress_cents_per_leg']*(2 if r['exit_kind']=='wallet_sell' else 1) for r in part)
@@ -25,7 +27,7 @@ def score(rows):
                     days=days>=POLICY['minimum_days'],net_positive=net>0,
                     stress_positive=stressed>0,event_lower_positive=lower is not None and lower>0)
         reasons.extend(phase+':'+k for k,v in checks.items() if not v)
-        result[phase]=dict(resolved=len(part),events=len(clusters),days=days,net_cents=net,
+        result[phase]=dict(event_mean_cents=mean,event_standard_error_cents=se,resolved=len(part),events=len(clusters),days=days,net_cents=net,
             stressed_net_cents=stressed,event_mean_lower_cents=round(lower,4) if lower is not None else None)
     pending=sum(r.get('net_cents') is None for r in rows)
     if pending:reasons.append('unresolved_entries')
@@ -44,6 +46,12 @@ def validate_report(value,*,now=None):
     at=datetime.fromisoformat(value['at'])
     if at.tzinfo is None or not 0<=(now-at).total_seconds()<=180:raise ValueError('stale_wallet_research')
     rows=value.get('scores');selected=value.get('selected_wallets')
+    pool=value.get('discovery')
+    if pool is not None:
+        from .wallet_pool_policy import POLICY as POOL,HASH as POOL_HASH
+        if pool.get('policy')!=POOL or pool.get('policy_hash')!=POOL_HASH:raise ValueError('wallet_pool_policy_mismatch')
+        for key,maximum in [('total_wallets',100),('active_wallets',12),('qualified_wallets',100)]:
+            if type(pool.get(key)) is not int or not 0<=pool[key]<=maximum:raise ValueError('invalid_wallet_pool_count')
     if not isinstance(rows,list) or len(rows)>8 or not isinstance(selected,list) or len(selected)>4:raise ValueError('invalid_wallet_selection')
     eligible=[];seen=set()
     for r in rows:
@@ -65,8 +73,11 @@ def validate_report(value,*,now=None):
                 ok=ok and n is not None and n>0
         if type(r.get('open')) is not int or r['open']<0:raise ValueError('invalid_wallet_pending')
         ok=ok and r['open']==0
+        if pool is not None:
+            from .wallet_pool_policy import validate_guard
+            ok=validate_guard(r,ok)
         if r.get('qualified') is not ok:raise ValueError('wallet_qualification_mismatch')
         if ok:eligible.append(w)
-    expected=[r['wallet'] for r in sorted(rows,key=lambda r:r['holdout']['event_mean_lower_cents'] or -1e9,reverse=True) if r['wallet'] in eligible][:4]
+    expected=[r['wallet'] for r in sorted(rows,key=lambda r:r['holdout'].get('pool_event_lower_cents' if pool is not None else 'event_mean_lower_cents') or -1e9,reverse=True) if r['wallet'] in eligible][:4]
     if selected!=expected:raise ValueError('wallet_selection_mismatch')
     return value
