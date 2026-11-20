@@ -399,15 +399,17 @@ class WalletCopy:
             return "submission_unresolved"
         return "filled" if result["filled"] else "ioc_no_fill"
 
+    def current_cohort(self,today):
+        saved=self.db.execute('SELECT wallets FROM cohort WHERE day=?',(today,)).fetchone()
+        if saved:return json.loads(saved[0])
+        wallets=ranked_wallets(self.read)
+        self.db.execute('INSERT INTO cohort VALUES(?,?)',(today,json.dumps(wallets)))
+        return wallets
+
     def tick(self):
         now = self.clock()
         today = day(now)
-        saved = self.db.execute("SELECT wallets FROM cohort WHERE day=?", (today,)).fetchone()
-        if saved:
-            cohort = json.loads(saved[0])
-        else:
-            cohort = ranked_wallets(self.read)
-            self.db.execute("INSERT INTO cohort VALUES(?,?)", (today, json.dumps(cohort)))
+        cohort = self.current_cohort(today)
         execution_error = None
         try:
             self.recover()
