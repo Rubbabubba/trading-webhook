@@ -158,3 +158,31 @@ def test_profit_selection_is_rechecked_before_actual_submission_and_cannot_block
     assert b.submit(cid,quote_snapshot=production_quote(j,cid,key))['filled']==1
     assert j.accounting()['positions']=={} and x.posts==2
     j.close();db.close()
+
+
+def qualifying_selection(now,wallet):
+    from opportunity_lab.wallet_qualification import POLICY,POLICY_HASH,score
+    rows=[dict(phase=p,event=str(i),day=str(i//7),net_cents=10,exit_kind='wallet_sell') for p in ('training','holdout') for i in range(20)]
+    return dict(schema='wallet_profitability_v1',at=now.isoformat(),policy_hash=POLICY_HASH,policy=POLICY,mode='prospective_shadow',actual_fills=False,state='observed',errors=[],scores=[dict(wallet=wallet,**score(rows),open=0,assessment_before_utc_day=now.date().isoformat())],selected_wallets=[wallet])
+
+
+def test_production_polls_refreshed_qualified_selection_and_retains_owned_sells(tmp_path,monkeypatch):
+    now,db,j,x,b,w,approved=setup(tmp_path)
+    owner='0x'+'1'*40;replacement='0x'+'2'*40
+    key,cid=signal(db,now,'BUY')
+    j.reserve(cid,'GAME',1,50,2,outcome='yes',action='buy',account_snapshot=b.snapshot())
+    assert b.submit(cid,quote_snapshot=production_quote(j,cid,key))['filled']==1
+    db.execute("UPDATE signals SET state='filled' WHERE id=?",(key,))
+    w.selection_provider=lambda:qualifying_selection(now,replacement)
+    assert w.current_cohort(now.date().isoformat())==[replacement]
+    assert json.loads(db.execute('SELECT wallets FROM cohort').fetchone()[0])==[replacement]
+    polled=[]
+    monkeypatch.setattr('opportunity_lab.kalshi_wallet_copy_worker.read_trades',lambda wallet,*a:polled.append(wallet) or [])
+    monkeypatch.setattr(w,'recover',lambda:None)
+    result=w.tick()
+    assert set(polled)=={owner,replacement} and result['wallets_polled']==2
+    polled.clear();w.selection_provider=lambda:None
+    result=w.tick()
+    assert result['ranked_wallets']==0 and polled==[owner]
+    assert j.accounting()['positions']['GAME']==1 and x.posts==1
+    j.close();db.close()

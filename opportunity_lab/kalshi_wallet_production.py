@@ -42,18 +42,22 @@ class WalletOwnerAuthority(OwnerAuthority):
         super().__init__(parsed._replace(path='/execution/kalshi/grant').geturl(),token)
         self.url=url
 
-    def qualified(self,wallet):
+    def selection(self):
         from urllib.request import Request
         from urllib.parse import urlparse
         from .wallet_qualification import validate_report
         try:
             url=urlparse(self.url)._replace(path="/execution/kalshi/wallet/selection").geturl()
             with self.opener.open(Request(url,headers={"Authorization":"Bearer "+self.token}),timeout=5) as response:raw=response.read(16001)
-            if len(raw)>16000:return False
+            if len(raw)>16000:return None
             value=json.loads(raw)
-            if value.get("schema")!="kalshi_wallet_selection_v1":return False
-            return wallet in validate_report(value.get("research"))["selected_wallets"]
-        except Exception:return False
+            if value.get("schema")!="kalshi_wallet_selection_v1":return None
+            return validate_report(value.get("research"))
+        except Exception:return None
+
+    def qualified(self,wallet):
+        selection=self.selection()
+        return bool(selection and wallet in selection['selected_wallets'])
 
     def report(self,value):
         # Retain detailed wallet lifecycle locally; the hosted production
@@ -211,11 +215,21 @@ class ProductionWalletCopy(WalletCopy):
     max_submissions=10  # Production approval remains ten submissions, never the Demo research allowance.
     market_base=WalletProductionClient.BASE_URL
 
-    def __init__(self,root,db,broker,*,read=public_get,clock=None):
+    def __init__(self,root,db,broker,*,read=public_get,clock=None,selection_provider=None):
         if not isinstance(broker,WalletProductionBroker):raise ValueError('wallet_production_broker_required')
+        self.selection_provider=selection_provider or (lambda:None)
         kwargs={'read':read}
         if clock is not None:kwargs['clock']=clock
         super().__init__(root,db,broker,**kwargs)
+
+    def current_cohort(self,today):
+        from .wallet_qualification import validate_report
+        try:
+            report=validate_report(self.selection_provider(),now=datetime.fromtimestamp(self.clock(),timezone.utc))
+            wallets=report['selected_wallets']
+        except Exception:wallets=[]
+        self.db.execute('INSERT INTO cohort VALUES(?,?) ON CONFLICT(day) DO UPDATE SET wallets=excluded.wallets',(today,json.dumps(wallets)))
+        return wallets
 
     def excluded_tickers(self):return set()  # No Demo inventory exceptions exist in production.
 
@@ -262,7 +276,7 @@ def run(root,*,once=False):
                             journal=WalletProductionJournal(root/'journal.sqlite3',grant,signals=db,approval_verifier=authority.verify,qualification_verifier=authority.qualified)
                             client=WalletProductionClient(os.environ.get('KALSHI_LIVE_API_KEY_ID',''),os.environ.get('KALSHI_LIVE_PRIVATE_KEY_PATH',''),
                                 grant,approval_verifier=authority.verify,recovery_only=recovering,demo_key_id=os.environ.get('KALSHI_DEMO_API_KEY_ID'))
-                            worker=ProductionWalletCopy(root,db,WalletProductionBroker(journal,client))
+                            worker=ProductionWalletCopy(root,db,WalletProductionBroker(journal,client),selection_provider=authority.selection)
                             write_json(cached,grant)
                             result={'state':'running','new_entries':False,'wallet_copy':worker.tick()}
                     else:result={'state':'running','new_entries':False,'wallet_copy':worker.tick()}
