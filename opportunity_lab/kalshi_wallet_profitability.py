@@ -88,6 +88,24 @@ class Research:
         if not 0<=self.clock()-q['observed_at']<=5:raise ValueError('research_quote_stale')
         return q,basis
 
+    def nhl_demo_evidence(self, trade, production_mapping):
+        """Retain a contemporaneous, executable Demo counterpart for scoring."""
+        from .kalshi_wallet_copy_worker import executable
+        from .kalshi_wallet_monitor import DEMO, read_fee, read_quote
+        from .kalshi_wallet_sports import discover
+
+        mapping = discover(trade, DEMO, self.read, research_nhl=True)
+        comparable_fields = ('ticker', 'event_ticker', 'side', 'kalshi_rules')
+        if any(mapping[field] != production_mapping[field] for field in comparable_fields):
+            raise ValueError('nhl_demo_contract_differs')
+        quote = read_quote(mapping, DEMO, self.read)
+        price = executable(trade, mapping, quote)
+        basis = read_fee(quote, DEMO, self.read)
+        if not 0 <= self.clock() - quote['observed_at'] <= POLICY['maximum_quote_age_seconds']:
+            raise ValueError('nhl_demo_quote_stale')
+        return {'ticker': mapping['ticker'], 'side': mapping['side'],
+                'price_cents': price, 'quote_at': quote['observed_at'], 'fee_basis': basis}
+
     def process(self,key,trade):
         from .kalshi_wallet_copy_worker import executable,source_identity
         from .kalshi_wallet_sports import discover
@@ -102,21 +120,33 @@ class Research:
             mapping = self.timed_read('contract_match', discover, trade, LiveClient.BASE_URL, self.read,
                                       **({'research_nhl': True} if nhl else {}))
             if self.db.execute('SELECT 1 FROM trades WHERE wallet=? AND event=?',(trade['proxy_wallet'],mapping['event_ticker'])).fetchone():return 'duplicate_event'
+            demo_evidence = None
+            demo_hold = None
+            if nhl:
+                from .kalshi_wallet_copy_worker import error_code
+                try:
+                    demo_evidence = self.timed_read('nhl_demo_execution', self.nhl_demo_evidence, trade, mapping)
+                except Exception as error:
+                    demo_hold = error_code(error)
             q,basis=self.quote(mapping);price=executable(trade,mapping,q)
             if self.clock()-trade['timestamp']>90:raise ValueError('research_signal_expired')
-            # NHL coverage stays exploratory until the same mapping has Demo
-            # and production coverage. It cannot change the frozen score split.
+            # Persist the admission decision when observed. Historical
+            # exploratory entries do not move into either scored cohort.
+            exploratory = nhl and demo_evidence is None
             count = self.db.execute("SELECT count(*) FROM trades WHERE wallet=? AND phase!='coverage'",
                                     (trade['proxy_wallet'],)).fetchone()[0]
             detail=dict(id=key,wallet=trade['proxy_wallet'],event=mapping['event_ticker'],
                 day=datetime.fromtimestamp(self.clock(),timezone.utc).date().isoformat(),
-                phase='coverage' if nhl else 'training' if count<20 else 'holdout',trade=trade,mapping=mapping,
+                phase='coverage' if exploratory else 'training' if count<20 else 'holdout',trade=trade,mapping=mapping,
                 entered_at=self.clock(),entry_cents=price,entry_fee_cents=fee(price,basis['fee_multiplier']),
                 entry_quote=q,entry_fee_basis=basis,net_cents=None,exit_kind=None,
                 modeled=True,actual_fill=False)
+            if nhl:
+                detail['nhl_demo_evidence'] = demo_evidence
+                detail['nhl_demo_hold'] = demo_hold
             self.db.execute('INSERT INTO trades(id,wallet,event,day,phase,detail) VALUES(?,?,?,?,?,?)',
                 (key,detail['wallet'],detail['event'],detail['day'],detail['phase'],json.dumps(detail)))
-            return 'modeled_coverage_entry' if nhl else 'modeled_entry'
+            return 'modeled_coverage_entry' if exploratory else 'modeled_entry'
         for ident,raw in self.db.execute("SELECT id,detail FROM trades WHERE wallet=? AND json_extract(detail,'$.net_cents') IS NULL",(trade['proxy_wallet'],)).fetchall():
             d=json.loads(raw)
             if d['net_cents'] is not None or source_identity(d['trade'])!=source_identity(trade) or d['trade']['timestamp']>trade['timestamp']:continue
@@ -194,6 +224,10 @@ class Research:
         if self.collection:result['collection']=self.collection
         coverage, coverage_resolved = self.db.execute(
             "SELECT count(*),count(json_extract(detail,'$.net_cents')) FROM trades WHERE phase='coverage'").fetchone()
+        nhl_scored = self.db.execute(
+            "SELECT count(*) FROM trades WHERE phase!='coverage' AND json_type(detail,'$.nhl_demo_evidence')='object'").fetchone()[0]
+        if nhl_scored:
+            result['verified_nhl_scored_entries'] = nhl_scored
         if coverage:
             result['exploratory_nhl'] = {'entries': coverage, 'resolved': coverage_resolved,
                                          'counts_toward_qualification': False}

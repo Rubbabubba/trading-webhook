@@ -340,7 +340,9 @@ class WalletCopy:
             if len(owners) >= MAX_OPEN:return "demo_entry_limit"
             admission=self.entry_admission(since)
             if admission:return admission
-            mapping = discover(trade, self.market_base, self.read)
+            nhl = str(trade.get("event_slug") or "").startswith("nhl-")
+            mapping = discover(trade, self.market_base, self.read,
+                               **({"research_nhl": True} if nhl else {}))
             if mapping['ticker'] in self.excluded_tickers():
                 return "legacy_demo_inventory_market"
             if (mapping["ticker"] in owners
