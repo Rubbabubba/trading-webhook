@@ -23,14 +23,20 @@ NHL_TEAMS = {
 }
 
 
+def supported_game(slug, *, research_nhl=False):
+    match = GAME.fullmatch(slug) if isinstance(slug, str) else None
+    if match and match[1] == "nhl":
+        if not research_nhl or match[2] not in NHL_TEAMS or match[3] not in NHL_TEAMS:
+            return None
+    return match
+
+
 def discover(trade, base, read, *, research_nhl=False):
     slug = trade.get("event_slug")
-    match = GAME.fullmatch(slug or "")
+    match = supported_game(slug, research_nhl=research_nhl)
     if match is None:
         raise ValueError("unsupported_sports_event")
     league, away, home, slug_date = match.groups()
-    if league == "nhl" and (not research_nhl or away not in NHL_TEAMS or home not in NHL_TEAMS):
-        raise ValueError("unsupported_sports_event")
     events = read(SOURCE, {"slug": slug})[0]
     event, = [event for event in events if event["slug"] == slug]
     source, = [market for market in event["markets"]

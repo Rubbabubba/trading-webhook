@@ -81,7 +81,7 @@ def test_no_hindsight_quote_and_no_broker_interface(tmp_path):
 def test_scheduler_tick_collects_quotes_resolves_and_persists_decision(tmp_path,monkeypatch):
     from opportunity_lab.kalshi_wallet_monitor import trade_key
     now=[2000000000];wallet='0x'+'1'*40;worker=r.Research(tmp_path,clock=lambda:now[0])
-    trade=dict(proxy_wallet=wallet,transaction_hash='0x'+'a'*64,type='TRADE',condition_id='0x'+'b'*64,token_id='123',timestamp=now[0]+1,side='BUY',price='.50',size='1')
+    trade=dict(proxy_wallet=wallet,transaction_hash='0x'+'a'*64,type='TRADE',condition_id='0x'+'b'*64,token_id='123',timestamp=now[0]+1,side='BUY',price='.50',size='1',event_slug='nba-bos-nyk-2026-11-21')
     monkeypatch.setattr(worker,'candidates',lambda:[wallet])
     worker.db.execute('INSERT INTO cohort VALUES(1,?,?)',(now[0],json.dumps([wallet])))
     monkeypatch.setattr('opportunity_lab.kalshi_wallet_monitor.read_trades',lambda *a:[trade])
@@ -103,7 +103,7 @@ def test_newest_first_activity_is_processed_in_source_order(tmp_path,monkeypatch
     now=[2000000000];wallet='0x'+'1'*40;worker=r.Research(tmp_path,clock=lambda:now[0])
     worker.db.execute('INSERT INTO cohort VALUES(1,?,?)',(now[0],json.dumps([wallet])))
     monkeypatch.setattr(worker,'candidates',lambda:[wallet])
-    entry=dict(proxy_wallet=wallet,transaction_hash='0x'+'a'*64,type='TRADE',condition_id='0x'+'b'*64,token_id='123',timestamp=now[0]+1,side='BUY',price='.50',size='1')
+    entry=dict(proxy_wallet=wallet,transaction_hash='0x'+'a'*64,type='TRADE',condition_id='0x'+'b'*64,token_id='123',timestamp=now[0]+1,side='BUY',price='.50',size='1',event_slug='nba-bos-nyk-2026-11-21')
     exit=dict(entry,transaction_hash='0x'+'c'*64,timestamp=now[0]+2,side='SELL',price='.65')
     monkeypatch.setattr('opportunity_lab.kalshi_wallet_monitor.read_trades',lambda *a:[exit,entry])
     monkeypatch.setattr('opportunity_lab.kalshi_wallet_sports.discover',lambda *a:dict(ticker='GAME',event_ticker='EVENT',side='yes'))

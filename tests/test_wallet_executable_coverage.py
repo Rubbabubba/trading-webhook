@@ -110,3 +110,18 @@ def test_exploratory_nhl_fill_does_not_use_a_training_slot(tmp_path, monkeypatch
     assert report['exploratory_nhl'] == {'entries': 1, 'resolved': 1, 'counts_toward_qualification': False}
     assert report['selected_wallets'] == []
     worker.db.close()
+
+
+def test_unsupported_buys_are_audited_without_waiting_in_the_pricing_queue(tmp_path):
+    wallet = '0x' + '1' * 40
+    now = [2000000000]
+    worker = research.Research(tmp_path, clock=lambda: now[0])
+    trade = dict(proxy_wallet=wallet, transaction_hash='0x'+'a'*64, type='TRADE',
+                 condition_id='0x'+'b'*64, token_id='1', timestamp=now[0], side='BUY',
+                 price='.50', size='1', event_slug='unsupported-event')
+    assert worker.observe(trade) == 'unsupported_sports_event'
+    assert worker.observe(trade) is None
+    assert worker.observe({**trade, 'side': 'SELL', 'transaction_hash': '0x'+'c'*64}) == 'observed'
+    states = [row[0] for row in worker.db.execute('SELECT state FROM observations ORDER BY rowid')]
+    assert states == ['unsupported_sports_event', 'observed']
+    worker.db.close()
