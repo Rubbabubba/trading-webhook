@@ -78,7 +78,12 @@ def admit(db,now,scores):
     selected=[r['wallet'] for r in qualified]
     owners={w for w, in db.execute("SELECT DISTINCT wallet FROM trades WHERE json_extract(detail,'$.net_cents') IS NULL")}
     selected += [r['wallet'] for r in eligible if r['wallet'] in owners and r['wallet'] not in selected][:12-len(selected)]
-    established=sorted((r for r in eligible if r['wallet'] not in selected and metrics[r['wallet']][1]>0),key=lambda r:(-metrics[r['wallet']][1],r['polled'],r['rank'],r['wallet']))
+    # Recent executable entries indicate that this wallet is still copyable.
+    # Retain lifetime evidence and keep the existing exploration reservation.
+    recent = dict(db.execute(
+        "SELECT wallet,count(*) FROM trades WHERE phase!='coverage' AND day>=date(?,'unixepoch','-6 days') "
+        "GROUP BY wallet", (now,)))
+    established=sorted((r for r in eligible if r['wallet'] not in selected and metrics[r['wallet']][1]>0),key=lambda r:(-recent.get(r['wallet'],0),-metrics[r['wallet']][1],r['polled'],r['rank'],r['wallet']))
     selected += [r['wallet'] for r in established[:max(0,8-len(selected))]]
     # Four slots deliberately sample previously untested or least-recently polled candidates.
     exploratory=sorted((r for r in eligible if r['wallet'] not in selected and not metrics[r['wallet']][1]),key=lambda r:(0 if r['state']=='active' else 1,r['polled'],r['rank'],r['wallet']))

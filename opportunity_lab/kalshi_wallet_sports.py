@@ -1,4 +1,4 @@
-"""Find full-game NBA/NFL counterparts for public quote comparisons."""
+"""Find verified full-game sports counterparts for public quote comparisons."""
 from datetime import datetime
 from decimal import Decimal
 import json
@@ -6,16 +6,31 @@ import re
 from zoneinfo import ZoneInfo
 
 SOURCE = "https://gamma-api.polymarket.com/events"
-GAME = re.compile(r"(nba|nfl)-([a-z]{2,3})-([a-z]{2,3})-(\d{4}-\d{2}-\d{2})")
+GAME = re.compile(r"(nba|nfl|nhl)-([a-z]{2,3})-([a-z]{2,3})-(\d{4}-\d{2}-\d{2})")
 SUFFIX = {"moneyline": "GAME", "spreads": "SPREAD", "totals": "TOTAL"}
 
 
-def discover(trade, base, read):
+# Source nickname and Kalshi winner label must agree with the ticker.
+NHL_TEAMS = {
+    "pit": ("PIT", "Penguins", "Pittsburgh"),
+    "nsh": ("NSH", "Predators", "Nashville"),
+    "chi": ("CHI", "Blackhawks", "Chicago"),
+    "cal": ("CGY", "Flames", "Calgary"),
+    "edm": ("EDM", "Oilers", "Edmonton"),
+    "car": ("CAR", "Hurricanes", "Carolina"),
+    "buf": ("BUF", "Sabres", "Buffalo"),
+    "fla": ("FLA", "Panthers", "Florida"),
+}
+
+
+def discover(trade, base, read, *, research_nhl=False):
     slug = trade.get("event_slug")
     match = GAME.fullmatch(slug or "")
     if match is None:
         raise ValueError("unsupported_sports_event")
     league, away, home, slug_date = match.groups()
+    if league == "nhl" and (not research_nhl or away not in NHL_TEAMS or home not in NHL_TEAMS):
+        raise ValueError("unsupported_sports_event")
     events = read(SOURCE, {"slug": slug})[0]
     event, = [event for event in events if event["slug"] == slug]
     source, = [market for market in event["markets"]
@@ -23,7 +38,16 @@ def discover(trade, base, read):
     names = event["title"].split(" vs. ")
     if len(names) != 2 or away == home:
         raise ValueError("sports_teams_unverified")
-    teams = dict(zip(names, (away.upper(), home.upper()), strict=True))
+    if league == "nhl":
+        away_code, away_name, away_label = NHL_TEAMS[away]
+        home_code, home_name, home_label = NHL_TEAMS[home]
+        if names != [away_name, home_name]:
+            raise ValueError("sports_teams_unverified")
+        teams = {away_name: away_code, home_name: home_code}
+        labels = {away_code: away_label, home_code: home_label}
+    else:
+        away_code, home_code = away.upper(), home.upper()
+        teams = dict(zip(names, (away_code, home_code), strict=True))
     start = datetime.fromisoformat(source["gameStartTime"])
     if start.utcoffset() is None:
         raise ValueError("sports_game_time_unverified")
@@ -38,11 +62,13 @@ def discover(trade, base, read):
     if outcome.casefold() != str(trade["outcome"]).casefold():
         raise ValueError("sports_token_side_mismatch")
     kind = source["sportsMarketType"]
-    if kind not in SUFFIX:
+    if kind not in SUFFIX or (league == "nhl" and kind != "moneyline"):
         raise ValueError("unsupported_sports_market_type")
     description = source["description"]
     if re.search(r"regulation only|exclud\w* overtime|overtime (?:does|will) not count",
                  description, re.I):
+        raise ValueError("sports_period_mismatch")
+    if league == "nhl" and not re.search(r"including any overtime periods and shootouts", description, re.I):
         raise ValueError("sports_period_mismatch")
     line = None
     side = "yes"
@@ -69,7 +95,7 @@ def discover(trade, base, read):
             team = None
             side = "yes" if outcome == "Over" else "no"
     date_code = game_date.strftime("%y%b%d").upper()
-    event_id = f"KX{league.upper()}{SUFFIX[kind]}-{date_code}{away.upper()}{home.upper()}"
+    event_id = f"KX{league.upper()}{SUFFIX[kind]}-{date_code}{away_code}{home_code}"
     page = read(base + "/markets", {"event_ticker": event_id, "limit": 100})[0]
     if page.get("cursor"):
         raise ValueError("sports_market_page_incomplete")
@@ -92,6 +118,12 @@ def discover(trade, base, read):
     if len(candidates) != 1:
         raise ValueError("sports_market_missing_or_ambiguous")
     market = candidates[0]
+    if league == "nhl":
+        date_label = f"{game_date:%b} {game_date.day}, {game_date.year}"
+        expected_rule = (f"If {labels[team]} wins the {away_label} vs {home_label} NHL game "
+                         f"originally scheduled for {date_label}, then the market resolves to Yes.")
+        if market.get("yes_sub_title") != labels[team] or market.get("rules_primary") != expected_rule:
+            raise ValueError("sports_moneyline_unverified")
     return {
         "ticker": market["ticker"], "event_ticker": event_id, "side": side,
         "exchange_index": market.get("exchange_index", 0),
