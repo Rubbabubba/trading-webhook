@@ -1,6 +1,7 @@
 """Forward-only executable-price wallet research. Never submits broker orders."""
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING
+from collections import Counter
 import hashlib
 import json
 import math
@@ -39,6 +40,7 @@ class Research:
         ensure(self.db)
         self.discovery_errors=[]
         self.collection={}
+        self.stage_metrics = {}
         self.db.executescript('CREATE INDEX IF NOT EXISTS wallet_observation_lookup ON observations(wallet,at);CREATE INDEX IF NOT EXISTS wallet_trade_lookup ON trades(wallet,event);')
 
     def candidates(self):
@@ -56,15 +58,28 @@ class Research:
         key=trade_key(trade)
         if self.db.execute('SELECT 1 FROM observations WHERE id=?',(key,)).fetchone():return
         now=self.clock()
+        source_seen = trade.get('observed_at', now)
+        self.record_latency('source_to_poll', source_seen - trade['timestamp'])
+        self.record_latency('poll_to_journal', now - source_seen)
         state='observed' if self.started<=trade['timestamp']<=now and now-trade['timestamp']<=90 else 'late'
         self.db.execute('INSERT INTO observations VALUES(?,?,?,?,?)',(key,trade['proxy_wallet'],now,state,json.dumps(trade)))
+
+    def record_latency(self, stage, seconds):
+        self.stage_metrics.setdefault(stage, []).append(max(0, seconds))
+
+    def timed_read(self, stage, read, *args, **kwargs):
+        started = time.monotonic()
+        try:
+            return read(*args, **kwargs)
+        finally:
+            self.record_latency(stage, time.monotonic() - started)
 
     def quote(self,mapping):
         from .kalshi_wallet_monitor import _read_quote,read_fee
         from .kalshi_live_execution import LiveClient
-        q=_read_quote(mapping,LiveClient.BASE_URL,self.read,environment='production')
+        q=self.timed_read('quote', _read_quote, mapping, LiveClient.BASE_URL, self.read, environment='production')
         if not 0<=self.clock()-q['observed_at']<=5:raise ValueError('research_quote_stale')
-        basis=read_fee(q,LiveClient.BASE_URL,self.read)
+        basis=self.timed_read('fee_metadata', read_fee, q, LiveClient.BASE_URL, self.read)
         if not 0<=self.clock()-q['observed_at']<=5:raise ValueError('research_quote_stale')
         return q,basis
 
@@ -78,20 +93,25 @@ class Research:
             owners={w for w, in self.db.execute("SELECT DISTINCT wallet FROM trades WHERE json_extract(detail,'$.net_cents') IS NULL")}
             if len(owners)>=POOL['maximum_shadow_owners'] and trade['proxy_wallet'] not in owners:return 'shadow_owner_limit'
             # At most one observation per wallet/event; repeated source fills cannot inflate evidence.
-            mapping=discover(trade,LiveClient.BASE_URL,self.read)
+            nhl = str(trade.get('event_slug') or '').startswith('nhl-')
+            mapping = self.timed_read('contract_match', discover, trade, LiveClient.BASE_URL, self.read,
+                                      **({'research_nhl': True} if nhl else {}))
             if self.db.execute('SELECT 1 FROM trades WHERE wallet=? AND event=?',(trade['proxy_wallet'],mapping['event_ticker'])).fetchone():return 'duplicate_event'
             q,basis=self.quote(mapping);price=executable(trade,mapping,q)
             if self.clock()-trade['timestamp']>90:raise ValueError('research_signal_expired')
-            count=self.db.execute('SELECT count(*) FROM trades WHERE wallet=?',(trade['proxy_wallet'],)).fetchone()[0]
+            # NHL coverage stays exploratory until the same mapping has Demo
+            # and production coverage. It cannot change the frozen score split.
+            count = self.db.execute("SELECT count(*) FROM trades WHERE wallet=? AND phase!='coverage'",
+                                    (trade['proxy_wallet'],)).fetchone()[0]
             detail=dict(id=key,wallet=trade['proxy_wallet'],event=mapping['event_ticker'],
                 day=datetime.fromtimestamp(self.clock(),timezone.utc).date().isoformat(),
-                phase='training' if count<20 else 'holdout',trade=trade,mapping=mapping,
+                phase='coverage' if nhl else 'training' if count<20 else 'holdout',trade=trade,mapping=mapping,
                 entered_at=self.clock(),entry_cents=price,entry_fee_cents=fee(price,basis['fee_multiplier']),
                 entry_quote=q,entry_fee_basis=basis,net_cents=None,exit_kind=None,
                 modeled=True,actual_fill=False)
             self.db.execute('INSERT INTO trades(id,wallet,event,day,phase,detail) VALUES(?,?,?,?,?,?)',
                 (key,detail['wallet'],detail['event'],detail['day'],detail['phase'],json.dumps(detail)))
-            return 'modeled_entry'
+            return 'modeled_coverage_entry' if nhl else 'modeled_entry'
         for ident,raw in self.db.execute("SELECT id,detail FROM trades WHERE wallet=? AND json_extract(detail,'$.net_cents') IS NULL",(trade['proxy_wallet'],)).fetchall():
             d=json.loads(raw)
             if d['net_cents'] is not None or source_identity(d['trade'])!=source_identity(trade) or d['trade']['timestamp']>trade['timestamp']:continue
@@ -131,7 +151,7 @@ class Research:
 
     def score_all(self):
         from .wallet_pool_policy import adjusted
-        rows=[dict(zip(('wallet','event','day','phase','net_cents','exit_kind','settled_hold_net_cents','coverage_gap'),row)) for row in self.db.execute("SELECT wallet,event,day,phase,json_extract(detail,'$.net_cents'),json_extract(detail,'$.exit_kind'),json_extract(detail,'$.settled_hold_net_cents'),json_extract(detail,'$.coverage_gap') FROM trades ORDER BY rowid")]
+        rows=[dict(zip(('wallet','event','day','phase','net_cents','exit_kind','settled_hold_net_cents','coverage_gap'),row)) for row in self.db.execute("SELECT wallet,event,day,phase,json_extract(detail,'$.net_cents'),json_extract(detail,'$.exit_kind'),json_extract(detail,'$.settled_hold_net_cents'),json_extract(detail,'$.coverage_gap') FROM trades WHERE phase!='coverage' ORDER BY rowid")]
         registry=[w for w, in self.db.execute('SELECT wallet FROM wallet_pool ORDER BY first_seen,wallet')]
         prior=self.db.execute('SELECT wallets FROM cohort WHERE id=1').fetchone()
         wallets=registry or (json.loads(prior[0]) if prior else [])
@@ -167,6 +187,17 @@ class Research:
             modeled_entries=total,resolved=resolved or 0,
             observation_state_counts_lifetime=dict(self.db.execute('SELECT state,count(*) FROM observations GROUP BY state ORDER BY count(*) DESC,state LIMIT 32').fetchall()))
         if self.collection:result['collection']=self.collection
+        coverage, coverage_resolved = self.db.execute(
+            "SELECT count(*),count(json_extract(detail,'$.net_cents')) FROM trades WHERE phase='coverage'").fetchone()
+        if coverage:
+            result['exploratory_nhl'] = {'entries': coverage, 'resolved': coverage_resolved,
+                                         'counts_toward_qualification': False}
+        # Surface the closest wallet even when the other rows rotate.
+        if rest:
+            closest = max(rest, key=lambda r: (min(r['training']['resolved'],20)+min(r['holdout']['resolved'],20),
+                                               r['training']['events']+r['holdout']['events'], -r['open']))
+            result['nearest_qualification'] = {k: closest[k] for k in ('wallet','training','holdout','open','reasons')}
+
         if registry:
             from .wallet_pool_audit import snapshot,bound_report
             result.update(discovery=summary(self.db,self.clock()),discovery_errors=self.discovery_errors,
@@ -182,13 +213,18 @@ class Research:
         from .kalshi_wallet_monitor import read_trades
         from .kalshi_wallet_copy_worker import error_code
         errors=[];started=time.monotonic()
+        self.stage_metrics = {}
+        processed_states = Counter()
         try:wallets=self.candidates()
         except Exception as e:return self.report([error_code(e)])
         owners={w for w, in self.db.execute("SELECT DISTINCT wallet FROM trades WHERE json_extract(detail,'$.net_cents') IS NULL")}
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=8) as pool:
-            tasks={w:pool.submit(read_trades,w,max(self.started,self.clock()-90),self.read) for w in sorted(set(wallets)|owners)}
-            for wallet,task in tasks.items():
+            poll_order = sorted(owners) + [wallet for wallet in wallets if wallet not in owners]
+            tasks = {pool.submit(read_trades, w, max(self.started, self.clock()-90), self.read): w
+                     for w in poll_order}
+            for task in as_completed(tasks):
+                wallet = tasks[task]
                 try:
                     last=self.db.execute('SELECT last_polled FROM wallet_pool WHERE wallet=?',(wallet,)).fetchone()
                     if last and last[0] and self.clock()-last[0]>90:self.coverage_gap({'side':'SELL','proxy_wallet':wallet})
@@ -212,12 +248,14 @@ class Research:
         for key,raw in fair[:24]:
             if self.clock()>deadline:break
             trade=json.loads(raw)
+            self.record_latency('poll_to_processing', self.clock() - trade.get('observed_at', self.clock()))
             try:
                 state='wallet_outside_active_research' if trade['side']=='BUY' and trade['proxy_wallet'] not in wallets else self.process(key,trade)
             except Exception as e:
                 state=error_code(e)
                 if trade['side']=='SELL':self.coverage_gap(trade)
             self.db.execute('UPDATE observations SET state=? WHERE id=?',(state,key))
+            processed_states[state] += 1
             processed+=1
         try:self.settle()
         except Exception as e:errors.append(error_code(e))
@@ -225,7 +263,11 @@ class Research:
             discovery_and_poll_seconds=round(poll_elapsed,3),processed=processed,
             polled_wallets=len(set(wallets)|owners),pending_observations=self.db.execute(
                 "SELECT count(*) FROM observations WHERE state='observed'").fetchone()[0],
-            target_cycle_seconds=30,minimum_pause_seconds=5,maximum_signal_seconds=90)
+            target_cycle_seconds=30,minimum_pause_seconds=5,maximum_signal_seconds=90,
+            processed_states=dict(processed_states.most_common(12)),
+            latency_seconds={stage: {'samples': len(values), 'p50': round(statistics.median(values), 3),
+                                     'max': round(max(values), 3)}
+                             for stage, values in self.stage_metrics.items()})
         return self.report(errors)
 
 

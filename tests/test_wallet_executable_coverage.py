@@ -64,3 +64,49 @@ def test_loop_cadence_includes_work_and_never_catches_up_in_a_burst(work_seconds
     monkeypatch.setattr('opportunity_lab.kalshi_process_lock.acquire',lambda *a:nullcontext())
     with pytest.raises(KeyboardInterrupt):research.run(tmp_path)
     assert pauses==[expected_pause] and closed==[True]
+
+
+def test_nhl_shadow_match_checks_venue_alias_winner_and_game_rules():
+    from opportunity_lab.kalshi_wallet_sports import discover
+    source = {
+        'conditionId': 'fixture', 'gameStartTime': '2026-11-21 20:30:00+00',
+        'sportsMarketType': 'moneyline', 'outcomes': '["Blackhawks","Flames"]',
+        'clobTokenIds': '["1","2"]', 'description': 'Final score including any overtime periods and shootouts.',
+        'question': 'Blackhawks vs. Flames',
+    }
+    event = {'slug': 'nhl-chi-cal-2026-11-21', 'title': source['question'], 'markets': [source]}
+    market = {
+        'ticker': 'KXNHLGAME-26NOV21CHICGY-CGY', 'event_ticker': 'KXNHLGAME-26NOV21CHICGY',
+        'market_type': 'binary', 'strike_type': 'structured', 'yes_sub_title': 'Calgary',
+        'rules_primary': ('If Calgary wins the Chicago vs Calgary NHL game originally scheduled '
+                          'for Nov 21, 2026, then the market resolves to Yes.'),
+        'rules_secondary': '',
+    }
+
+    def read(url, params):
+        if 'polymarket' in url:
+            return ([event],)
+        assert params['event_ticker'] == market['event_ticker']
+        return ({'markets': [market]},)
+
+    trade = dict(event_slug=event['slug'], condition_id='fixture', token_id='2', outcome='Flames')
+    with pytest.raises(ValueError, match='unsupported_sports_event'):
+        discover(trade, 'https://test.invalid', read)
+    assert discover(trade, 'https://test.invalid', read, research_nhl=True)['ticker'] == market['ticker']
+    market['rules_primary'] = market['rules_primary'].replace('Calgary wins', 'Chicago wins')
+    with pytest.raises(ValueError, match='sports_moneyline_unverified'):
+        discover(trade, 'https://test.invalid', read, research_nhl=True)
+
+
+def test_exploratory_nhl_fill_does_not_use_a_training_slot(tmp_path, monkeypatch):
+    worker = research.Research(tmp_path, clock=lambda: 2000000000)
+    wallet = '0x' + '1' * 40
+    worker.db.execute('INSERT INTO cohort VALUES(1,?,?)', (worker.clock(), json.dumps([wallet])))
+    worker.db.execute('INSERT INTO trades(id,wallet,event,day,phase,detail) VALUES(?,?,?,?,?,?)',
+                      ('nhl', wallet, 'NHL', '2026-11-20', 'coverage',
+                       json.dumps({'net_cents': 42, 'exit_kind': 'settlement'})))
+    report = worker.report()
+    assert report['scores'][0]['training']['resolved'] == 0
+    assert report['exploratory_nhl'] == {'entries': 1, 'resolved': 1, 'counts_toward_qualification': False}
+    assert report['selected_wallets'] == []
+    worker.db.close()
