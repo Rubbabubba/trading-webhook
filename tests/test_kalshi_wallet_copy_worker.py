@@ -62,7 +62,8 @@ def test_uncertain_wallet_entry_requires_two_flat_broker_reads_and_never_resends
 
 @pytest.mark.parametrize('outcome',['yes','no'])
 @pytest.mark.parametrize('buy_budget_exhausted',[False,True])
-def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, monkeypatch,outcome,buy_budget_exhausted):
+@pytest.mark.parametrize('nhl',[False,True])
+def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, monkeypatch,outcome,buy_budget_exhausted,nhl):
     wallets = ["0x" + str(index) * 40 for index in range(1, 5)]
     now = int(time.time())
     state = tmp_path / copy.DIRECTORY
@@ -98,10 +99,15 @@ def test_ranked_copy_recovers_and_only_sells_matching_owned_contract(tmp_path, m
     def trade(wallet, number, side, token="123"):
         return dict(proxy_wallet=wallet, transaction_hash=f"0x{number:064x}", type="TRADE",
                     condition_id="0x" + "a" * 64, token_id=token,
-                    timestamp=now + number, side=side, price=".47" if outcome=='yes' else '.53', size="1")
+                    timestamp=now + number, side=side, price=".47" if outcome=='yes' else '.53', size="1",
+                    event_slug="nhl-edm-car-2026-11-21" if nhl else "nba-bos-nyk-2026-11-21")
 
     monkeypatch.setattr(copy, "read_trades", activity)
-    monkeypatch.setattr(copy, "discover", lambda *_: {"ticker": "GAME", "side": outcome})
+    def discover(_, __, ___, **kwargs):
+        assert bool(kwargs.get('research_nhl')) == nhl
+        return {"ticker": "GAME", "side": outcome}
+
+    monkeypatch.setattr(copy, "discover", discover)
     monkeypatch.setattr(copy, "read_quote", quote)
     monkeypatch.setattr(copy, "read_fee", lambda *_: {"fee_multiplier": "1"})
     worker = copy.WalletCopy(tmp_path, db, broker, read=leaderboard, clock=lambda: now)

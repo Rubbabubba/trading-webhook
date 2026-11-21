@@ -125,3 +125,30 @@ def test_unsupported_buys_are_audited_without_waiting_in_the_pricing_queue(tmp_p
     states = [row[0] for row in worker.db.execute('SELECT state FROM observations ORDER BY rowid')]
     assert states == ['unsupported_sports_event', 'observed']
     worker.db.close()
+
+
+@pytest.mark.parametrize('demo_verified', [True, False])
+def test_fresh_nhl_entry_uses_scoring_when_demo_is_executable(tmp_path, monkeypatch, demo_verified):
+    wallet = '0x' + '1' * 40
+    now = 2000000000
+    worker = research.Research(tmp_path, clock=lambda: now)
+    worker.db.execute('INSERT INTO cohort VALUES(1,?,?)', (now, json.dumps([wallet])))
+    trade = dict(proxy_wallet=wallet, condition_id='fixture', token_id='1',
+                 timestamp=now, side='BUY', price='.50', event_slug='nhl-edm-car-2026-11-21')
+    mapping = dict(ticker='GAME', event_ticker='EVENT', side='yes')
+    monkeypatch.setattr('opportunity_lab.kalshi_wallet_sports.discover', lambda *args, **kwargs: mapping)
+    monkeypatch.setattr(worker, 'quote', lambda _: (
+        {'observed_at': now, 'orderbook_fp': {'yes_dollars': [['.44','2']], 'no_dollars': [['.50','2']]}},
+        {'fee_multiplier': '1'}))
+
+    def demo(*args):
+        if not demo_verified:
+            raise ValueError('wallet_book_unavailable')
+        return {'ticker': 'GAME', 'quote_at': now}
+
+    monkeypatch.setattr(worker, 'nhl_demo_evidence', demo)
+    assert worker.process('nhl-entry', trade) == ('modeled_entry' if demo_verified else 'modeled_coverage_entry')
+    phase, detail = worker.db.execute('SELECT phase,detail FROM trades').fetchone()
+    assert phase == ('training' if demo_verified else 'coverage')
+    assert bool(json.loads(detail)['nhl_demo_evidence']) == demo_verified
+    worker.db.close()
