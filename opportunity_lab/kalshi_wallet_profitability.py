@@ -62,7 +62,12 @@ class Research:
         self.record_latency('source_to_poll', source_seen - trade['timestamp'])
         self.record_latency('poll_to_journal', now - source_seen)
         state='observed' if self.started<=trade['timestamp']<=now and now-trade['timestamp']<=90 else 'late'
+        if state == 'observed' and trade['side'] == 'BUY':
+            from .kalshi_wallet_sports import supported_game
+            if supported_game(trade.get('event_slug'), research_nhl=True) is None:
+                state = 'unsupported_sports_event'
         self.db.execute('INSERT INTO observations VALUES(?,?,?,?,?)',(key,trade['proxy_wallet'],now,state,json.dumps(trade)))
+        return state
 
     def record_latency(self, stage, seconds):
         self.stage_metrics.setdefault(stage, []).append(max(0, seconds))
@@ -215,6 +220,7 @@ class Research:
         errors=[];started=time.monotonic()
         self.stage_metrics = {}
         processed_states = Counter()
+        collected_states = Counter()
         try:wallets=self.candidates()
         except Exception as e:return self.report([error_code(e)])
         owners={w for w, in self.db.execute("SELECT DISTINCT wallet FROM trades WHERE json_extract(detail,'$.net_cents') IS NULL")}
@@ -228,7 +234,10 @@ class Research:
                 try:
                     last=self.db.execute('SELECT last_polled FROM wallet_pool WHERE wallet=?',(wallet,)).fetchone()
                     if last and last[0] and self.clock()-last[0]>90:self.coverage_gap({'side':'SELL','proxy_wallet':wallet})
-                    for t in task.result():self.observe(t)
+                    for trade in task.result():
+                        state = self.observe(trade)
+                        if state:
+                            collected_states[state] += 1
                     self.db.execute('UPDATE wallet_pool SET last_polled=? WHERE wallet=?',(self.clock(),wallet))
                 except Exception as e:errors.append(error_code(e))
         stale=self.db.execute("SELECT detail FROM observations WHERE state='observed' AND json_extract(detail,'$.timestamp')<?",(self.clock()-90,)).fetchall()
@@ -264,7 +273,7 @@ class Research:
             polled_wallets=len(set(wallets)|owners),pending_observations=self.db.execute(
                 "SELECT count(*) FROM observations WHERE state='observed'").fetchone()[0],
             target_cycle_seconds=30,minimum_pause_seconds=5,maximum_signal_seconds=90,
-            processed_states=dict(processed_states.most_common(12)),
+            collected_states=dict(collected_states), processed_states=dict(processed_states.most_common(12)),
             latency_seconds={stage: {'samples': len(values), 'p50': round(statistics.median(values), 3),
                                      'max': round(max(values), 3)}
                              for stage, values in self.stage_metrics.items()})
