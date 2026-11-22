@@ -94,6 +94,18 @@ def publish(packet: dict, *, url: str | None = None, token: str | None = None) -
         copier["profitability"]=read_report(Path("/var/data/kalshi-demo-v9")/research_directory/"status.json")
     except Exception:
         copier["profitability"]=None
+    from .kalshi_wallet_matched_demo import read_status, DIRECTORY as matched_directory
+    matched = read_status(Path('/var/data/kalshi-demo-v9') / matched_directory / 'status.json')
+    if matched is not None and copier['profitability'] is not None:
+        from copy import deepcopy
+        from .wallet_pool_audit import bound_report
+        expanded = deepcopy(copier['profitability'])
+        expanded['matched_demo'] = matched
+        try:
+            bound_report(expanded, time.time())
+            copier['profitability'] = expanded
+        except ValueError:
+            pass
     packet = dict(packet, historical_diagnostics=history, wallet_copy=copier)
     revision=os.getenv('RENDER_GIT_COMMIT','')
     service=os.getenv('RENDER_SERVICE_ID','')
