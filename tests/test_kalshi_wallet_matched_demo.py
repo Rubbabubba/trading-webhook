@@ -82,6 +82,30 @@ def test_awaiting_start_has_no_market_calls(tmp_path):
     db.close()
 
 
+def test_first_receipt_joins_only_valid_settlements_for_its_exact_tickers(tmp_path):
+    now = matched.FIRST + 100
+    db = matched.open_archive(tmp_path)
+    wallet = dict(quote('W', 'NBA:1', now), frame_sha256='1' * 64, event='event-w',
+                  rules={'rules_primary': 'W'})
+    control = dict(quote('C', 'NBA:2', now), frame_sha256='2' * 64, event='event-c',
+                   rules={'rules_primary': 'C'})
+    matched.save_pair(db, 1, 'first', {'state': 'matched', 'wallet': wallet, 'control': control})
+    matched.save_pair(db, 2, 'later', {'state': 'matched', 'wallet': control, 'control': wallet})
+    unopened = matched.first_matched_receipt(db)
+    assert unopened['wallet']['ticker'] == 'W'
+    assert 'settlement_at' not in unopened['wallet']
+    for ticker, event, rules in [('W', 'event-w', 'W'), ('C', 'wrong-event', 'C')]:
+        raw = json.dumps(dict(received_at=now + 10,
+                              market=dict(ticker=ticker, event_ticker=event, status='finalized',
+                                          result='yes', rules_primary=rules)))
+        db.execute('UPDATE outcomes SET detail=? WHERE ticker=?', (raw, ticker))
+    finalized = matched.first_matched_receipt(db)
+    assert finalized['id_sha256'] == unopened['id_sha256']
+    assert finalized['wallet']['settlement_at'] == now + 10
+    assert 'settlement_at' not in finalized['control']
+    db.close()
+
+
 def test_frozen_holdout_needs_complete_three_day_evidence_and_beats_both_controls():
     first = matched.FIRST + 100
     picks = []

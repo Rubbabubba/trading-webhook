@@ -10,7 +10,7 @@ import sqlite3
 import time
 
 from .kalshi_wallet_monitor import DEMO, TICKER, public_get, read_quote, read_fee
-from .kalshi_wallet_matched_decision import assess
+from .kalshi_wallet_matched_decision import assess, payout
 from .kalshi_wallet_profitability import fee
 
 
@@ -28,8 +28,8 @@ REGISTRATION_SHA256 = '410bd4a25455ad596f2f245bb14b30a5ce2e71e8e08b9aec0bdadff85
 def read_status(path, *, now=None):
     try:
         with Path(path).open('rb') as stream:
-            data = stream.read(2049)
-        if len(data) > 2048:
+            data = stream.read(4097)
+        if len(data) > 4096:
             return None
         status = json.loads(data)
         age = (time.time() if now is None else now) - status['at']
@@ -244,7 +244,6 @@ def join_broker_settlements(root, db):
           WHERE outcomes.detail IS NOT NULL AND json_type(pairs.detail,'$.broker_join') IS NULL
           AND json_extract(pairs.detail,'$.baseline_state')='filled'""").fetchall()
         for ident, body, outcome in rows:
-            from .kalshi_wallet_matched_decision import payout
             pair = json.loads(body)
             wallet = pair['wallet']
             ticker = wallet['ticker']
@@ -276,6 +275,30 @@ def join_broker_settlements(root, db):
                     pair['baseline_settlement_net_cents'] = str(settled - 100 * (gross + fees))
                     pair['broker_join'] = 'one_owned_contract_settled'
             db.execute('UPDATE pairs SET detail=? WHERE id=?', (json.dumps(pair, sort_keys=True), ident))
+
+
+def first_matched_receipt(db):
+    """Keep quote and finalized-market proof on the same first observed pair."""
+    first = db.execute("SELECT id,detail FROM pairs WHERE json_extract(detail,'$.state')='matched' "
+                       "ORDER BY rowid LIMIT 1").fetchone()
+    if first is None:
+        return None
+    ident, detail = first
+    pair = json.loads(detail)
+    proof = {'id_sha256': hashlib.sha256(ident.encode()).hexdigest()}
+    for side in ('wallet', 'control'):
+        quote = pair[side]
+        result = dict(ticker=quote['ticker'], quote_at=quote['received_at'],
+                      quote_sha256=quote['frame_sha256'])
+        row = db.execute('SELECT detail FROM outcomes WHERE ticker=?', (quote['ticker'],)).fetchone()
+        if row and row[0]:
+            raw, = row
+            settlement = json.loads(raw)
+            if payout(quote, settlement) is not None:
+                result['settlement_at'] = settlement['received_at']
+                result['settlement_sha256'] = hashlib.sha256(raw.encode()).hexdigest()
+        proof[side] = result
+    return proof
 
 
 def run_tick(root, db, *, read=public_get, clock=time.time):
@@ -318,6 +341,9 @@ def run_tick(root, db, *, read=public_get, clock=time.time):
     status['pending_settlements'] = db.execute(
         'SELECT count(*) FROM outcomes WHERE detail IS NULL').fetchone()[0]
     status['final_decisions'] = db.execute('SELECT count(*) FROM decisions').fetchone()[0]
+    first = first_matched_receipt(db)
+    if first is not None:
+        status['first_matched_receipt'] = first
     last_decision = db.execute('SELECT id,detail FROM decisions ORDER BY rowid DESC LIMIT 1').fetchone()
     if last_decision:
         status['latest_decision'] = dict(
