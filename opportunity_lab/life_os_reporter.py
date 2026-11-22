@@ -94,6 +94,10 @@ def publish(packet: dict, *, url: str | None = None, token: str | None = None) -
         copier["profitability"]=read_report(Path("/var/data/kalshi-demo-v9")/research_directory/"status.json")
     except Exception:
         copier["profitability"]=None
+    from .kalshi_wallet_cap_shadow import read_status as read_cap_shadow, DIRECTORY as cap_shadow
+    observation = read_cap_shadow(Path('/var/data/kalshi-demo-v9') / cap_shadow / 'status.json')
+    if observation is not None:
+        copier['cap_shadow'] = observation
     from .kalshi_wallet_matched_demo import read_status, DIRECTORY as matched_directory
     matched = read_status(Path('/var/data/kalshi-demo-v9') / matched_directory / 'status.json')
     if matched is not None and copier['profitability'] is not None:

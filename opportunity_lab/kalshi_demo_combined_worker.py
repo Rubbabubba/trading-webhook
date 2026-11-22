@@ -60,6 +60,17 @@ def matched_wallet_supervisor(root):
             time.sleep(30)
 
 
+def cap_shadow_supervisor(root):
+    from .kalshi_wallet_cap_shadow import run
+    while True:
+        try:
+            run(root)
+        except Exception as error:
+            print(json.dumps(dict(event='wallet_cap_shadow_restart',
+                                  error_type=type(error).__name__)), flush=True)
+            time.sleep(30)
+
+
 def run(data_root, cycles=None):
     root = Path(data_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -69,6 +80,7 @@ def run(data_root, cycles=None):
         threading.Thread(target=wallet_copy_supervisor, args=(root,), daemon=True).start()
         threading.Thread(target=wallet_research_supervisor, args=(root,), daemon=True).start()
         threading.Thread(target=matched_wallet_supervisor, args=(root,), daemon=True).start()
+        threading.Thread(target=cap_shadow_supervisor, args=(root,), daemon=True).start()
     else:
         # Bounded validation runs exercise both services without a background
         # thread surviving the test process.
