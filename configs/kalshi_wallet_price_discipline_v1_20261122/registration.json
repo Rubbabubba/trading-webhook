@@ -1,0 +1,29 @@
+{
+  "id": "kalshi_wallet_price_discipline_v1_20261122",
+  "first_eligible_utc_day": "2026-11-23",
+  "mode": "prospective_shadow",
+  "hypothesis": "Rejecting wallet entries whose current Kalshi execution cost exceeds a conservative prior value improves stressed net per eligible signal.",
+  "control": "Existing one-contract Demo copier entry and exit rules, evaluated on the same admission opportunities. Actual Demo fills are reported separately.",
+  "training": {
+    "group": "exact wallet and predeclared contract family",
+    "unit": "one first eligible entry per wallet and parent event",
+    "minimum_resolved_events": 20,
+    "minimum_utc_days": 3,
+    "value_method": "Wilson lower bound of binary settlement payout with z=3.5",
+    "freeze": "Freeze the first eligible training cohort's value before first holdout admission. Admit only completed prior-UTC-day settlement evidence available before freeze. Do not transport values across wallets, families or outcomes. Evaluate YES and NO as separate groups."
+  },
+  "entry": {
+    "rule": "Apply the existing gates, then accept only when executable one-contract ask plus series taker fee rounded conservatively plus one cent entry stress is strictly below the frozen value.",
+    "maximum_quote_age_seconds": 5,
+    "missing_policy": "Missing timely ask, displayed quantity, fee, exact mapping or frozen value remains unavailable. Retain source first-seen and quote receipt. Do not substitute later books or midpoint."
+  },
+  "holdout": {
+    "minimum_resolved_events": 20,
+    "minimum_utc_days": 3,
+    "matched_reference": "One separately captured Kalshi-only opportunity from the same family, UTC session, five-cent ask bucket and one-hour time-to-settlement bucket. Select nearest timestamp within 60 seconds using contemporaneous availability, then ticker order. Exclude every parent in the wallet pair and previously used reference parents. Missing matches remain visible.",
+    "accounting": "Same sizing and exit rules. Compare stressed net per eligible opportunity, with priced skips valued at zero, actual and modeled fills distinguished, original fees, one cent per executed leg stress and alternative two cents per executed leg. Report matched-pair coverage, rejected winners, avoided losses, unfilled and missing paths, slot use and capital time. Cluster by parent event and preserve repeated observations.",
+    "decision": "Require positive stressed absolute net and positive parent-cluster lower bounds at z=3.5 for absolute net and paired improvement versus both controls, with no unresolved eligible outcomes, plus every unchanged promotion and actual Demo execution gate. Reject a complete failing holdout. At 60 UTC days after first holdout admission, classify inadequate coverage as insufficient. Do not extend or retune this version."
+  },
+  "separate_exit_study": "On identical entries compare verified settlement with the contemporaneous executable owned-wallet sell, charging both fees and stress. Track missing and partial exit evidence without assuming a fill. Do not use it to change the entry test.",
+  "authority": "Read-only research; no orders, risk changes, new recurring schedule, or production activation."
+}
