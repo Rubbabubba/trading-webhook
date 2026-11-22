@@ -14,15 +14,15 @@ from .kalshi_wallet_matched_decision import assess, payout
 from .kalshi_wallet_profitability import fee
 
 
-DIRECTORY = 'wallet-matched-demo-v1'
-FIRST = datetime(2026, 11, 23, tzinfo=timezone.utc).timestamp()
+DIRECTORY = 'wallet-matched-demo-scored-start-20261122'
+FIRST = datetime(2026, 11, 22, 18, 24, 29, tzinfo=timezone.utc).timestamp()
 SERIES = ('KXNBAGAME', 'KXNBASPREAD', 'KXNBATOTAL', 'KXNFLGAME', 'KXNFLSPREAD',
           'KXNFLTOTAL', 'KXNHLGAME')
 MAX_BYTES = 64 * 1024 * 1024
 FREE_FLOOR = 128 * 1024 * 1024
 MAX_WINDOW = 60
 PAGE_SIZE = 30
-REGISTRATION_SHA256 = '410bd4a25455ad596f2f245bb14b30a5ce2e71e8e08b9aec0bdadff85df63399'
+REGISTRATION_SHA256 = '190e08a59e30227ec4f76ed841e7729f0b9335e9f63d1328116005c05bc7ab43'
 
 
 def read_status(path, *, now=None):

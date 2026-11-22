@@ -1,6 +1,6 @@
 {
   "id": "kalshi_wallet_price_discipline_v1_20261122",
-  "first_eligible_utc_day": "2026-11-23",
+  "first_eligible_utc_at": "2026-11-22T18:24:29Z",
   "mode": "prospective_shadow",
   "hypothesis": "Rejecting wallet entries whose current Kalshi execution cost exceeds a conservative prior value improves stressed net per eligible signal.",
   "control": "Existing one-contract Demo copier entry and exit rules, evaluated on the same admission opportunities. Actual Demo fills are reported separately.",
