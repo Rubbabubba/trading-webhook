@@ -87,14 +87,19 @@ def test_scheduler_tick_collects_quotes_resolves_and_persists_decision(tmp_path,
     monkeypatch.setattr('opportunity_lab.kalshi_wallet_monitor.read_trades',lambda *a:[trade])
     monkeypatch.setattr('opportunity_lab.kalshi_wallet_sports.discover',lambda *a:dict(ticker='GAME',event_ticker='EVENT',side='yes'))
     monkeypatch.setattr(worker,'quote',lambda m:({'observed_at':now[0],'orderbook_fp':{'yes_dollars':[['.44','2']],'no_dollars':[['.50','2']]}},{'fee_multiplier':'1'}))
-    worker.read=lambda *a:({'market':{'ticker':'GAME','event_ticker':'EVENT','status':'finalized','result':'yes'}},)
+    worker.read=lambda *a:({'market':{'ticker':'GAME','event_ticker':'EVENT','status':'finalized','result':'yes'}},
+                           now[0],now[0],'0',None)
     now[0]+=2;result=worker.tick()
     assert result['modeled_entries']==1 and result['resolved']==1 and result['selected_wallets']==[]
     assert result['observation_state_counts_lifetime']=={'modeled_entry':1}
+    settlement_detail=json.loads(worker.db.execute('SELECT detail FROM trades').fetchone()[0])
+    receipt={'request_started_at':now[0],'received_at':now[0],'http_age':'0'}
+    assert settlement_detail['settlement_receipt']==receipt
     assert result['scores'][0]['training']['net_cents']==0  # Same-session evidence cannot qualify.
     now[0]+=86400;assert worker.report()['scores'][0]['training']['net_cents']==48
     assert worker.db.execute('SELECT count(*) FROM decisions').fetchone()[0]==2
     now[0]+=30;assert worker.tick()['modeled_entries']==1
+    assert json.loads(worker.db.execute('SELECT detail FROM trades').fetchone()[0])['settlement_receipt']==receipt
     assert worker.db.execute('SELECT count(*) FROM decisions').fetchone()[0]==3
     worker.db.close()
 
@@ -112,7 +117,8 @@ def test_newest_first_activity_is_processed_in_source_order(tmp_path,monkeypatch
         bid,opposite=next(quotes)
         return {'observed_at':now[0],'orderbook_fp':{'yes_dollars':[[bid,'2']],'no_dollars':[[opposite,'2']]}},{'fee_multiplier':'1'}
     monkeypatch.setattr(worker,'quote',q)
-    worker.read=lambda *a:({'market':{'ticker':'GAME','event_ticker':'EVENT','status':'active'}},)
+    worker.read=lambda *a:({'market':{'ticker':'GAME','event_ticker':'EVENT','status':'active'}},
+                           now[0],now[0],None,None)
     now[0]+=3;result=worker.tick()
     assert result['modeled_entries']==1 and result['resolved']==1
     detail=json.loads(worker.db.execute('SELECT detail FROM trades').fetchone()[0])
