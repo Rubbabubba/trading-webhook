@@ -175,13 +175,24 @@ class Research:
             d=json.loads(raw)
             self.db.execute('UPDATE trades SET checked=? WHERE id=?',(self.clock(),ident))
             if d.get('settled_hold_net_cents') is not None:continue
-            row=self.read(LiveClient.BASE_URL+'/markets/'+d['mapping']['ticker'])[0]['market']
+            response, sent, received, age, _ = self.read(
+                LiveClient.BASE_URL+'/markets/'+d['mapping']['ticker'])
+            row=response['market']
             if row.get('ticker')!=d['mapping']['ticker'] or row.get('event_ticker')!=d['event'] or any(row.get(k)!=v for k,v in d['mapping'].get('kalshi_rules',{}).items()):raise ValueError('research_settlement_identity')
             if row.get('status')!='finalized' or row.get('result') not in ('yes','no'):continue
             payout=100 if row['result']==d['mapping']['side'] else 0
             d['settled_hold_net_cents']=payout-d['entry_cents']-d['entry_fee_cents']
             if d['net_cents'] is None:d.update(net_cents=d['settled_hold_net_cents'],exit_kind='settlement',exited_at=self.clock())
             d['settlement']=row
+            # Keep the local receipt clock separate from exchange metadata.
+            # An invalid clock does not change the existing settlement result.
+            if (type(sent) in (float, int) and type(received) in (float, int)
+                    and math.isfinite(sent) and math.isfinite(received)
+                    and d['entered_at'] <= sent <= received <= self.clock()):
+                d['settlement_receipt'] = {
+                    'request_started_at': sent, 'received_at': received, 'http_age': age,
+                }
+                self.record_latency('settlement_receipt', received - sent)
             self.db.execute('UPDATE trades SET detail=? WHERE id=?',(json.dumps(d),ident))
 
     def score_all(self):
