@@ -822,12 +822,15 @@ def write_status(root, db, generation, market_count, coverage=None, mve_coverage
 
 
 def run(data_root, cycles=None, interval_seconds=60):
+    from .kalshi_shadow_storage import require_research_space
     root = Path(data_root).resolve(); root.mkdir(parents=True, exist_ok=True)
+    require_research_space(root)
     db = open_db(root / "research_sleeves.sqlite3"); client = DemoMarkets(); cycle = 0
     init_rule_archive(db)
     client.rule_archive_db = db
     try:
         while cycles is None or cycle < cycles:
+            require_research_space(root)
             generation = None; markets = []; coverage = {}; error = None
             weather_cycle = {}
             fee_probe_error = None

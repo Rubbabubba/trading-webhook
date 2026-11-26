@@ -195,12 +195,15 @@ def status(db, registry_count, error=None):
 
 
 def run(data_root, cycles=None, refresh_seconds=1800):
+    from .kalshi_shadow_storage import require_research_space
     from tools.build_sports_challenger_manifest import build
     root = Path(data_root); root.mkdir(parents=True, exist_ok=True)
+    require_research_space(root)
     db = open_db(root/'sports_shadow.sqlite3'); client = DemoMarkets()
     registry = 0; next_refresh = 0; cycle = 0
     try:
         while cycles is None or cycle < cycles:
+            require_research_space(root)
             now = utcnow(); error = None
             try:
                 if time.monotonic() >= next_refresh:
