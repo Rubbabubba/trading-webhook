@@ -41,8 +41,13 @@ def retained_evidence(root):
                  'continuing-capture-v1.sqlite3', 'stream-source-v4.sqlite3', 'stream-shadow-comparison-v3.sqlite3'):
         path = Path(root) / name
         if path.exists():
-            result[name] = {'bytes': path.stat().st_size, 'state': 'retained_read_only',
-                            'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+            with path.open('rb') as stream:
+                digest = hashlib.sha256()
+                size = 0
+                while chunk := stream.read(256 * 1024):
+                    digest.update(chunk)
+                    size += len(chunk)
+            result[name] = {'bytes': size, 'state': 'retained_read_only', 'sha256': digest.hexdigest()}
             if name == 'stream-shadow-comparison-v2.sqlite3':
                 try:
                     with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True) as db:
