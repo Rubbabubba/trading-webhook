@@ -1,0 +1,10 @@
+{
+  "id": "wallet_control_capture_v2_20261127",
+  "environment": "demo",
+  "authority": "Quote and settlement observation only.",
+  "hypothesis": "Sampling the wallet opportunity's series and settlement horizon before the copier's final decision improves the availability of independently executable matched controls.",
+  "baseline_registration_sha256": "190e08a59e30227ec4f76ed841e7729f0b9335e9f63d1328116005c05bc7ab43",
+  "eligibility": "New submission receipts after first startup only. Use the original wallet decision time, maximum 60-second receipt separation, same UTC date, series, five-cent ask bin and hour-to-settlement bin. Exclude the same parent and already used parents. All scoring, costs and rejection criteria inherit the frozen baseline.",
+  "capture": "After the preliminary wallet buy quote, enqueue one request without waiting. Search up to three 200-contract open-market pages for the same series, same settlement-hour bin and a distinct unused parent. Rank displayed asks in the same five-cent bin by distance to preliminary ask, ticker then side. Check at most two books and their fees. Only verified quotes available by the original final decision qualify. Record misses. No later replay.",
+  "capacity": "Separate 64 MiB archive with permanent capacity stop and 128 MiB free-space floor. First pass starts only when enough room for the archive and floor exists. One outstanding queued sample. Reuse the existing Demo research service."
+}
