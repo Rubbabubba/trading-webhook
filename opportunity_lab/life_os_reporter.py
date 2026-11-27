@@ -99,6 +99,10 @@ def publish(packet: dict, *, url: str | None = None, token: str | None = None) -
     if observation is not None:
         copier['cap_shadow'] = observation
     from .kalshi_wallet_matched_demo import read_status, DIRECTORY as matched_directory
+    from .kalshi_wallet_targeted_control import DIRECTORY as targeted_directory, HASH as targeted_hash
+    targeted = read_status(Path('/var/data/kalshi-demo-v9') / targeted_directory / 'status.json')
+    if targeted is not None and targeted.get('registration_sha256') == targeted_hash:
+        copier['targeted_demo'] = targeted
     matched = read_status(Path('/var/data/kalshi-demo-v9') / matched_directory / 'status.json')
     if matched is not None and copier['profitability'] is not None:
         from copy import deepcopy
