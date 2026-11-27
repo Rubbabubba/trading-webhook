@@ -6,6 +6,21 @@ from opportunity_lab import kalshi_wallet_copy_worker as c
 from opportunity_lab.wallet_qualification import validate_report,score
 
 
+def test_shared_reserve_blocks_research_before_writes(tmp_path, monkeypatch):
+    worker = r.Research(tmp_path)
+    before = worker.db.total_changes
+    def low_space(_):
+        raise r.ShadowDiskReserveReached()
+    monkeypatch.setattr(r, 'require_research_space', low_space)
+    for operation in (worker.tick, worker.report):
+        with pytest.raises(r.ShadowDiskReserveReached):
+            operation()
+    assert worker.db.total_changes == before
+    worker.db.close()
+    with pytest.raises(r.ShadowDiskReserveReached):
+        r.Research(tmp_path)
+
+
 def test_forward_cycle_costs_holdout_restart_and_selection(tmp_path,monkeypatch):
     wallet='0x'+'1'*40;loser='0x'+'2'*40
     now=[datetime(2026,11,1,tzinfo=timezone.utc).timestamp()]
