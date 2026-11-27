@@ -79,6 +79,8 @@ def run(data_root, cycles=None):
         threading.Thread(target=research_sleeves_supervisor, args=(root,), daemon=True).start()
         threading.Thread(target=wallet_copy_supervisor, args=(root,), daemon=True).start()
         threading.Thread(target=wallet_research_supervisor, args=(root,), daemon=True).start()
+        from .kalshi_wallet_targeted_control import supervise as targeted_controls
+        threading.Thread(target=targeted_controls, args=(root,), daemon=True).start()
         threading.Thread(target=matched_wallet_supervisor, args=(root,), daemon=True).start()
         threading.Thread(target=cap_shadow_supervisor, args=(root,), daemon=True).start()
     else:

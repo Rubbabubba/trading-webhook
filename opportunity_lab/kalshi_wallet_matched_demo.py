@@ -146,7 +146,7 @@ def read_only(path):
     return sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)
 
 
-def collect_pairs(root, db):
+def collect_pairs(root, db, *, targeted=False):
     copier = Path(root) / 'ranked-wallet-copy-v1'
     cursor = db.execute("SELECT value FROM cursors WHERE name='submit_quotes'").fetchone()
     with (closing(read_only(copier / 'journal.sqlite3')) as journal,
@@ -181,9 +181,16 @@ def collect_pairs(root, db):
                 controls = [json.loads(r[0]) for r in db.execute(
                     'SELECT detail FROM controls WHERE slot BETWEEN ? AND ? AND detail IS NOT NULL',
                     (int((wallet['received_at'] - MAX_WINDOW) // 30), int(ready // 30)))]
+                if targeted:
+                    controls = [json.loads(raw) for raw, in db.execute(
+                        'SELECT detail FROM attempts WHERE client=? AND detail IS NOT NULL',(client,))]
                 used = {r[0] for r in db.execute("SELECT json_extract(detail,'$.control.parent') FROM pairs "
                                                 "WHERE json_type(detail,'$.control')='object'")}
                 reference = matching_quote(wallet, controls, used)
+                if targeted and reference is None:
+                    attempt = db.execute('SELECT reason FROM attempts WHERE client=?',(client,)).fetchone()
+                    result['control_miss'] = ('verified_book_outside_final_match' if controls else
+                                              attempt[0] if attempt else 'no_predecision_capture')
                 if reference is not None:
                     reference = {k: v for k, v in reference.items() if k not in ('frame', 'fee_basis')}
                 result.update(wallet=wallet, control=reference,
@@ -301,12 +308,15 @@ def first_matched_receipt(db):
     return proof
 
 
-def run_tick(root, db, *, read=public_get, clock=time.time):
+def run_tick(root, db, *, read=public_get, clock=time.time, targeted=False):
     now = clock()
     archive = Path(root) / DIRECTORY
+    if targeted:
+        from .kalshi_wallet_targeted_control import DIRECTORY as target_directory, HASH
+        archive = Path(root) / target_directory
     status = dict(schema='wallet_matched_demo_v1', at=now, environment='demo',
                   state='awaiting_start', decision='awaiting_eligible_training',
-                  registration_sha256=REGISTRATION_SHA256)
+                  registration_sha256=HASH if targeted else REGISTRATION_SHA256)
     if now >= FIRST:
         state = 'collecting'
         stopped = db.execute("SELECT 1 FROM cursors WHERE name='capacity_stop'").fetchone()
@@ -317,14 +327,14 @@ def run_tick(root, db, *, read=public_get, clock=time.time):
             status['decision'] = 'insufficient_evidence'
         else:
             slot = int(now // 30)
-            if db.execute('INSERT OR IGNORE INTO controls VALUES(?,NULL)', (slot,)).rowcount:
+            if not targeted and db.execute('INSERT OR IGNORE INTO controls VALUES(?,NULL)', (slot,)).rowcount:
                 try:
                     quote = capture_control(slot, read=read, clock=clock)
                     db.execute('UPDATE controls SET detail=? WHERE slot=?',
                                (json.dumps(quote, sort_keys=True), slot))
                 except Exception as error:
                     status['capture_error'] = type(error).__name__
-            collect_pairs(root, db)
+            collect_pairs(root, db,targeted=targeted)
             try:
                 observe_settlement(db, read=read, clock=clock)
                 join_broker_settlements(root, db)
@@ -335,6 +345,9 @@ def run_tick(root, db, *, read=public_get, clock=time.time):
                 status['decision'] = 'see_group_decisions'
         status['state'] = state
     status['control_quotes'] = db.execute('SELECT count(detail) FROM controls').fetchone()[0]
+    if targeted:
+        status['control_quotes'] = db.execute('SELECT count(detail) FROM attempts').fetchone()[0]
+        status['capture_reasons'] = dict(db.execute('SELECT reason,count(*) FROM attempts GROUP BY reason'))
     status['pairs'] = dict(db.execute("SELECT json_extract(detail,'$.state'),count(*) "
                                       'FROM pairs GROUP BY 1'))
     status['settlements'] = db.execute('SELECT count(detail) FROM outcomes').fetchone()[0]

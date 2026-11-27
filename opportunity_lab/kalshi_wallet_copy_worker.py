@@ -360,6 +360,9 @@ class WalletCopy:
         self.require_demo_hold()
         quote = self.quote(mapping)
         price = executable(trade, mapping, quote)
+        if buying and self.market_base == DEMO:
+            from .kalshi_wallet_targeted_control import offer
+            offer(client_order_id(key),quote)
         fee = read_fee(quote, self.market_base, self.read)
         # Reserve the modeled fee at its maximum across any improvement to the limit.
         reserve = int((Decimal("1.75") * Decimal(fee["fee_multiplier"])).to_integral_value(rounding=ROUND_CEILING))
