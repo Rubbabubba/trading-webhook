@@ -116,7 +116,10 @@ def publish(packet: dict, *, url: str | None = None, token: str | None = None) -
     if re.fullmatch('[0-9a-f]{40}',revision) and service=='srv-dalhjqv40ujc73e2km1g':
         packet['workforce_runtime']={'revision':revision,'service_id':service,
                                      'reported_at':datetime.now(timezone.utc).isoformat()}
-    body = json.dumps(packet, separators=(",", ":")).encode("utf-8")
+    from .map_capacity import sample
+    body = json.dumps(dict(packet, resource_capacity=sample()), separators=(",", ":")).encode("utf-8")
+    if len(body) > 200_000:
+        body = json.dumps(packet, separators=(",", ":")).encode("utf-8")
     if len(body) > 200_000:
         raise ValueError("Life OS Kalshi report exceeds the intake limit")
     request = Request(target, body, {"Authorization": f"Bearer {credential}", "Content-Type": "application/json"}, method="POST")
