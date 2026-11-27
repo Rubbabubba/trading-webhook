@@ -1,7 +1,7 @@
 """Prospective same-series comparator collection. Only the Demo research thread reads books."""
 from contextlib import closing
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from pathlib import Path
@@ -45,14 +45,20 @@ def shortlist(wallet, used, read, clock):
             parent = trial.normalized_parent(event, series)
             if parent == wallet['parent'] or parent in used:
                 continue
-            expiry = datetime.fromisoformat(m['expected_expiration_time'])
+            try:
+                expiry = datetime.fromisoformat(m['expected_expiration_time'])
+            except (KeyError, TypeError, ValueError):
+                continue
             if expiry.utcoffset() is None or int((expiry.timestamp()-wallet['received_at']) // 3600) != horizon:
                 continue
             for side in ('yes','no'):
                 value = m.get(side + '_ask_dollars')
                 if value is None:
                     continue
-                cents = Decimal(str(value))*100
+                try:
+                    cents = Decimal(str(value))*100
+                except InvalidOperation:
+                    continue
                 if cents.is_finite() and 0 < cents < 100 and cents // 5 == bucket:
                     ranked.append((abs(cents-Decimal(wallet['ask_cents'])),m['ticker'],side,m))
         cursor = page.get('cursor')
@@ -75,9 +81,12 @@ def sample(frame, used, read, clock):
         mapping = dict(ticker=ticker,side=side,event_ticker=m['event_ticker'],
                        exchange_index=m.get('exchange_index',0),
                        kalshi_rules={k:m[k] for k in ('rules_primary','rules_secondary')})
-        book = read_quote(mapping,DEMO,read)
-        fees = read_fee(book,DEMO,read)
-        quote = trial.checked_quote(book,fees,ready=clock())
+        try:
+            book = read_quote(mapping,DEMO,read)
+            fees = read_fee(book,DEMO,read)
+            quote = trial.checked_quote(book,fees,ready=clock())
+        except (KeyError, ValueError, ArithmeticError):
+            continue
         if trial.stratum(quote)==trial.stratum(wallet):
             return dict(quote,frame=book,fee_basis=fees), 'book_verified'
     return None, 'no_verified_book' if candidates else 'no_reference_in_roster'
