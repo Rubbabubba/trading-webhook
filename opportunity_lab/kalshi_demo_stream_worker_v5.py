@@ -13,7 +13,7 @@ import time
 
 from .kalshi_collection_recovery import RecoveryArchive as Archive, retained_evidence, lifetime_start
 from .kalshi_demo_stream_source import SourceFault
-from .kalshi_historical_diagnostics import fault_receipt
+from .kalshi_historical_diagnostics import closed_stream_archive, fault_receipt
 from .kalshi_stream_availability_v5 import AvailabilityBooks as Books
 
 URL = 'wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2'
@@ -242,6 +242,16 @@ class Service:
                 raise ValueError('stream_registration_mismatch')
             self.publish({'registration_sha256': hashlib.sha256(REGISTRATION.read_bytes()).hexdigest(), 'retained_evidence':retained_evidence(self.root)})
             started=lifetime_start(self.root / 'stream-source-v5-start.json',protocol=PROTOCOL)
+            sealed = closed_stream_archive(self.root)
+            if sealed:
+                if time.time() - started <= spec['maximum_elapsed_seconds']:
+                    raise ValueError('closed_stream_archive_window_still_active')
+                self.publish(dict(sealed['stream'], state='capacity_stop',
+                                  storage_stop_reason='lifetime_time_cap',
+                                  archive_storage='verified_off_host_archive'))
+                return
+            if time.time()-started > spec['maximum_elapsed_seconds'] and not (self.root / ARCHIVE_NAME).exists():
+                raise ValueError('expired_stream_archive_missing')
             while shutil.disk_usage(self.root).free < 128*1024*1024:
                 self.publish({'state':'capacity_stop','storage_stop_reason':'archive_low_disk'})
                 if self.stop_event.wait(RECONNECT_SECONDS):return
