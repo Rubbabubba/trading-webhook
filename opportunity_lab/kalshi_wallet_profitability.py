@@ -11,6 +11,7 @@ import statistics
 import time
 
 from .wallet_qualification import POLICY,POLICY_HASH,score,validate_report
+from .kalshi_shadow_storage import require_research_space, ShadowDiskReserveReached
 
 DIRECTORY = 'wallet-profitability-v2'
 
@@ -24,6 +25,7 @@ def fee(price, multiplier):
 class Research:
     def __init__(self,root,*,read=None,clock=time.time):
         from .kalshi_wallet_monitor import public_get
+        require_research_space(root)
         self.read=read or public_get;self.clock=clock
         self.root=Path(root)/DIRECTORY;self.root.mkdir(parents=True,exist_ok=True)
         self.db=sqlite3.connect(self.root/'research.sqlite3',isolation_level=None)
@@ -214,6 +216,7 @@ class Research:
 
     def report(self,errors=None):
         from .kalshi_wallet_pool import summary
+        require_research_space(self.root)
         all_scores=self.score_all();registry=bool(self.db.execute('SELECT 1 FROM wallet_pool').fetchone())
         for wallet,row in all_scores.items():
             self.db.execute('INSERT INTO wallet_pool_scores VALUES(?,?,?) ON CONFLICT(wallet) DO UPDATE SET at=excluded.at,detail=excluded.detail',(wallet,self.clock(),json.dumps(row)))
@@ -262,6 +265,7 @@ class Research:
     def tick(self):
         from .kalshi_wallet_monitor import read_trades
         from .kalshi_wallet_copy_worker import error_code
+        require_research_space(self.root)
         errors=[];started=time.monotonic()
         self.stage_metrics = {}
         processed_states = Counter()
@@ -275,6 +279,7 @@ class Research:
             tasks = {pool.submit(read_trades, w, max(self.started, self.clock()-90), self.read): w
                      for w in poll_order}
             for task in as_completed(tasks):
+                require_research_space(self.root)
                 wallet = tasks[task]
                 try:
                     last=self.db.execute('SELECT last_polled FROM wallet_pool WHERE wallet=?',(wallet,)).fetchone()
@@ -285,7 +290,7 @@ class Research:
                             collected_states[state] += 1
                     self.db.execute('UPDATE wallet_pool SET last_polled=? WHERE wallet=?',(self.clock(),wallet))
                 except Exception as e:errors.append(error_code(e))
-        stale=self.db.execute("SELECT detail FROM observations WHERE state='observed' AND json_extract(detail,'$.timestamp')<?",(self.clock()-90,)).fetchall()
+        stale=self.db.execute("SELECT detail FROM observations WHERE state='observed' AND json_extract(detail,'$.timestamp')<?",(self.clock()-90,))
         poll_elapsed=time.monotonic()-started
         for raw, in stale:self.coverage_gap(json.loads(raw))
         self.db.execute("UPDATE observations SET state='late' WHERE state='observed' AND json_extract(detail,'$.timestamp')<?",(self.clock()-90,))
@@ -334,6 +339,8 @@ def run(root):
             while True:
                 began=time.monotonic()
                 try:worker.tick()
+                except ShadowDiskReserveReached:
+                    raise
                 except Exception as error:worker.report([type(error).__name__])
                 # Work belongs inside the 30-second cadence, rather than adding
                 # another 30 seconds after slow mapping/poll work. Never spin or

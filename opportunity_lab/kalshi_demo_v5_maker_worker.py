@@ -583,6 +583,9 @@ class MakerState:
     def __init__(self, path):
         self.db = sqlite3.connect(path, isolation_level=None, timeout=30)
         self.db.execute("PRAGMA journal_mode=WAL")
+        # SQLite retains a large WAL after a burst by default. On a successful
+        # reset keep up to 4 MiB for reuse without truncating any pending commit.
+        self.db.execute("PRAGMA journal_size_limit=4194304")
         init_depth_recorder(self.db)
         init_trade_probe(self.db,time.time())
         init_targeted_trade_probe(self.db,time.time())
