@@ -26,6 +26,19 @@ def encoded(value):
 def digest(value):
     return hashlib.sha256(encoded(value).encode()).hexdigest()
 
+
+def closed_stream_archive(root):
+    """Verified projection from the three restored November 26 research files."""
+    path = Path(root) / 'closed-stream-archive-v1.json'
+    try:
+        with path.open('rb') as stream:
+            raw = stream.read(4097)
+    except FileNotFoundError:
+        return None
+    if hashlib.sha256(raw).hexdigest() != 'ad26248e29df4d15ee46c5813083a0e0a8067460b0226ca8641be3ae3594fadb':
+        raise ValueError('closed_stream_archive_receipt_mismatch')
+    return json.loads(raw)
+
 @contextmanager
 def database(root,name):
     # Names are fixed by this collector, never supplied by a model or report.
@@ -50,6 +63,9 @@ def result_code(value):
     except (ValueError,TypeError):return 'unclassified_retained_result'
 
 def source(root):
+    archive = closed_stream_archive(root)
+    if archive:
+        return dict(archive['diagnostics']['source'], storage='verified_off_host_archive')
     with database(root,'stream-source-v5.sqlite3') as db:
         connections=[dict(r) for r in db.execute('SELECT started,ended,reason FROM connections ORDER BY started DESC LIMIT 3')]
         n,last=db.execute('SELECT count(*),max(received) FROM messages').fetchone()
@@ -65,6 +81,9 @@ def source(root):
             'new_exception_observation':status.get('fault_receipt')}
 
 def outcomes(root):
+    archive = closed_stream_archive(root)
+    if archive:
+        return dict(archive['diagnostics']['outcomes'], storage='verified_off_host_archive')
     with database(root,'stream-shadow-comparison-v4.sqlite3') as db:
         attempts=[dict(r) for r in db.execute('SELECT a.id,a.signal_id,a.horizon,a.started_at,r.received_at,r.raw_sha,r.raw_z,r.result FROM outcome_attempts a LEFT JOIN outcome_receipts r ON r.attempt_id=a.id ORDER BY a.id LIMIT 901')]
         if len(attempts)>900:raise ValueError('original_request_cap_exceeded')
